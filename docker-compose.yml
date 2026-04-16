@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  sentinel:
+    build: .
+    container_name: sentinel_ai_pipeline
+    ports:
+      - "8000:8000"
+    devices:
+      - /dev/video0:/dev/video0
+    volumes:
+      - ./data:/app/data
+      - ./backend/config/zones.json:/app/backend/config/zones.json
+    environment:
+      - VIDEO_SOURCE=0
+      - DETECTION_CONFIDENCE=0.5
+      - FORCE_CPU=false
+    restart: unless-stopped
+
+networks:
+  default:
+    name: sentinel_network
