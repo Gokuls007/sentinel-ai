@@ -5,10 +5,10 @@ import StatsPanel from './StatsPanel';
 import TrackList from './TrackList';
 import AlertPanel from './AlertPanel';
 import AlertTimeline from './AlertTimeline';
-import { Shield, Wifi, WifiOff, Clock, Terminal } from 'lucide-react';
+import { Shield, Wifi, WifiOff, Clock, Terminal, Play } from 'lucide-react';
 
 const HUD = () => {
-  const { frame, frameData, alerts, connected, stats } = useWebSocket();
+  const { frame, frameData, alerts, connected, stats, demoMode } = useWebSocket();
   const [uptime, setUptime] = useState("00:00:00");
 
   useEffect(() => {
@@ -46,14 +46,33 @@ const HUD = () => {
         </div>
 
         <div className="flex items-center space-x-12">
+          {/* ─── Connection / Demo Mode Badge ─── */}
           <div className="flex items-center space-x-4">
             <span className="text-[10px] uppercase font-bold text-white/30 tracking-widest small-caps">Link Status:</span>
-            <div className={`flex items-center space-x-2 px-3 py-1 rounded-sm border ${connected ? 'border-green-500/30 bg-green-500/5' : 'border-red-500/30 bg-red-500/5'}`}>
-              <div className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-green-400 animate-pulse' : 'bg-red-500'}`} />
-              <span className={`text-[10px] font-bold uppercase mono tracking-tighter ${connected ? 'text-green-400' : 'text-red-500'}`}>
-                {connected ? "LINK_ESTABLISHED" : "LINK_FAILURE"}
-              </span>
-            </div>
+            
+            {demoMode ? (
+              /* DEMO MODE Badge */
+              <div className="relative flex items-center space-x-2 px-3 py-1 rounded-sm border border-amber-500/40 bg-amber-500/10 demo-badge-glow">
+                <Play className="w-3 h-3 text-amber-400 fill-amber-400" />
+                <span className="text-[10px] font-bold uppercase mono tracking-tighter text-amber-400 animate-pulse">
+                  DEMO_MODE
+                </span>
+                {/* Tooltip */}
+                <div className="absolute top-full left-0 mt-2 w-64 p-2 bg-black/95 border border-amber-500/20 rounded-sm opacity-0 hover:opacity-100 transition-opacity z-50 pointer-events-none group-hover:pointer-events-auto">
+                  <p className="text-[9px] text-amber-300/80 mono leading-relaxed">
+                    Running on pre-recorded data. Connect a backend for live analysis.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              /* Normal Connection Badge */
+              <div className={`flex items-center space-x-2 px-3 py-1 rounded-sm border ${connected ? 'border-green-500/30 bg-green-500/5' : 'border-red-500/30 bg-red-500/5'}`}>
+                <div className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-green-400 animate-pulse' : 'bg-red-500'}`} />
+                <span className={`text-[10px] font-bold uppercase mono tracking-tighter ${connected ? 'text-green-400' : 'text-red-500'}`}>
+                  {connected ? "LINK_ESTABLISHED" : "LINK_FAILURE"}
+                </span>
+              </div>
+            )}
           </div>
           
           <div className="hidden lg:flex items-center space-x-4">
@@ -71,7 +90,7 @@ const HUD = () => {
         {/* CENTER COLUMN: FEED & CHART (65%) */}
         <div className="col-span-12 lg:col-span-8 flex flex-col space-y-4 min-h-0">
           <div className="flex-[3] min-h-0">
-            <VideoFeed frame={frame} connected={connected} stats={stats} />
+            <VideoFeed frame={frame} connected={connected} stats={stats} demoMode={demoMode} />
           </div>
           <div className="flex-[1] min-h-0 min-h-[180px]">
              <AlertTimeline alerts={alerts} />
@@ -97,11 +116,11 @@ const HUD = () => {
       <footer className="mt-4 pt-2 border-t border-white/5 flex justify-between items-center opacity-30 select-none">
         <div className="flex items-center space-x-6">
           <div className="text-[9px] uppercase font-bold tracking-[0.3em] text-cyan-600 mono">
-            Neural Architecture // Sector 7 Access
+            Neural Architecture // {demoMode ? 'Demo Simulation' : 'Sector 7 Access'}
           </div>
           <div className="h-3 w-px bg-white/10" />
           <div className="text-[9px] uppercase font-medium text-white/40 tracking-widest">
-            Authorization: Restricted
+            Authorization: {demoMode ? 'Demo' : 'Restricted'}
           </div>
         </div>
         
@@ -113,7 +132,9 @@ const HUD = () => {
            )}
            <div className="flex items-center space-x-2">
              <Terminal className="w-3 h-3 text-cyan-700" />
-             <span className="text-[9px] mono text-cyan-700 tracking-tighter font-bold uppercase">Ready</span>
+             <span className="text-[9px] mono text-cyan-700 tracking-tighter font-bold uppercase">
+               {demoMode ? 'Demo Active' : 'Ready'}
+             </span>
            </div>
         </div>
       </footer>

@@ -1,12 +1,29 @@
+# Python
 __pycache__/
 *.py[cod]
+*$py.class
+venv/
+.venv/
+
+# Deep Learning Models
 *.pt
 *.pth
 *.onnx
-data/clips/
-data/events.db
-.env
+
+# Local Data & Assets
+assets/*.mp4
+assets/*.gif
+demo_videos/
+outputs/
+backend/data/
+data/
+*.avi
+*.mp4
+test_pipeline.py
+test.html
+
+# Frontend
 node_modules/
 dist/
-venv/
-.venv/
+.env
+.DS_Store

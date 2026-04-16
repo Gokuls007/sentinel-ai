@@ -1,0 +1,121 @@
+{
+  "meta": {
+    "description": "Sentinel AI Demo Mode — Synthetic surveillance replay data",
+    "version": "1.0.0",
+    "fps": 15,
+    "duration_seconds": 30,
+    "total_frames": 450,
+    "scenarios": ["tracking", "fall_detection", "zone_intrusion"]
+  },
+  "keyframes": [
+    {
+      "time": 0.0,
+      "persons": [
+        { "id": 1, "x": 0.15, "y": 0.55, "w": 0.06, "h": 0.18, "conf": 0.94, "action": "walking", "vx": 0.003, "vy": 0.0 },
+        { "id": 2, "x": 0.72, "y": 0.50, "w": 0.065, "h": 0.20, "conf": 0.91, "action": "standing", "vx": 0.0, "vy": 0.0 }
+      ]
+    },
+    {
+      "time": 3.0,
+      "persons": [
+        { "id": 1, "x": 0.30, "y": 0.55, "w": 0.06, "h": 0.18, "conf": 0.92, "action": "walking", "vx": 0.003, "vy": 0.0 },
+        { "id": 2, "x": 0.72, "y": 0.50, "w": 0.065, "h": 0.20, "conf": 0.89, "action": "standing", "vx": 0.0, "vy": 0.0 },
+        { "id": 3, "x": 0.85, "y": 0.60, "w": 0.055, "h": 0.17, "conf": 0.87, "action": "walking", "vx": -0.002, "vy": 0.001 }
+      ]
+    },
+    {
+      "time": 6.0,
+      "persons": [
+        { "id": 1, "x": 0.45, "y": 0.55, "w": 0.06, "h": 0.18, "conf": 0.93, "action": "walking", "vx": 0.003, "vy": 0.0 },
+        { "id": 2, "x": 0.72, "y": 0.50, "w": 0.065, "h": 0.20, "conf": 0.90, "action": "standing", "vx": 0.0, "vy": 0.0 },
+        { "id": 3, "x": 0.75, "y": 0.62, "w": 0.055, "h": 0.17, "conf": 0.88, "action": "walking", "vx": -0.002, "vy": 0.001 }
+      ]
+    },
+    {
+      "time": 9.0,
+      "persons": [
+        { "id": 1, "x": 0.55, "y": 0.55, "w": 0.06, "h": 0.18, "conf": 0.91, "action": "walking", "vx": 0.002, "vy": 0.0 },
+        { "id": 2, "x": 0.70, "y": 0.52, "w": 0.065, "h": 0.20, "conf": 0.88, "action": "walking", "vx": -0.001, "vy": 0.001 },
+        { "id": 3, "x": 0.65, "y": 0.63, "w": 0.055, "h": 0.17, "conf": 0.90, "action": "standing", "vx": 0.0, "vy": 0.0 }
+      ]
+    },
+    {
+      "time": 12.0,
+      "persons": [
+        { "id": 1, "x": 0.62, "y": 0.55, "w": 0.06, "h": 0.18, "conf": 0.92, "action": "walking", "vx": 0.001, "vy": 0.0 },
+        { "id": 2, "x": 0.68, "y": 0.58, "w": 0.07, "h": 0.12, "conf": 0.86, "action": "falling", "vx": 0.0, "vy": 0.008 },
+        { "id": 3, "x": 0.60, "y": 0.63, "w": 0.055, "h": 0.17, "conf": 0.89, "action": "standing", "vx": 0.0, "vy": 0.0 }
+      ]
+    },
+    {
+      "time": 14.0,
+      "persons": [
+        { "id": 1, "x": 0.64, "y": 0.55, "w": 0.06, "h": 0.18, "conf": 0.93, "action": "standing", "vx": 0.0, "vy": 0.0 },
+        { "id": 2, "x": 0.68, "y": 0.72, "w": 0.12, "h": 0.06, "conf": 0.84, "action": "fallen", "vx": 0.0, "vy": 0.0 },
+        { "id": 3, "x": 0.55, "y": 0.63, "w": 0.055, "h": 0.17, "conf": 0.88, "action": "standing", "vx": -0.001, "vy": 0.0 }
+      ]
+    },
+    {
+      "time": 18.0,
+      "persons": [
+        { "id": 1, "x": 0.64, "y": 0.55, "w": 0.06, "h": 0.18, "conf": 0.91, "action": "standing", "vx": 0.0, "vy": 0.0 },
+        { "id": 2, "x": 0.68, "y": 0.72, "w": 0.12, "h": 0.06, "conf": 0.82, "action": "fallen", "vx": 0.0, "vy": 0.0 },
+        { "id": 3, "x": 0.45, "y": 0.60, "w": 0.055, "h": 0.17, "conf": 0.90, "action": "walking", "vx": -0.002, "vy": 0.0 },
+        { "id": 4, "x": 0.10, "y": 0.48, "w": 0.06, "h": 0.19, "conf": 0.93, "action": "walking", "vx": 0.003, "vy": 0.001 }
+      ]
+    },
+    {
+      "time": 22.0,
+      "persons": [
+        { "id": 1, "x": 0.64, "y": 0.55, "w": 0.06, "h": 0.18, "conf": 0.90, "action": "walking", "vx": -0.001, "vy": 0.0 },
+        { "id": 3, "x": 0.30, "y": 0.58, "w": 0.055, "h": 0.17, "conf": 0.91, "action": "walking", "vx": -0.002, "vy": 0.0 },
+        { "id": 4, "x": 0.25, "y": 0.50, "w": 0.06, "h": 0.19, "conf": 0.94, "action": "walking", "vx": 0.002, "vy": 0.0 }
+      ]
+    },
+    {
+      "time": 26.0,
+      "persons": [
+        { "id": 1, "x": 0.58, "y": 0.55, "w": 0.06, "h": 0.18, "conf": 0.89, "action": "walking", "vx": -0.002, "vy": 0.0 },
+        { "id": 3, "x": 0.18, "y": 0.56, "w": 0.055, "h": 0.17, "conf": 0.88, "action": "walking", "vx": -0.002, "vy": 0.0 },
+        { "id": 4, "x": 0.35, "y": 0.52, "w": 0.06, "h": 0.19, "conf": 0.92, "action": "walking", "vx": 0.002, "vy": 0.001 }
+      ]
+    },
+    {
+      "time": 30.0,
+      "persons": [
+        { "id": 1, "x": 0.45, "y": 0.55, "w": 0.06, "h": 0.18, "conf": 0.91, "action": "walking", "vx": -0.001, "vy": 0.0 },
+        { "id": 4, "x": 0.48, "y": 0.54, "w": 0.06, "h": 0.19, "conf": 0.93, "action": "standing", "vx": 0.0, "vy": 0.0 }
+      ]
+    }
+  ],
+  "zones": [
+    {
+      "id": "restricted_alpha",
+      "name": "RESTRICTED_ZONE_A",
+      "polygon": [[0.0, 0.0], [0.15, 0.0], [0.15, 1.0], [0.0, 1.0]],
+      "type": "restricted",
+      "color": [255, 50, 50]
+    },
+    {
+      "id": "monitored_center",
+      "name": "MONITORING_SECTOR_B",
+      "polygon": [[0.35, 0.35], [0.65, 0.35], [0.65, 0.85], [0.35, 0.85]],
+      "type": "time_limited",
+      "color": [255, 165, 0]
+    }
+  ],
+  "alert_schedule": [
+    { "time": 3.2,  "alert_id": "ALT-7F3A21", "type": "zone_intrusion", "severity": "high",    "track_id": 1, "message": "Zone violation: RESTRICTED_ZONE_A (intrusion)" },
+    { "time": 8.5,  "alert_id": "ALT-B2C4E9", "type": "loitering",       "severity": "low",     "track_id": 2, "message": "Loitering detected (stationary for long duration)" },
+    { "time": 12.3, "alert_id": "ALT-D91F04", "type": "fall",            "severity": "critical", "track_id": 2, "message": "Fall detected (confirmed)" },
+    { "time": 14.1, "alert_id": "ALT-E8A732", "type": "fall",            "severity": "critical", "track_id": 2, "message": "Fall detected — subject motionless" },
+    { "time": 20.0, "alert_id": "ALT-5C1B88", "type": "zone_intrusion", "severity": "high",    "track_id": 4, "message": "Zone violation: RESTRICTED_ZONE_A (intrusion)" },
+    { "time": 22.5, "alert_id": "ALT-A4D2F1", "type": "time_exceeded",  "severity": "medium",  "track_id": 3, "message": "Zone violation: MONITORING_SECTOR_B (time exceeded)" },
+    { "time": 25.0, "alert_id": "ALT-3E7C59", "type": "loitering",       "severity": "low",     "track_id": 1, "message": "Loitering detected (low displacement)" },
+    { "time": 28.5, "alert_id": "ALT-F6B210", "type": "zone_intrusion", "severity": "high",    "track_id": 4, "message": "Zone violation: MONITORING_SECTOR_B (intrusion)" }
+  ],
+  "skeleton_template": [
+    [0, 1], [0, 2], [1, 3], [2, 4], [5, 6], [5, 7], [7, 9], [6, 8],
+    [8, 10], [5, 11], [6, 12], [11, 12], [11, 13], [13, 15], [12, 14], [14, 16]
+  ]
+}

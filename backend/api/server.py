@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from core.pipeline import SentinelPipeline, FrameResult
+from core.utils import to_serializable
 from anomaly.engine import AnomalyAlert
 from config.settings import SentinelConfig
 
@@ -50,7 +51,16 @@ def start_pipeline(config: SentinelConfig):
     @pipeline.on_frame
     def handle_frame(result: FrameResult):
         global latest_result
+        
+        # Performance: Encode JPEG once for ALL websocket clients
+        if result.annotated_frame is not None:
+            _, buffer = cv2.imencode('.jpg', result.annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            img_base64 = base64.b64encode(buffer).decode('utf-8')
+            result.annotated_frame_base64 = img_base64
+            
         latest_result = result
+        if result.frame_number % 100 == 0:
+            logger.info(f"[WS] Result cached for Frame {result.frame_number}, {len(result.alerts)} alerts active")
 
     # Run pipeline in a daemon thread
     thread = threading.Thread(target=pipeline.run, daemon=True)
@@ -117,24 +127,29 @@ async def websocket_feed(websocket: WebSocket):
             if latest_result is not None and latest_result.frame_number > last_frame_number:
                 last_frame_number = latest_result.frame_number
                 
-                # 1. Encode annotated frame
-                if latest_result.annotated_frame is not None:
-                    _, buffer = cv2.imencode('.jpg', latest_result.annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                    img_base64 = base64.b64encode(buffer).decode('utf-8')
+                # 1 & 2. Package is already pre-encoded in background thread
+                try:
+                    # Get pre-serialized dictionary (recursive numpy fix included)
+                    payload = latest_result.to_dict()
                     
-                    # 2. Main frame package
                     await websocket.send_json({
                         "type": "frame",
-                        "image": img_base64,
-                        "data": latest_result.to_dict()
+                        "image": payload.get("image_base64"),
+                        "data": payload
                     })
+
+                    if last_frame_number % 100 == 0:
+                        logger.info(f"[WS] Transmitted Frame {last_frame_number} to client")
                     
                     # 3. Individual alert pushes
                     for alert in latest_result.alerts:
                         await websocket.send_json({
                             "type": "alert",
-                            "alert": alert.to_dict()
+                            "alert": to_serializable(alert.to_dict())
                         })
+                except Exception as stream_err:
+                    logger.warning(f"[WS] Stream error: {stream_err}")
+                    continue
                         
     except WebSocketDisconnect:
         connected_clients.remove(websocket)

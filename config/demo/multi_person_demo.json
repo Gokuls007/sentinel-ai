@@ -1,0 +1,12 @@
+{
+    "zones": [
+        {
+            "id": "time_limited_lobby",
+            "name": "PUBLIC_LOBBY_TIMEOUT",
+            "polygon": [[0.35, 0.4], [0.65, 0.4], [0.65, 0.9], [0.35, 0.9]],
+            "zone_type": "time_limited",
+            "time_limit": 3.0,
+            "active": true
+        }
+    ]
+}

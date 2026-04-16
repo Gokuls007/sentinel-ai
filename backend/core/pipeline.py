@@ -13,6 +13,8 @@ from config.settings import SentinelConfig
 from output.event_logger import EventLogger
 from output.clip_recorder import ClipRecorder
 
+from .utils import to_serializable
+
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -23,11 +25,13 @@ class FrameResult:
     poses: Dict[int, PoseResult]
     alerts: List = field(default_factory=list) # Will hold AnomalyAlert later
     annotated_frame: Optional[np.ndarray] = None
+    annotated_frame_base64: Optional[str] = None # For pre-optimized transmission
     processing_time_ms: float = 0.0
+    total_alerts: int = 0
     frame_number: int = 0
 
     def to_dict(self) -> Dict:
-        return {
+        data = {
             "timestamp": self.timestamp,
             "frame_number": self.frame_number,
             "processing_time_ms": self.processing_time_ms,
@@ -36,9 +40,14 @@ class FrameResult:
             "stats": {
                 "person_count": self.detections.person_count,
                 "active_tracks": len(self.poses),
-                "alert_count": len(self.alerts)
+                "alert_count": self.total_alerts,
+                "processing_time_ms": self.processing_time_ms
             }
         }
+        if self.annotated_frame_base64:
+            data["image_base64"] = self.annotated_frame_base64
+            
+        return to_serializable(data)
 
 class SentinelPipeline:
     SKELETON = [
@@ -92,9 +101,11 @@ class SentinelPipeline:
 
     def on_alert(self, callback: Callable):
         self._on_alert = callback
+        return callback
 
     def on_frame(self, callback: Callable):
         self._on_frame = callback
+        return callback
 
     def process_frame(self, frame: np.ndarray, timestamp: float) -> FrameResult:
         self.frame_count += 1
@@ -142,6 +153,7 @@ class SentinelPipeline:
             alerts=alerts,
             annotated_frame=annotated_frame,
             processing_time_ms=processing_time_ms,
+            total_alerts=self.total_alerts,
             frame_number=self.frame_count
         )
         
@@ -206,22 +218,6 @@ class SentinelPipeline:
             cv2.putText(frame, f"ALERT: {alert.message}", (15, 35 + i * 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-        # 4. HUD Stats (Top Right)
-        active_tracks = len(detections.detections)
-        fps = 1.0 / (time.time() - self.start_time) if self.frame_count > 0 else 0
-        hud_color = (0, 255, 255)
-        
-        stats = [
-            f"Persons: {detections.person_count}",
-            f"Tracks: {active_tracks}",
-            f"FPS: {fps:.1f}",
-            f"Alerts: {self.total_alerts}"
-        ]
-        
-        for i, text in enumerate(stats):
-            cv2.putText(frame, text, (frame.shape[1] - 180, 30 + i * 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, hud_color, 2)
-            
         return frame
 
     def _draw_skeleton(self, frame: np.ndarray, pose: PoseResult):

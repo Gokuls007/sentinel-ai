@@ -142,3 +142,19 @@
 .glow-red {
   box-shadow: 0 0 15px rgba(255, 23, 68, 0.2);
 }
+
+/* Demo mode badge glow */
+.demo-badge-glow {
+  animation: demo-glow 2s ease-in-out infinite;
+}
+
+@keyframes demo-glow {
+  0%, 100% { box-shadow: 0 0 10px rgba(245, 158, 11, 0.15); }
+  50% { box-shadow: 0 0 25px rgba(245, 158, 11, 0.35); }
+}
+
+/* Outfit font class */
+.font-outfit {
+  font-family: 'Outfit', sans-serif;
+}
+

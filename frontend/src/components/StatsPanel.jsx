@@ -24,22 +24,22 @@ const StatsPanel = ({ stats }) => {
       <div className="grid grid-cols-2 gap-px bg-cyan-500/10 border border-cyan-500/10">
         <StatCard 
           icon={Users} 
-          value={stats.person_count} 
+          value={stats.person_count || 0} 
           label="Persons" 
         />
         <StatCard 
           icon={Crosshair} 
-          value={stats.active_tracks} 
+          value={stats.active_tracks || 0} 
           label="Tracks" 
         />
         <StatCard 
           icon={Zap} 
-          value={`${Math.round(stats.processing_time_ms)}ms`} 
+          value={`${Math.round(stats.processing_time_ms || 0)}ms`} 
           label="Latency" 
         />
         <StatCard 
           icon={AlertTriangle} 
-          value={stats.alert_count} 
+          value={stats.alert_count || 0} 
           label="Total Vol" 
           color="red"
         />

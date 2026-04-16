@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import datetime
 from anomaly.engine import AnomalyAlert
+from core.utils import to_serializable
 
 logger = logging.getLogger("sentinel.output.logger")
 
@@ -54,7 +55,7 @@ class EventLogger:
                     alert.severity,
                     alert.confidence,
                     alert.message,
-                    json.dumps(alert.details),
+                    json.dumps(to_serializable(alert.details)),
                     clip_path
                 ))
                 conn.commit()

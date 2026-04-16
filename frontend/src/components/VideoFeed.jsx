@@ -1,7 +1,7 @@
 import React from 'react';
 import DashboardPanel from './DashboardPanel';
 
-const VideoFeed = ({ frame, connected, stats }) => {
+const VideoFeed = ({ frame, connected, stats, demoMode }) => {
   return (
     <DashboardPanel className="h-full overflow-hidden" title="Live Observation Terminal" headerAction="SEC-01 // ACTIVE">
       <div className="relative w-full h-full bg-black/60 rounded-sm overflow-hidden group">
@@ -39,8 +39,8 @@ const VideoFeed = ({ frame, connected, stats }) => {
         
         {/* HUD Data Overlays */}
         <div className="absolute bottom-4 left-4 flex space-x-2">
-          <div className="px-2 py-0.5 bg-cyan-950/80 border border-cyan-400/30 text-[9px] text-cyan-400 mono font-bold uppercase tracking-widest">
-            Source: Neural_Cam_v2
+          <div className={`px-2 py-0.5 border text-[9px] mono font-bold uppercase tracking-widest ${demoMode ? 'bg-amber-950/80 border-amber-400/30 text-amber-400' : 'bg-cyan-950/80 border-cyan-400/30 text-cyan-400'}`}>
+            Source: {demoMode ? 'Demo_Simulation' : 'Neural_Cam_v2'}
           </div>
           <div className="px-2 py-0.5 bg-red-950/80 border border-red-500/30 text-[9px] text-red-400 mono font-bold uppercase tracking-widest animate-pulse">
             Recording

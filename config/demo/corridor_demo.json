@@ -1,0 +1,11 @@
+{
+    "zones": [
+        {
+            "id": "restricted_perimeter",
+            "name": "PERIMETER_ZONE_B",
+            "polygon": [[0.7, 0.0], [1.0, 0.0], [1.0, 1.0], [0.7, 1.0]],
+            "zone_type": "restricted",
+            "active": true
+        }
+    ]
+}
