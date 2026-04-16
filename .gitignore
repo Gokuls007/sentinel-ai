@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.pt
+*.pth
+*.onnx
+data/clips/
+data/events.db
+.env
+node_modules/
+dist/
+venv/
+.venv/
