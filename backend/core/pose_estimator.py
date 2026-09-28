@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from collections import deque
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from ultralytics import YOLO
 
 # Constants
@@ -19,28 +19,53 @@ LEFT_SHOULDER, RIGHT_SHOULDER = 5, 6
 LEFT_HIP, RIGHT_HIP = 11, 12
 LEFT_ANKLE, RIGHT_ANKLE = 15, 16
 
+KEYPOINT_MIN_CONF = 0.3  # below this a keypoint is treated as not visible
+
+
 @dataclass
 class PoseResult:
     track_id: int
-    keypoints: np.ndarray  # (17, 3) -> x, y, conf
+    keypoints: np.ndarray  # (17, 3) -> x, y, conf  (undetected keypoints are (0, 0, 0))
     bbox: np.ndarray  # [x1, y1, x2, y2]
+
+    def _visible(self, idx: int) -> bool:
+        return float(self.keypoints[idx, 2]) >= KEYPOINT_MIN_CONF
+
+    def _mean_visible(self, a: int, b: int) -> Optional[np.ndarray]:
+        pts = [self.keypoints[i, :2] for i in (a, b) if self._visible(i)]
+        return np.mean(pts, axis=0) if pts else None
+
+    @property
+    def bbox_center(self) -> np.ndarray:
+        return np.array([(self.bbox[0] + self.bbox[2]) / 2, (self.bbox[1] + self.bbox[3]) / 2])
 
     @property
     def mid_hip(self) -> np.ndarray:
-        return (self.keypoints[LEFT_HIP, :2] + self.keypoints[RIGHT_HIP, :2]) / 2
+        """Hip centre; falls back to the bbox centre when both hips are occluded."""
+        hip = self._mean_visible(LEFT_HIP, RIGHT_HIP)
+        return hip if hip is not None else self.bbox_center
 
     @property
     def mid_shoulder(self) -> np.ndarray:
-        return (self.keypoints[LEFT_SHOULDER, :2] + self.keypoints[RIGHT_SHOULDER, :2]) / 2
+        sh = self._mean_visible(LEFT_SHOULDER, RIGHT_SHOULDER)
+        return sh if sh is not None else self.bbox_center
+
+    @property
+    def head_valid(self) -> bool:
+        return self._visible(NOSE)
 
     @property
     def head_y(self) -> float:
-        return self.keypoints[NOSE, 1]
+        """Nose y; falls back to the top of the bbox when the face isn't visible."""
+        return float(self.keypoints[NOSE, 1]) if self.head_valid else float(self.bbox[1])
 
     @property
     def body_height(self) -> float:
-        ankle_y = (self.keypoints[LEFT_ANKLE, 1] + self.keypoints[RIGHT_ANKLE, 1]) / 2
-        return abs(ankle_y - self.head_y)
+        """Head-to-ankle height in px, or 0.0 if head or both ankles aren't visible."""
+        ankle = self._mean_visible(LEFT_ANKLE, RIGHT_ANKLE)
+        if ankle is None or not self.head_valid:
+            return 0.0
+        return abs(float(ankle[1]) - self.head_y)
 
 @dataclass
 class TrackFeatures:
@@ -74,7 +99,14 @@ class TrackFeatures:
 
     @property
     def time_tracked(self) -> float:
-        return time.time() - self.first_seen
+        """Seconds between first and latest sighting, in the frames' own clock.
+
+        Using time.time() here broke video-file demos, whose timestamps start at 0.
+        """
+        if not self.timestamps:
+            return 0.0
+        return float(self.timestamps[-1] - self.first_seen)
+
 
     @property
     def direction(self) -> Optional[np.ndarray]:
@@ -177,8 +209,11 @@ class PoseEstimator:
         feat.timestamps.append(timestamp)
         feat.last_updated = timestamp
         
-        # Calibration
-        if feat.initial_standing_height == 0.0:
+        # Calibration: median head-to-ankle height over 10 upright frames with a
+        # fully visible body (lying/occluded frames would give a wrong reference).
+        bw, bh = pose.bbox[2] - pose.bbox[0], pose.bbox[3] - pose.bbox[1]
+        upright = bh > 0 and bw / bh < 1.0
+        if feat.initial_standing_height == 0.0 and upright and pose.body_height > 0:
             feat._height_samples.append(pose.body_height)
             if len(feat._height_samples) >= 10:
                 feat.initial_standing_height = float(np.median(feat._height_samples))

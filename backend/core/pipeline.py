@@ -8,10 +8,11 @@ from dataclasses import dataclass, field
 from .video_source import VideoSource
 from .detector import Detector, FrameDetections
 from .pose_estimator import PoseEstimator, PoseResult
-from anomaly.engine import AnomalyEngine, AnomalyAlert
+from anomaly.engine import AnomalyEngine
 from config.settings import SentinelConfig
 from output.event_logger import EventLogger
 from output.clip_recorder import ClipRecorder
+from output.webhook import WebhookNotifier
 
 from .utils import to_serializable
 
@@ -44,9 +45,7 @@ class FrameResult:
                 "processing_time_ms": self.processing_time_ms
             }
         }
-        if self.annotated_frame_base64:
-            data["image_base64"] = self.annotated_frame_base64
-            
+        # The JPEG is sent once, as the top-level "image" field of the WebSocket message.
         return to_serializable(data)
 
 class SentinelPipeline:
@@ -69,7 +68,8 @@ class SentinelPipeline:
             source=config.source,
             target_fps=config.target_fps,
             frame_width=config.frame_width,
-            frame_height=config.frame_height
+            frame_height=config.frame_height,
+            loop=config.loop,
         )
         
         self.detector = Detector(
@@ -96,7 +96,8 @@ class SentinelPipeline:
             buffer_seconds=config.output.clip_duration,
             fps=config.target_fps
         )
-        
+        self.webhook = WebhookNotifier(config.output.webhook_url) if config.output.webhook_url else None
+
         logger.info("Pipeline initialized successfully")
 
     def on_alert(self, callback: Callable):
@@ -124,25 +125,23 @@ class SentinelPipeline:
         all_features = self.pose_estimator.get_all_features()
         alerts = self.anomaly_engine.process(poses, all_features, timestamp)
         
-        # 4. Persistence & Callbacks
-        self.clip_recorder.add_frame(frame, timestamp)
-        
+        # 4. Annotation (clips and snapshots use the annotated frame)
+        annotated_frame = self._annotate_frame(frame.copy(), detections, poses, alerts)
+
+        # 5. Persistence & Callbacks
         for alert in alerts:
             self.total_alerts += 1
-            
-            # Save forensic clip
-            clip_path = self.clip_recorder.save_clip(alert.alert_id, alert.timestamp)
-            
-            # Log to DB
+            # Forensic clip (pre + post alert) is encoded in the background.
+            clip_path = self.clip_recorder.save_clip(alert.alert_id, alert.timestamp,
+                                                     snapshot=annotated_frame)
+            alert.details = {**alert.details, "clip_path": clip_path.replace("\\", "/")}
             self.event_logger.log_event(alert, clip_path)
-            
-            # Fire callbacks
+            if self.webhook:
+                self.webhook.send(to_serializable(alert.to_dict()))
             if self._on_alert:
                 self._on_alert(alert)
-        
-        # 5. Annotation
-        annotated_frame = self._annotate_frame(frame.copy(), detections, poses, alerts)
-        
+        self.clip_recorder.add_frame(annotated_frame, timestamp)
+
         processing_time_ms = (time.time() - processing_start) * 1000
         
         result = FrameResult(
@@ -235,13 +234,19 @@ class SentinelPipeline:
     def run(self):
         self.video_source.start()
         logger.info(f"Pipeline running on source: {self.config.source}")
+        clip_fps_set = False
         try:
             while self.video_source.is_running:
                 result = self.video_source.read()
                 if result is None:
-                    time.sleep(0.01)
+                    time.sleep(0.005)
                     continue
-                
+
+                if not clip_fps_set and self.video_source.source_fps:
+                    # Clips play back at the source's real frame rate.
+                    self.clip_recorder.set_fps(self.video_source.source_fps)
+                    clip_fps_set = True
+
                 frame, ts = result
                 _ = self.process_frame(frame, ts)
                 
@@ -255,6 +260,9 @@ class SentinelPipeline:
 
     def stop(self):
         self.video_source.stop()
+        self.clip_recorder.flush()
+        if self.webhook:
+            self.webhook.close()
         uptime = time.time() - self.start_time
         logger.info(f"Pipeline stopped. Uptime: {uptime:.1f}s | Total Frames: {self.frame_count} | Total Alerts: {self.total_alerts}")
 

@@ -1,11 +1,30 @@
 {
+    "description": "Office corridor: two restricted doorways and a one-way walkway. Zone coordinates are normalised (0-1) and were placed from measured walking paths in corridor_sample.mp4.",
     "zones": [
         {
-            "id": "restricted_perimeter",
-            "name": "PERIMETER_ZONE_B",
-            "polygon": [[0.7, 0.0], [1.0, 0.0], [1.0, 1.0], [0.7, 1.0]],
+            "id": "server_room_door",
+            "name": "Server Room Door",
+            "polygon": [[0.0, 0.28], [0.13, 0.28], [0.13, 0.52], [0.0, 0.52]],
             "zone_type": "restricted",
             "active": true
+        },
+        {
+            "id": "lab_door",
+            "name": "Lab Entrance",
+            "polygon": [[0.86, 0.28], [1.0, 0.28], [1.0, 0.54], [0.86, 0.54]],
+            "zone_type": "restricted",
+            "active": true
+        },
+        {
+            "id": "walkway",
+            "name": "One-Way Walkway",
+            "polygon": [[0.25, 0.55], [0.75, 0.55], [0.75, 0.88], [0.25, 0.88]],
+            "zone_type": "one_way",
+            "direction": "up",
+            "active": true
         }
-    ]
+    ],
+    "overrides": {
+        "zone": {"alert_cooldown": 15.0}
+    }
 }

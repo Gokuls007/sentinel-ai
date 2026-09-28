@@ -1,92 +1,154 @@
-# Sentinel AI — Real-Time Video Intelligence Pipeline
+# Sentinel AI: Real-Time Video Anomaly Detection
 
-![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)
-![PyTorch 2.0+](https://img.shields.io/badge/PyTorch-2.0+-orange.svg)
-![YOLOv8](https://img.shields.io/badge/Model-YOLOv8-brightgreen.svg)
-![React 18](https://img.shields.io/badge/Frontend-React%2018-cyan.svg)
+[![CI](https://github.com/Gokuls007/sentinel-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/Gokuls007/sentinel-ai/actions/workflows/ci.yml)
+![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)
+![YOLOv8](https://img.shields.io/badge/Model-YOLOv8n%20%2B%20pose-brightgreen.svg)
 ![License MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-**Sentinel AI** is a high-performance computer vision pipeline designed for industrial safety and autonomous monitoring. By combining real-time person tracking, 17-point skeletal pose estimation, and temporal behavioral classification, Sentinel AI identifies critical anomalies—such as falls, unauthorized zone intrusions, and loitering—with sub-100ms latency. The system features a cinematic, JARVIS-inspired HUD for real-time situational awareness and automated forensic recording.
+Sentinel AI watches a video feed, tracks every person with a stable ID, and estimates each
+person's 17-point skeleton. It raises alerts for **falls**, **restricted-zone intrusions**,
+**time limits exceeded in a zone**, **walking the wrong way through one-way zones**, and
+**loitering**. Every alert is saved with a snapshot and a playable clip (10 s before the alert
+and 5 s after it), logged to SQLite, optionally sent to a webhook, and streamed live to a
+browser dashboard.
 
-## 🚀 Features
+**No camera needed.** It includes two sample scenarios that download automatically, so the
+full system runs with one command.
 
-- **Fall Detection**: A robust 4-signal state machine monitoring velocity, aspect ratio, head drop, and post-fall stillness.
-- **Dynamic Zone Monitoring**: User-definable polygon zones (Restricted, Time-Limited) with millisecond-accurate intrusion auditing.
-- **Behavioral Intelligence**: ActionLSTM classifier trained on temporal pose sequences for nuanced action recognition (e.g., fighting, loitering).
-- **PPE Compliance**: (In Development) Integrated compliance checking for safety helmets and vests.
-- **Cinematic HUD**: Real-time React dashboard with WebSocket streaming, CRT-scanline overlays, and multi-track telemetry.
-- **Forensic Storage**: Rolling 10-second MP4 buffers that persist automatically upon alert detection.
+![Corridor demo: restricted-door intrusions flagged live](docs/corridor_alert.jpg)
 
-## 🏗️ Architecture
+## Quick start (no camera)
 
-Sentinel AI operates on a strictly decoupled 6-layer intelligence stack:
-
-```text
-[ LAYER 6: HUD & INTERFACE ] <---------- [ REAL-TIME WEB HUD ]
-      ^                                  (React, WebSockets)
-      |
-[ LAYER 5: INTELLIGENCE ENGINE ] <------ [ BEHAVIORAL ANALYSIS ]
-      ^                                  (State Machines, ActionLSTM)
-      |
-[ LAYER 4: TEMPORAL ANALYTICS ] <------- [ FEATURE ACCUMULATION ]
-      ^                                  (Sliding Windows, Normalized Sequences)
-      |
-[ LAYER 3: POSE ESTIMATION ] <---------- [ SKELETAL EXTRACTION ]
-      ^                                  (YOLOv8-Pose, 17-Point Flux)
-      |
-[ LAYER 2: PERCEPTION CORE ] <---------- [ DETECTION & TRACKING ]
-      ^                                  (YOLOv8, ByteTrack IDs)
-      |
-[ LAYER 1: VIDEO INGESTION ] <---------- [ THREADED CAPTURE ]
-                                         (RTSP, USB-Cam, SQLite Forensic)
-```
-
-For a detailed deep-dive into each layer, see [ARCHITECTURE.md](ARCHITECTURE.md).
-
-## ⚡ Quick Start
-
-### Local Setup
-1. **Clone & Install**:
-   ```bash
-   git clone https://github.com/yourusername/sentinel-ai.git
-   cd sentinel-ai
-   pip install -r backend/requirements.txt
-   ```
-2. **Launch Pipeline**:
-   ```bash
-   python backend/main.py --source 0
-   ```
-3. **Open Dashboard**:
-   Navigate to `http://localhost:5173` (ensure you have run `npm install && npm run dev` in the `frontend` folder).
-
-### 🐳 Docker Deployment
+**Docker**, the simplest route (the image already includes the models, sample videos and dashboard):
 ```bash
-docker-compose up --build
+docker compose up --build
+```
+Then open **http://localhost:8000**.
+
+**Or locally** (Python 3.11):
+```bash
+pip install -r backend/requirements.txt
+cd frontend && npm ci && npm run build && cd ..
+python backend/main.py --demo
+```
+Then open **http://localhost:8000**. The first run downloads YOLOv8n and YOLOv8n-pose (~13 MB)
+and the sample video (checksum-verified).
+
+| Scenario | Command | What you'll see |
+|---|---|---|
+| Office corridor | `python backend/main.py --demo corridor` | People walking past two restricted doorways: `zone_intrusion` alerts |
+| Hallway workstation | `python backend/main.py --demo hallway` | People stopping at a table: `time_exceeded` (5 s zone limit), `loitering`, and staff-exit intrusions |
+
+Measured with the full pipeline on a laptop CPU (no GPU) over each sample video, one pass
+through the file (`python scripts/run_demo.py --demo <name>`):
+
+| Scenario | Length | Alerts raised |
+|---|---|---|
+| corridor | 50 s | 7 `zone_intrusion` (door entries), 0 false falls |
+| hallway | 139 s | 6 `time_exceeded`, 6 `zone_intrusion`, 4 `loitering` (6 people), 0 false falls |
+
+The two YOLO models together run at about 17 fps on CPU, faster than both samples'
+native frame rate (10–12 fps).
+
+### Your own video or camera
+```bash
+python backend/main.py --source path/to/video.mp4 --loop
+python backend/main.py --source 0                         # webcam
+python backend/main.py --source rtsp://user:pass@cam/stream
+docker compose --profile webcam up --build                # webcam in Docker (Linux)
+```
+Zones are normalised polygons (0–1) in `backend/config/zones.json`, or in a scenario file
+like `config/demo/corridor_demo.json`. All settings can be set in `.env` (see
+[`.env.example`](.env.example)), and CLI flags override them (`python backend/main.py --help`).
+
+## What each detector does
+
+| Alert | How it's decided | Severity |
+|---|---|---|
+| `fall` | A per-person state machine. It needs a rapid hip descent (faster than 1.2 body heights per second, calibrated to each person's standing height), then a lying posture with the head dropped, then 1 s of stillness. One alert per fall. | critical |
+| `zone_intrusion` | The hip point enters a `restricted` polygon. | high |
+| `time_exceeded` | Dwell in a `time_limited` zone passes its limit. | medium |
+| `wrong_direction` | Sustained movement against a `one_way` zone's direction. | medium |
+| `loitering` | Staying within a small radius for longer than a threshold (30 s by default). | low |
+
+Every alert type has a per-person cooldown, so one event never becomes a burst of alerts.
+[ARCHITECTURE.md](ARCHITECTURE.md) covers the threading model, the WebSocket protocol, and
+each detector in detail.
+
+### Honest limitations
+- **Falls are not in the bundled demos.** The sample videos have no falls, and freely
+  licensed fall footage is rare. The fall logic is covered by unit tests on synthetic pose
+  sequences (`tests/test_fall_detector.py`): a real fall, sitting down, crouching, getting up
+  quickly, no visible face, and the cooldown. To see it live, run it on your own clip with
+  `--source`.
+- **The action LSTM is off by default.** `training/` can train a pose-sequence classifier. Until
+  a trained `models/action_lstm.pt` exists, the classifier stays disabled rather than guessing
+  with random weights.
+- **PPE detection is not implemented.**
+- Detection quality is YOLOv8n's: small or heavily occluded people can be missed. Try a
+  larger model with `DETECTION_MODEL=yolov8s.pt`.
+
+## Dashboard
+The React dashboard shows:
+- the annotated live feed;
+- live person and track counts and pipeline latency;
+- each track's fall state;
+- the zones;
+- a 30-minute alert timeline;
+- an alert feed with snapshot thumbnails and inline clip playback.
+
+Alert history comes from SQLite, so it survives restarts. When the backend is down the
+dashboard says so; it never shows made-up data.
+
+For frontend development, run `cd frontend && npm run dev` (http://localhost:5173). It
+proxies to the backend on port 8000.
+
+## API
+| Endpoint | Returns |
+|---|---|
+| `GET /api/health` | `ok` / `degraded`, the source, and any source error |
+| `GET /api/stats` | frames processed, fps, uptime, and source stats |
+| `GET /api/alerts?limit=&severity=&alert_type=` | persisted alerts, newest first, with `has_clip` |
+| `GET /api/zones`, `GET /api/tracks` | configured zones, and live tracks with fall state |
+| `GET /api/clips/{alert_id}`, `GET /api/snapshots/{alert_id}` | the incident MP4 (H.264) and JPEG |
+| `WS /ws/feed` | `history`, then `alert` and `frame` messages |
+
+Set `WEBHOOK_URL` to get every alert POSTed as JSON.
+
+## Offline demo videos and reel
+```bash
+python scripts/run_demo.py --demo corridor    # writes outputs/corridor_demo.mp4 plus an alerts JSON
+python scripts/run_all_demos.py               # both scenarios, stitched into assets/demo_reel.mp4
 ```
 
-## 🛠️ Tech Stack
+## Tests
+```bash
+pip install -r requirements-dev.txt
+pytest -q            # unit tests (~6 s): fall state machine, zones, loitering, config, API/WebSocket, clips
+pytest -q -m slow    # end to end: the real models on the corridor sample must flag the doors and nothing else
+```
+CI runs both, plus the frontend lint and build, and a Docker build with a smoke test.
 
-| Component | Technology |
-| :--- | :--- |
-| **Detection** | YOLOv8 (Ultralytics) |
-| **Tracking** | ByteTrack |
-| **Pose Estimation** | YOLOv8-Pose |
-| **Anomaly Logic** | State Machines + PyTorch LSTM |
-| **Backend** | FastAPI / WebSockets |
-| **Frontend** | React 18, Tailwind CSS, Recharts |
-| **Storage** | SQLite + Local MP4 Rolling Buffer |
+## Project layout
+```text
+backend/
+  core/      video_source, detector (YOLOv8 + ByteTrack), pose_estimator, pipeline, samples
+  anomaly/   fall_detector, zone_monitor, engine (loitering, alert routing), temporal_model
+  output/    clip_recorder, event_logger (SQLite), webhook
+  api/       FastAPI server (REST, WebSocket, serves the dashboard)
+config/demo/ scenario zone files
+frontend/    React + Vite + Tailwind dashboard
+scripts/     run_demo, run_all_demos, fetch_samples, post_production
+training/    pose-sequence LSTM data prep / training / evaluation
+tests/       pytest suite
+```
 
-## 📦 Training your own Action Models
-Sentinel AI includes a dedicated training pipeline to adapt to your environment:
-1. **Prep**: `python training/data_prep.py --input_dir data/raw_videos`
-2. **Train**: `python training/train_fall_detector.py --data_dir data/poses`
-3. **Evaluate**: `python training/evaluate.py --model_path models/action_lstm.pt`
+## Credits
+The sample videos are by Intel Corporation
+([intel-iot-devkit/sample-videos](https://github.com/intel-iot-devkit/sample-videos)) under
+CC BY 4.0; see [demo_videos/ATTRIBUTION.md](demo_videos/ATTRIBUTION.md). Detection and pose
+estimation use [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) (AGPL-3.0).
 
-## 🔮 Future Roadmap
-- [ ] **Cross-Camera ReID**: Maintain track IDs across multiple overlapping camera feeds.
-- [ ] **Edge Deployment**: Optimization for NVIDIA Orin and Coral Edge TPU via TensorRT/OpenVINO.
-- [ ] **Attention-Based Temporal Model**: Implement Vision Transformers (ViT) for long-duration behavioral patterns.
-- [ ] **Cloud Dashboard**: Centralized management portal for multi-site deployments.
-
-## 📄 License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+## License
+MIT. See [LICENSE](LICENSE). Note that Ultralytics YOLOv8 is AGPL-3.0, which applies if you
+distribute or serve a product built on it.

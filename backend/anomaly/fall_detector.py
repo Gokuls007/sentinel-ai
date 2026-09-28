@@ -1,20 +1,46 @@
-import time
-from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, List
-import numpy as np
+"""Rule-based fall detection: a per-person state machine over pose signals.
+
+    UPRIGHT --rapid descent--> FALLING --lying / head low--> FALLEN
+    FALLEN --still for stillness_seconds--> CONFIRMED  (one alert is raised here)
+    FALLING/FALLEN --stands up or times out--> UPRIGHT
+    CONFIRMED --stands up--> UPRIGHT
+
+All speeds are normalised by the person's calibrated standing height and by real
+elapsed time, so thresholds work regardless of resolution, camera distance or FPS.
+"""
+
+from dataclasses import dataclass, field
+from typing import Dict, Optional
+
+
 from core.pose_estimator import PoseResult, TrackFeatures
+
 
 @dataclass
 class FallEvent:
     track_id: int
     timestamp: float
     confidence: float
-    stage: str # "falling", "fallen", "confirmed"
-    signals: Dict[str, bool]
+    stage: str  # "confirmed"
+    signals: Dict[str, float]
     head_y: float
     hip_y: float
-    velocity: float
+    velocity: float  # descent speed that started the fall (body heights / s)
     aspect_ratio: float
+
+
+@dataclass
+class _TrackState:
+    state: str = "upright"
+    prev_hip_y: Optional[float] = None
+    prev_time: Optional[float] = None
+    upright_head_y: Optional[float] = None  # running estimate while standing
+    falling_since: float = 0.0
+    fallen_since: float = 0.0
+    still_since: Optional[float] = None
+    peak_descent: float = 0.0
+    last_alert_time: float = field(default=-1e18)
+
 
 class FallDetector:
     UPRIGHT = "upright"
@@ -22,149 +48,142 @@ class FallDetector:
     FALLEN = "fallen"
     CONFIRMED = "confirmed"
 
-    def __init__(self, velocity_threshold=15.0, aspect_ratio_threshold=1.2, 
-                 head_drop_ratio=0.5, stillness_frames=15, stillness_threshold=2.0, 
-                 cooldown_seconds=30.0):
-        
-        self.velocity_threshold = velocity_threshold
+    FALLING_WINDOW_S = 1.5  # a fall must reach the ground within this time
+
+    def __init__(self, descent_speed_threshold: float = 1.2, aspect_ratio_threshold: float = 1.2,
+                 head_drop_ratio: float = 0.5, stillness_seconds: float = 1.0,
+                 stillness_speed_threshold: float = 0.15, fallen_timeout_seconds: float = 5.0,
+                 cooldown_seconds: float = 30.0):
+        self.descent_speed_threshold = descent_speed_threshold
         self.aspect_ratio_threshold = aspect_ratio_threshold
         self.head_drop_ratio = head_drop_ratio
-        self.stillness_frames = stillness_frames
-        self.stillness_threshold = stillness_threshold
+        self.stillness_seconds = stillness_seconds
+        self.stillness_speed_threshold = stillness_speed_threshold
+        self.fallen_timeout_seconds = fallen_timeout_seconds
         self.cooldown_seconds = cooldown_seconds
-        
-        # Per-track state
-        self.states: Dict[int, str] = {}
-        self.stillness_counters: Dict[int, int] = {}
-        self.last_alert_time: Dict[int, float] = {}
-        self.prev_hip_y: Dict[int, float] = {}
-        self.fallen_start_time: Dict[int, float] = {}
+        self.tracks: Dict[int, _TrackState] = {}
 
-    def check(self, track_id: int, pose: PoseResult, features: TrackFeatures, 
+    # -- public API ---------------------------------------------------------------------
+
+    def state_of(self, track_id: int) -> str:
+        st = self.tracks.get(track_id)
+        return st.state if st else self.UPRIGHT
+
+    def check(self, track_id: int, pose: PoseResult, features: TrackFeatures,
               timestamp: float) -> Optional[FallEvent]:
-        
-        # Initialize state if new track
-        if track_id not in self.states:
-            self.states[track_id] = self.UPRIGHT
-            self.stillness_counters[track_id] = 0
-            
-        # Check cooldown
-        if track_id in self.last_alert_time:
-            if timestamp - self.last_alert_time[track_id] < self.cooldown_seconds:
-                # If we were in CONFIRMED state and cooldown passed, reset to UPRIGHT
-                if self.states[track_id] == self.CONFIRMED:
-                    self.states[track_id] = self.UPRIGHT
-                # Still in cooldown window
-                if self.states[track_id] == self.CONFIRMED:
-                    return None
+        """Advance the state machine for one person; returns an event on a confirmed fall."""
+        st = self.tracks.setdefault(track_id, _TrackState())
+        body_h = features.initial_standing_height
+        if body_h <= 0:  # not calibrated yet: we don't know how tall this person is
+            self._remember(st, pose, timestamp)
+            return None
 
-        signals = self._compute_signals(track_id, pose, features)
-        current_state = self.states[track_id]
+        signals = self._compute_signals(st, pose, body_h, timestamp)
         event = None
-        
-        # 1. UPRIGHT state
-        if current_state == self.UPRIGHT:
-            if signals["rapid_descent"]:
-                self.states[track_id] = self.FALLING
-        
-        # 2. FALLING state
-        elif current_state == self.FALLING:
-            if signals["horizontal_pose"] and signals["head_dropped"]:
-                self.states[track_id] = self.FALLEN
-                self.fallen_start_time[track_id] = timestamp
-                event = self._make_event(track_id, timestamp, 0.7, "fallen", signals, pose)
-            elif not signals["rapid_descent"]:
-                # Person recovered or sit down slowly
-                self.states[track_id] = self.UPRIGHT
-        
-        # 3. FALLEN state
-        elif current_state == self.FALLEN:
-            if signals["is_still"]:
-                self.stillness_counters[track_id] += 1
-            else:
-                self.stillness_counters[track_id] = max(0, self.stillness_counters[track_id] - 2)
-            
-            if self.stillness_counters[track_id] >= self.stillness_frames:
-                self.states[track_id] = self.CONFIRMED
-                self.last_alert_time[track_id] = timestamp
-                event = self._make_event(track_id, timestamp, 0.95, "confirmed", signals, pose)
-            else:
-                # Check for 5s timeout if counter < 5
-                time_in_fallen = timestamp - self.fallen_start_time.get(track_id, timestamp)
-                if time_in_fallen > 5.0 and self.stillness_counters[track_id] < 5:
-                    self.states[track_id] = self.UPRIGHT
-                    self.stillness_counters[track_id] = 0
-        
-        # 4. CONFIRMED state
-        elif current_state == self.CONFIRMED:
-            # We stay in CONFIRMED until cooldown expires (handled at start of check)
-            # Or if they stand up (added for safety reset)
-            if not signals["horizontal_pose"] and not signals["head_dropped"]:
-                self.states[track_id] = self.UPRIGHT
-                self.stillness_counters[track_id] = 0
 
-        # Update tracking variables
-        self.prev_hip_y[track_id] = pose.mid_hip[1]
-        
+        if st.state == self.UPRIGHT:
+            if not signals["horizontal_pose"] and pose.head_valid:
+                # Track the standing head height slowly, so a fall can't drag it down.
+                st.upright_head_y = (pose.head_y if st.upright_head_y is None
+                                     else 0.9 * st.upright_head_y + 0.1 * pose.head_y)
+            if signals["descent_speed"] > self.descent_speed_threshold:
+                st.state = self.FALLING
+                st.falling_since = timestamp
+                st.peak_descent = signals["descent_speed"]
+
+        elif st.state == self.FALLING:
+            st.peak_descent = max(st.peak_descent, signals["descent_speed"])
+            on_ground = signals["horizontal_pose"] and (
+                signals["head_dropped"] or not signals["head_known"])
+            if on_ground:
+                st.state = self.FALLEN
+                st.fallen_since = timestamp
+                st.still_since = None
+            elif timestamp - st.falling_since > self.FALLING_WINDOW_S:
+                st.state = self.UPRIGHT  # e.g. sat down or crouched quickly
+
+        elif st.state == self.FALLEN:
+            if self._stood_up(signals):
+                st.state = self.UPRIGHT
+            else:
+                if signals["is_still"]:
+                    st.still_since = st.still_since if st.still_since is not None else timestamp
+                else:
+                    st.still_since = None
+                still_long_enough = (st.still_since is not None and
+                                     timestamp - st.still_since >= self.stillness_seconds)
+                if still_long_enough and timestamp - st.last_alert_time >= self.cooldown_seconds:
+                    st.state = self.CONFIRMED
+                    st.last_alert_time = timestamp
+                    event = self._make_event(track_id, timestamp, st, signals, pose)
+                elif timestamp - st.fallen_since > self.fallen_timeout_seconds and not still_long_enough:
+                    st.state = self.UPRIGHT
+
+        elif st.state == self.CONFIRMED:
+            if self._stood_up(signals):
+                st.state = self.UPRIGHT
+
+        self._remember(st, pose, timestamp)
         return event
 
-    def _compute_signals(self, track_id: int, pose: PoseResult, features: TrackFeatures) -> Dict:
-        # Signal 1: Rapid Descent
-        velocity = 0.0
-        if track_id in self.prev_hip_y:
-            velocity = pose.mid_hip[1] - self.prev_hip_y[track_id]
-        rapid_descent = velocity > self.velocity_threshold
-            
-        # Signal 2: Horizontal Pose
-        bbox_w = pose.bbox[2] - pose.bbox[0]
-        bbox_h = pose.bbox[3] - pose.bbox[1]
-        aspect_ratio = bbox_w / bbox_h if bbox_h > 0 else 0.0
-        horizontal_pose = aspect_ratio > self.aspect_ratio_threshold
-        
-        # Signal 3: Head Dropped
-        head_dropped = False
-        if features.initial_standing_height > 0:
-            # Reference: first hip_y coordinate when they were standing
-            # (Note: centroid_history[0] is initialized in TrackFeatures)
-            reference_y = features.centroid_history[0][1]
-            drop_dist = pose.head_y - reference_y
-            head_dropped = (drop_dist / features.initial_standing_height) > self.head_drop_ratio
+    def reset_track(self, track_id: int):
+        self.tracks.pop(track_id, None)
 
-        # Signal 4: Stillness
-        is_still = False
-        if len(features.centroid_history) >= 3:
-            # Check average movement over last 3 frames
-            movements = [np.linalg.norm(features.centroid_history[i] - features.centroid_history[i-1]) 
-                         for i in range(-1, -3, -1)]
-            avg_move = np.mean(movements)
-            is_still = avg_move < self.stillness_threshold
-            
+    def prune(self, active_track_ids):
+        """Forget people who are no longer tracked (keeps memory bounded)."""
+        for tid in [t for t in self.tracks if t not in active_track_ids]:
+            del self.tracks[tid]
+
+    # -- internals ----------------------------------------------------------------------
+
+    @staticmethod
+    def _remember(st: _TrackState, pose: PoseResult, timestamp: float):
+        st.prev_hip_y = float(pose.mid_hip[1])
+        st.prev_time = timestamp
+
+    def _compute_signals(self, st: _TrackState, pose: PoseResult, body_h: float,
+                         timestamp: float) -> Dict[str, float]:
+        hip_y = float(pose.mid_hip[1])
+        descent_speed = 0.0
+        if st.prev_hip_y is not None and st.prev_time is not None:
+            dt = timestamp - st.prev_time
+            if dt > 0:
+                descent_speed = (hip_y - st.prev_hip_y) / dt / body_h  # + means moving down
+
+        bbox_w = float(pose.bbox[2] - pose.bbox[0])
+        bbox_h = float(pose.bbox[3] - pose.bbox[1])
+        aspect_ratio = bbox_w / bbox_h if bbox_h > 0 else 0.0
+
+        head_known = pose.head_valid and st.upright_head_y is not None
+        head_drop = (pose.head_y - st.upright_head_y) / body_h if head_known else 0.0
+
         return {
-            "rapid_descent": rapid_descent,
-            "horizontal_pose": horizontal_pose,
-            "head_dropped": head_dropped,
-            "is_still": is_still,
-            "velocity_value": velocity,
-            "aspect_ratio_value": aspect_ratio
+            "descent_speed": descent_speed,
+            "aspect_ratio": aspect_ratio,
+            "horizontal_pose": aspect_ratio > self.aspect_ratio_threshold,
+            "head_known": head_known,
+            "head_drop": head_drop,
+            "head_dropped": head_known and head_drop > self.head_drop_ratio,
+            "is_still": abs(descent_speed) < self.stillness_speed_threshold,
         }
 
-    def _make_event(self, track_id: int, timestamp: float, confidence: float, stage: str, 
-                    signals: Dict, pose: PoseResult) -> FallEvent:
+    @staticmethod
+    def _stood_up(signals) -> bool:
+        return not signals["horizontal_pose"] and not signals["head_dropped"]
+
+    def _make_event(self, track_id: int, timestamp: float, st: _TrackState, signals,
+                    pose: PoseResult) -> FallEvent:
+        # Confidence grows with how many independent signals agreed.
+        agreeing = 1 + int(signals["head_dropped"]) + int(st.peak_descent > 2 * self.descent_speed_threshold)
+        confidence = round(min(0.99, 0.7 + 0.1 * agreeing), 2)
         return FallEvent(
             track_id=track_id,
             timestamp=timestamp,
             confidence=confidence,
-            stage=stage,
-            signals=signals,
-            head_y=pose.head_y,
-            hip_y=pose.mid_hip[1],
-            velocity=signals.get("velocity_value", 0.0),
-            aspect_ratio=signals.get("aspect_ratio_value", 0.0)
+            stage=self.CONFIRMED,
+            signals={k: (round(float(v), 3) if not isinstance(v, bool) else v) for k, v in signals.items()},
+            head_y=float(pose.head_y),
+            hip_y=float(pose.mid_hip[1]),
+            velocity=round(float(st.peak_descent), 3),
+            aspect_ratio=round(float(signals["aspect_ratio"]), 3),
         )
-
-    def reset_track(self, track_id: int):
-        if track_id in self.states: del self.states[track_id]
-        if track_id in self.stillness_counters: del self.stillness_counters[track_id]
-        if track_id in self.last_alert_time: del self.last_alert_time[track_id]
-        if track_id in self.prev_hip_y: del self.prev_hip_y[track_id]
-        if track_id in self.fallen_start_time: del self.fallen_start_time[track_id]

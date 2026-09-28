@@ -1,10 +1,15 @@
+# Python 3.10-3.13.
 ultralytics>=8.1.0
+lap>=0.5.12              # ByteTrack association (otherwise ultralytics tries to pip-install it at runtime)
 torch>=2.0.0
-opencv-python>=4.8.0
+# OpenCV 5 removed/changed APIs; stay on 4.x. Docker uses opencv-python-headless (same API).
+opencv-python>=4.8.0,<5
 numpy>=1.24.0
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 websockets>=12.0
 python-dotenv>=1.0.0
+imageio-ffmpeg>=0.5.1    # bundled ffmpeg: browser-playable H.264 alert clips
 scikit-learn
 matplotlib
+tqdm

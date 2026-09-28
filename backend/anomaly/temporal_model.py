@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 import os
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 logger = logging.getLogger("sentinel.anomaly.temporal")
 
@@ -45,16 +45,22 @@ class TemporalClassifier:
             self.device = torch.device(device)
             
         self.model = ActionLSTM(hidden_size=hidden_size, num_layers=num_layers).to(self.device)
-        
+        # Only a model with trained weights may raise alerts: a randomly initialised
+        # LSTM would emit meaningless "fighting"/"fallen" alerts.
+        self.loaded = False
+
         if model_path and os.path.exists(model_path):
             try:
-                self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+                state = torch.load(model_path, map_location=self.device, weights_only=True)
+                self.model.load_state_dict(state)
+                self.loaded = True
                 logger.info(f"Loaded temporal model from {model_path}")
             except Exception as e:
                 logger.error(f"Failed to load temporal model: {e}")
         else:
-            logger.warning("No temporal model found, starting with random initialization")
-            
+            logger.info("No trained temporal model at %s; behaviour classification disabled "
+                        "(rule-based fall/zone/loitering detection still runs)", model_path)
+
         self.model.eval()
 
     def predict(self, pose_sequence: np.ndarray) -> Optional[Tuple[str, float, np.ndarray]]:
@@ -83,6 +89,8 @@ class TemporalClassifier:
         return label, confidence, probs
 
     def is_anomaly(self, pose_sequence: np.ndarray, threshold=0.7) -> Optional[Tuple[str, float]]:
+        if not self.loaded:
+            return None
         res = self.predict(pose_sequence)
         if res:
             label, conf, _ = res

@@ -1,11 +1,24 @@
 {
+    "description": "Hallway workstation: people stop at a table one at a time. A 5-second time-limited zone around the table, loitering after 10 s, and a restricted staff exit. Zones placed from measured paths in walking_sample.mp4.",
     "zones": [
         {
-            "id": "restricted_hallway",
-            "name": "SECURE_CORRIDOR_A",
-            "polygon": [[0.0, 0.0], [0.3, 0.0], [0.3, 1.0], [0.0, 1.0]],
+            "id": "workstation",
+            "name": "Workstation (5s limit)",
+            "polygon": [[0.48, 0.40], [0.70, 0.40], [0.70, 0.64], [0.48, 0.64]],
+            "zone_type": "time_limited",
+            "time_limit": 5.0,
+            "active": true
+        },
+        {
+            "id": "staff_exit",
+            "name": "Staff-Only Exit",
+            "polygon": [[0.86, 0.38], [1.0, 0.38], [1.0, 0.62], [0.86, 0.62]],
             "zone_type": "restricted",
             "active": true
         }
-    ]
+    ],
+    "overrides": {
+        "loiter": {"time_threshold": 10.0, "movement_threshold": 60.0},
+        "zone": {"alert_cooldown": 20.0}
+    }
 }

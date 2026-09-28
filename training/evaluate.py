@@ -1,7 +1,6 @@
 import os
 import sys
 import argparse
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import logging
@@ -10,8 +9,9 @@ from sklearn.metrics import classification_report, confusion_matrix, ConfusionMa
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'backend')))
-from anomaly.temporal_model import ActionLSTM
-from training.train_fall_detector import PoseSequenceDataset, ACTION_LABELS
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+from anomaly.temporal_model import ActionLSTM  # noqa: E402
+from train_fall_detector import PoseSequenceDataset, ACTION_LABELS  # noqa: E402
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

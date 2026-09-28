@@ -3,15 +3,15 @@ Sentinel AI — Demo Recording Engine
 Processes a video through the full pipeline and outputs an annotated MP4 + JSON alert log.
 
 Usage:
-    python scripts/run_demo.py --source demo_videos/fall_sample.mp4
-    python scripts/run_demo.py --source demo_videos/fall_sample.mp4 --config config/demo/fall_demo.json --scenario "FALL DETECTION"
+    python scripts/run_demo.py --demo corridor            # downloads the sample if needed
+    python scripts/run_demo.py --demo hallway
+    python scripts/run_demo.py --source my_clip.mp4 --config config/demo/corridor_demo.json
 """
 import cv2
 import time
 import json
 import os
 import sys
-import numpy as np
 import subprocess
 import imageio_ffmpeg
 from datetime import datetime
@@ -20,8 +20,10 @@ from pathlib import Path
 # Add backend to path
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-from core.pipeline import SentinelPipeline, FrameResult
-from config.settings import SentinelConfig
+from core.pipeline import SentinelPipeline  # noqa: E402
+from config.settings import SentinelConfig  # noqa: E402
+from core.samples import SAMPLES, ensure_sample  # noqa: E402
+from main import apply_demo_config  # noqa: E402
 
 
 class DemoEngine:
@@ -38,36 +40,28 @@ class DemoEngine:
         self.output_path = output_path
         os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
         
-        # 1. Initialize Pipeline
-        self.sentinel_config = SentinelConfig()
-        self.sentinel_config.source = video_path
-        self.pipeline = SentinelPipeline(self.sentinel_config)
-        
-        # 2. Inject Zones
-        if config_path and os.path.exists(config_path):
-            with open(config_path, "r") as f:
-                d_cfg = json.load(f)
-                if "zones" in d_cfg:
-                    print(f"Injecting {len(d_cfg['zones'])} zones from {config_path}")
-                    self.pipeline.anomaly_engine.zone_monitor.zones = []
-                    for z in d_cfg["zones"]:
-                        from anomaly.zone_monitor import Zone
-                        zone_obj = Zone(
-                            id=z["id"],
-                            name=z["name"],
-                            polygon=z["polygon"],
-                            zone_type=z["zone_type"],
-                            time_limit=z.get("time_limit", 0),
-                            active=z.get("active", True)
-                        )
-                        self.pipeline.anomaly_engine.zone_monitor.zones.append(zone_obj)
-        
         self.cap = cv2.VideoCapture(video_path)
         if not self.cap.isOpened():
             raise RuntimeError(f"Could not open video source: {video_path}")
-            
         self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 25
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        native_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) // 2 * 2
+        native_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) // 2 * 2
+
+        # Same configuration path as the live server: .env, then the scenario file
+        # (zones + overrides). Frames are processed at the video's native size, and the
+        # zone monitor normalises coordinates against that size.
+        self.sentinel_config = SentinelConfig.from_env()
+        self.sentinel_config.source = video_path
+        self.sentinel_config.frame_width, self.sentinel_config.frame_height = native_w, native_h
+        self.sentinel_config.target_fps = int(round(self.fps))
+        if config_path and os.path.exists(config_path):
+            apply_demo_config(self.sentinel_config, config_path)
+            print(f"Loaded zones and overrides from {config_path}")
+        self.pipeline = SentinelPipeline(self.sentinel_config)
+        self.pipeline.clip_recorder.set_fps(self.fps)
+        # Real wall-clock timestamps (video timeline anchored at start) for the event DB.
+        self.time_origin = time.time()
         self.width = None
         self.height = None
         self.process = None
@@ -175,7 +169,7 @@ class DemoEngine:
 
     def run(self):
         print(f"\n{'=' * 60}")
-        print(f"  SENTINEL AI — Demo Pipeline")
+        print("  SENTINEL AI — Demo Pipeline")
         print(f"  Source:   {self.video_path}")
         print(f"  Output:   {self.output_path}")
         print(f"  Scenario: {self.scenario or 'General'}")
@@ -199,7 +193,7 @@ class DemoEngine:
                 if frame.shape[1] != self.width or frame.shape[0] != self.height:
                     frame = cv2.resize(frame, (self.width, self.height))
                 
-                timestamp = frame_idx / self.fps
+                timestamp = self.time_origin + frame_idx / self.fps
                 result = self.pipeline.process_frame(frame, timestamp)
                 annotated = result.annotated_frame
                 
@@ -219,10 +213,13 @@ class DemoEngine:
                     self.alerts_log.append({
                         "id": alert.alert_id,
                         "type": alert.alert_type,
+                        "video_time_s": round(frame_idx / self.fps, 2),
                         "timestamp": alert.timestamp,
                         "message": alert.message,
                         "severity": alert.severity,
-                        "track_id": alert.track_id
+                        "track_id": alert.track_id,
+                        "confidence": alert.confidence,
+                        "details": alert.details,
                     })
                 
                 frame_idx += 1
@@ -243,14 +240,17 @@ class DemoEngine:
             if self.process and self.process.stdin:
                 self.process.stdin.close()
                 self.process.wait()
-            
+            self.pipeline.clip_recorder.flush()  # finish clips of late alerts
+            if self.pipeline.webhook:
+                self.pipeline.webhook.close()
+
             # Save alerts log
             log_path = self.output_path.replace(".mp4", "_alerts.json")
             with open(log_path, "w") as f:
-                json.dump(self.alerts_log, f, indent=4)
+                json.dump(self.alerts_log, f, indent=4, default=str)
             
             elapsed = time.time() - start_time
-            print(f"\n  Demo capture complete.")
+            print("\n  Demo capture complete.")
             print(f"  Frames: {frame_idx} | Time: {elapsed:.1f}s | Alerts: {len(self.alerts_log)}")
             print(f"  Output: {self.output_path}")
             print(f"  Log:    {log_path}")
@@ -259,13 +259,21 @@ class DemoEngine:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Sentinel AI — Demo Recording Engine")
-    parser.add_argument("--source", required=True, help="Path to input video file")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--demo", choices=sorted(SAMPLES), help="Bundled sample scenario")
+    group.add_argument("--source", help="Path to input video file")
     parser.add_argument("--output", default=None, help="Path for output MP4 (auto-deduced if omitted)")
     parser.add_argument("--config", default=None, help="Path to demo config JSON with zone definitions")
     parser.add_argument("--sector", default="SECTOR-04-NORTH", help="Sector ID for HUD display")
     parser.add_argument("--scenario", default=None, help="Scenario label (e.g. 'FALL DETECTION')")
     args = parser.parse_args()
-    
+    if args.demo:
+        sample = SAMPLES[args.demo]
+        args.source = str(ensure_sample(args.demo))
+        args.config = args.config or str(sample.config_path)
+        args.scenario = args.scenario or args.demo.upper()
+        args.output = args.output or os.path.join("outputs", f"{args.demo}_demo.mp4")
+
     engine = DemoEngine(
         video_path=args.source,
         output_path=args.output,

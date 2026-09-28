@@ -8,7 +8,6 @@ Usage:
 import cv2
 import numpy as np
 import os
-import sys
 import subprocess
 import imageio_ffmpeg
 
@@ -206,7 +205,7 @@ def extract_gif(input_file, output_file, start_time=0, duration=5, width=800, fp
         size_kb = os.path.getsize(output_file) / 1024
         print(f"  GIF extracted: {output_file} ({size_kb:.0f} KB)")
     else:
-        print(f"  WARNING: GIF extraction failed")
+        print("  WARNING: GIF extraction failed")
 
 
 if __name__ == "__main__":
@@ -219,18 +218,14 @@ if __name__ == "__main__":
     
     # 1. Create Title Cards
     print("\n[1/4] Creating title cards...")
-    create_title_card("PERSISTENT TRACKING", "SENTINEL_AI // MULTI-TARGET_IDENTIFICATION", "outputs/temp/t1.mp4")
-    create_title_card("FALL DETECTION", "SENTINEL_AI // ANOMALY_ENGINE_ACTIVE", "outputs/temp/t2.mp4")
-    create_title_card("ZONE MONITORING", "SENTINEL_AI // PERIMETER_ENFORCEMENT", "outputs/temp/t3.mp4")
-    create_title_card("INTRUSION DETECTION", "SENTINEL_AI // SECTOR_BREACH_PROTOCOL", "outputs/temp/t4.mp4")
-    
-    # 2. Normalize demo segments
+    create_title_card("INTRUSION DETECTION", "SENTINEL_AI // RESTRICTED_DOORWAYS", "outputs/temp/t1.mp4")
+    create_title_card("ZONE TIME LIMITS + LOITERING", "SENTINEL_AI // DWELL_MONITORING", "outputs/temp/t2.mp4")
+
+    # 2. Normalize demo segments (produced by scripts/run_all_demos.py)
     print("\n[2/4] Normalizing segments...")
     demo_segments = {
-        "walking": ("outputs/walking_demo.mp4", "outputs/temp/n_walking.mp4"),
-        "fall": ("outputs/fall_demo.mp4", "outputs/temp/n_fall.mp4"),
-        "multi": ("outputs/multi_person_demo.mp4", "outputs/temp/n_multi.mp4"),
         "corridor": ("outputs/corridor_demo.mp4", "outputs/temp/n_corridor.mp4"),
+        "hallway": ("outputs/hallway_demo.mp4", "outputs/temp/n_hallway.mp4"),
     }
     
     for name, (src, dst) in demo_segments.items():
@@ -242,23 +237,19 @@ if __name__ == "__main__":
     # 3. Stitch reel
     print("\n[3/4] Stitching demo reel...")
     sequence = [
-        "outputs/temp/t1.mp4",
-        "outputs/temp/n_walking.mp4",
-        "outputs/temp/t2.mp4",
-        "outputs/temp/n_fall.mp4",
-        "outputs/temp/t3.mp4",
-        "outputs/temp/n_multi.mp4",
-        "outputs/temp/t4.mp4",
-        "outputs/temp/n_corridor.mp4",
+        p for p in [
+            "outputs/temp/t1.mp4",
+            "outputs/temp/n_corridor.mp4",
+            "outputs/temp/t2.mp4",
+            "outputs/temp/n_hallway.mp4",
+        ] if os.path.exists(p)
     ]
     stitch_videos(sequence, "assets/demo_reel.mp4")
-    
-    # 4. Extract GIF from fall detection
+
+    # 4. Extract a GIF around the first corridor intrusions
     print("\n[4/4] Extracting demo GIF...")
-    if os.path.exists("outputs/fall_demo.mp4"):
-        extract_gif("outputs/fall_demo.mp4", "assets/demo.gif", start_time=0, duration=5, width=800, fps=12)
-    elif os.path.exists("assets/demo_reel.mp4"):
-        extract_gif("assets/demo_reel.mp4", "assets/demo.gif", start_time=15, duration=5, width=800, fps=12)
+    if os.path.exists("outputs/corridor_demo.mp4"):
+        extract_gif("outputs/corridor_demo.mp4", "assets/demo.gif", start_time=16, duration=6, width=800, fps=12)
     
     print(f"\n{'=' * 60}")
     print("  Post-production complete!")

@@ -1,4 +1,3 @@
-import time
 import json
 import os
 import numpy as np
@@ -19,6 +18,13 @@ class Zone:
     def __post_init__(self):
         if self.required_ppe is None:
             self.required_ppe = []
+        self.polygon = [tuple(map(float, p)) for p in self.polygon]
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "Zone":
+        """Build a Zone from JSON, ignoring unknown keys (e.g. a UI colour)."""
+        known = {f for f in cls.__dataclass_fields__}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 @dataclass
 class ZoneViolation:
@@ -32,21 +38,52 @@ class ZoneViolation:
     details: str = ""
 
 class ZoneMonitor:
-    def __init__(self, zones_file="config/zones.json", frame_width=1280, frame_height=720):
+    # Movement (as a fraction of frame height) needed to count as travelling a direction.
+    DIRECTION_MIN_MOVE = 0.01
+
+    def __init__(self, zones_file="config/zones.json", frame_width=1280, frame_height=720,
+                 alert_cooldown: float = 30.0):
         # Resolve path relative to backend root if it's a relative path starting with config/
-        if zones_file == "config/zones.json":
+        if zones_file in ("config/zones.json", "backend/config/zones.json") and not os.path.exists(zones_file):
             zones_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "zones.json")
-            
+
         self.zones_file = zones_file
         self.frame_width = frame_width
         self.frame_height = frame_height
-        
+        self.alert_cooldown = alert_cooldown
+
         self.zones: List[Zone] = []
         self._load_or_create_zones()
-        
+
         # Track state
         self.track_zone_entry: Dict[Tuple[int, str], float] = {}
+        self.track_inside: Dict[Tuple[int, str], bool] = {}
+        self.last_alert: Dict[Tuple[int, str], float] = {}
         self.track_last_pos: Dict[int, np.ndarray] = {}
+
+    def set_frame_size(self, width: int, height: int):
+        """Zones are normalised (0-1); tell the monitor the real frame size."""
+        self.frame_width, self.frame_height = int(width), int(height)
+
+    def set_zones(self, zones: List[Zone]):
+        """Replace the active zones (e.g. from a demo config) without touching zones.json."""
+        self.zones = list(zones)
+        self.track_zone_entry.clear()
+        self.track_inside.clear()
+        self.last_alert.clear()
+
+    def _cooled_down(self, key, timestamp: float) -> bool:
+        last = self.last_alert.get(key)
+        return last is None or timestamp - last >= self.alert_cooldown
+
+    def prune(self, active_track_ids):
+        """Forget state for people who are no longer tracked."""
+        active = set(active_track_ids)
+        for d in (self.track_zone_entry, self.track_inside, self.last_alert):
+            for key in [k for k in d if k[0] not in active]:
+                del d[key]
+        for tid in [t for t in self.track_last_pos if t not in active]:
+            del self.track_last_pos[tid]
 
     def _load_or_create_zones(self):
         if not os.path.exists(self.zones_file):
@@ -60,7 +97,7 @@ class ZoneMonitor:
         else:
             with open(self.zones_file, "r") as f:
                 data = json.load(f)
-                self.zones = [Zone(**z) for z in data.get("zones", [])]
+                self.zones = [Zone.from_dict(z) for z in data.get("zones", [])]
 
     def _save_zones(self):
         with open(self.zones_file, "w") as f:
@@ -72,59 +109,63 @@ class ZoneMonitor:
         point = (norm_x, norm_y)
         
         violations = []
-        
+
         for zone in self.zones:
-            if not zone.active: continue
-            
+            if not zone.active:
+                continue
+
             is_inside = self._point_in_polygon(point, zone.polygon)
             key = (track_id, zone.id)
-            
-            if is_inside:
-                # 1. Restricted Entry
-                if zone.zone_type == "restricted":
-                    violations.append(ZoneViolation(
+            just_entered = is_inside and not self.track_inside.get(key, False)
+            self.track_inside[key] = is_inside
+
+            if not is_inside:
+                self.track_zone_entry.pop(key, None)  # reset timer on exit
+                continue
+            if just_entered:
+                self.track_zone_entry[key] = timestamp
+
+            violation = None
+            # 1. Restricted: alert on entry, then at most once per cooldown per person
+            #    (re-entries from boundary jitter don't re-alert).
+            if zone.zone_type == "restricted":
+                if self._cooled_down(key, timestamp):
+                    violation = ZoneViolation(
                         track_id=track_id, zone_id=zone.id, zone_name=zone.name,
                         violation_type="intrusion", timestamp=timestamp, confidence=0.9,
-                        details="Unauthorized entry into restricted area"
-                    ))
-                
-                # 2. Time Limited
-                elif zone.zone_type == "time_limited":
-                    if key not in self.track_zone_entry:
-                        self.track_zone_entry[key] = timestamp
-                    
-                    duration = timestamp - self.track_zone_entry[key]
-                    if duration > zone.time_limit:
-                        violations.append(ZoneViolation(
-                            track_id=track_id, zone_id=zone.id, zone_name=zone.name,
-                            violation_type="time_exceeded", timestamp=timestamp, confidence=0.8,
-                            duration=duration, details=f"Time limit exceeded ({duration:.1f}s > {zone.time_limit}s)"
-                        ))
-                
-                # 3. One Way
-                elif zone.zone_type == "one_way" and track_id in self.track_last_pos:
-                    last_pos = self.track_last_pos[track_id]
-                    dx = centroid[0] - last_pos[0]
-                    dy = centroid[1] - last_pos[1]
-                    
-                    is_wrong = False
-                    if zone.direction == "left" and dx > 2: is_wrong = True # Moving right
-                    elif zone.direction == "right" and dx < -2: is_wrong = True # Moving left
-                    elif zone.direction == "up" and dy > 2: is_wrong = True # Moving down
-                    elif zone.direction == "down" and dy < -2: is_wrong = True # Moving up
-                    
-                    if is_wrong:
-                        violations.append(ZoneViolation(
-                            track_id=track_id, zone_id=zone.id, zone_name=zone.name,
-                            violation_type="wrong_direction", timestamp=timestamp, confidence=0.7,
-                            details=f"Walking wrong way in one-way zone (dir: {zone.direction})"
-                        ))
-            else:
-                # Reset entry time if they exit
-                if key in self.track_zone_entry:
-                    del self.track_zone_entry[key]
-                    
-        self.track_last_pos[track_id] = centroid.copy()
+                        duration=timestamp - self.track_zone_entry[key],
+                        details="Unauthorized entry into restricted area")
+
+            # 2. Time limited: alert once the limit is passed, then once per cooldown.
+            elif zone.zone_type == "time_limited":
+                duration = timestamp - self.track_zone_entry[key]
+                if duration > zone.time_limit and self._cooled_down(key, timestamp):
+                    violation = ZoneViolation(
+                        track_id=track_id, zone_id=zone.id, zone_name=zone.name,
+                        violation_type="time_exceeded", timestamp=timestamp, confidence=0.8,
+                        duration=duration,
+                        details=f"Time limit exceeded ({duration:.1f}s > {zone.time_limit}s)")
+
+            # 3. One way: sustained movement against the allowed direction.
+            elif zone.zone_type == "one_way" and track_id in self.track_last_pos:
+                last_pos = self.track_last_pos[track_id]
+                dx = (centroid[0] - last_pos[0]) / self.frame_height
+                dy = (centroid[1] - last_pos[1]) / self.frame_height
+                m = self.DIRECTION_MIN_MOVE
+                wrong = {
+                    "left": dx > m, "right": dx < -m, "up": dy > m, "down": dy < -m,
+                }.get(zone.direction, False)
+                if wrong and self._cooled_down(key, timestamp):
+                    violation = ZoneViolation(
+                        track_id=track_id, zone_id=zone.id, zone_name=zone.name,
+                        violation_type="wrong_direction", timestamp=timestamp, confidence=0.7,
+                        details=f"Walking wrong way in one-way zone (allowed: {zone.direction})")
+
+            if violation:
+                self.last_alert[key] = timestamp
+                violations.append(violation)
+
+        self.track_last_pos[track_id] = np.array(centroid, dtype=float).copy()
         return violations
 
     @staticmethod
@@ -166,6 +207,9 @@ class ZoneMonitor:
                 "id": zone.id,
                 "name": zone.name,
                 "type": zone.zone_type,
-                "polygon": poly
+                "polygon": poly,
+                "polygon_normalized": [list(p) for p in zone.polygon],
+                "time_limit": zone.time_limit,
+                "direction": zone.direction,
             })
         return overlay_zones

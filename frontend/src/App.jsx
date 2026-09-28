@@ -1,4 +1,3 @@
-import React from 'react'
 import HUD from './components/HUD'
 
 function App() {

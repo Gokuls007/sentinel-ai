@@ -1,12 +1,11 @@
-import time
 import uuid
 import logging
+import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
-import numpy as np
 
-from .fall_detector import FallDetector, FallEvent
-from .zone_monitor import ZoneMonitor, ZoneViolation
+from .fall_detector import FallDetector
+from .zone_monitor import ZoneMonitor
 from .temporal_model import TemporalClassifier
 from core.pose_estimator import PoseResult, TrackFeatures
 from config.settings import SentinelConfig
@@ -52,18 +51,22 @@ class AnomalyEngine:
         self._alert_counter = 0
         
         # Instantiate detectors
+        f = config.fall
         self.fall_detector = FallDetector(
-            velocity_threshold=config.fall.velocity_threshold,
-            aspect_ratio_threshold=config.fall.aspect_ratio_threshold,
-            head_drop_ratio=config.fall.head_drop_ratio,
-            stillness_frames=config.fall.stillness_frames,
-            stillness_threshold=config.fall.stillness_threshold
+            descent_speed_threshold=f.descent_speed_threshold,
+            aspect_ratio_threshold=f.aspect_ratio_threshold,
+            head_drop_ratio=f.head_drop_ratio,
+            stillness_seconds=f.stillness_seconds,
+            stillness_speed_threshold=f.stillness_speed_threshold,
+            fallen_timeout_seconds=f.fallen_timeout_seconds,
+            cooldown_seconds=f.cooldown_seconds,
         )
-        
+
         self.zone_monitor = ZoneMonitor(
             zones_file=config.zone.zones_file,
             frame_width=config.frame_width,
-            frame_height=config.frame_height
+            frame_height=config.frame_height,
+            alert_cooldown=config.zone.alert_cooldown,
         )
         
         self.temporal_classifier = TemporalClassifier(
@@ -73,7 +76,8 @@ class AnomalyEngine:
             device=config.detector.device
         )
         
-        # Loitering state
+        # Loitering state: where each person has been hanging around, and since when.
+        self.loiter_anchor: Dict[int, Tuple[np.ndarray, float]] = {}
         self.last_loiter_alert: Dict[int, float] = {}
         self.loiter_cooldown = 60.0
 
@@ -81,23 +85,30 @@ class AnomalyEngine:
                 timestamp: float) -> List[AnomalyAlert]:
         
         alerts = []
-        
+
+        # Drop state for people who are no longer tracked (bounded memory).
+        self.fall_detector.prune(features.keys())
+        self.zone_monitor.prune(features.keys())
+        for state in (self.last_loiter_alert, self.loiter_anchor):
+            for tid in [t for t in state if t not in features]:
+                del state[tid]
+
         for tid, pose in poses.items():
             feat = features.get(tid)
             if not feat: continue
-            
-            # 1. Fall Detection
+
+            # 1. Fall Detection (one alert per fall, raised when the fall is confirmed)
             fall_reported = False
             fall_event = self.fall_detector.check(tid, pose, feat, timestamp)
-            if fall_event and fall_event.stage in ["fallen", "confirmed"]:
+            if fall_event:
                 fall_reported = True
                 alerts.append(self._create_alert(
                     alert_type="fall",
                     track_id=tid,
                     timestamp=timestamp,
                     confidence=fall_event.confidence,
-                    message=f"Fall detected ({fall_event.stage})",
-                    details=fall_event.signals
+                    message="Fall detected: person down and not moving",
+                    details={**fall_event.signals, "peak_descent_speed": fall_event.velocity}
                 ))
 
             # 2. Zone Monitoring
@@ -113,7 +124,7 @@ class AnomalyEngine:
                 ))
 
             # 3. Loitering
-            loiter_alert = self._check_loitering(tid, feat, timestamp)
+            loiter_alert = self._check_loitering(tid, pose.mid_hip, timestamp)
             if loiter_alert:
                 alerts.append(loiter_alert)
                 
@@ -121,7 +132,8 @@ class AnomalyEngine:
             # Get flat sequence (seq_len, 34)
             pose_seq = feat.get_flat_tensor()
             if pose_seq is not None:
-                action_res = self.temporal_classifier.is_anomaly(pose_seq)
+                action_res = self.temporal_classifier.is_anomaly(
+                    pose_seq, threshold=self.config.anomaly.anomaly_threshold)
                 if action_res:
                     label, conf = action_res
                     
@@ -140,26 +152,33 @@ class AnomalyEngine:
                     
         return alerts
 
-    def _check_loitering(self, track_id: int, features: TrackFeatures, 
+    def _check_loitering(self, track_id: int, position: np.ndarray,
                          timestamp: float) -> Optional[AnomalyAlert]:
-        
-        if (features.time_tracked > self.config.loiter.time_threshold and 
-            features.displacement < self.config.loiter.movement_threshold):
-            
-            if track_id in self.last_loiter_alert:
-                if timestamp - self.last_loiter_alert[track_id] < self.loiter_cooldown:
-                    return None
-            
-            self.last_loiter_alert[track_id] = timestamp
-            return self._create_alert(
-                alert_type="loitering",
-                track_id=track_id,
-                timestamp=timestamp,
-                confidence=0.7,
-                message="Loitering detected (stationary for long duration)",
-                details={"time_tracked": features.time_tracked, "displacement": features.displacement}
-            )
-        return None
+        """Alert when a person stays within movement_threshold px of one spot for
+        longer than time_threshold seconds. Moving further away restarts the clock."""
+        position = np.asarray(position, dtype=float)
+        anchor = self.loiter_anchor.get(track_id)
+        if anchor is None or np.linalg.norm(position - anchor[0]) > self.config.loiter.movement_threshold:
+            self.loiter_anchor[track_id] = (position.copy(), timestamp)
+            return None
+
+        dwell = timestamp - anchor[1]
+        if dwell <= self.config.loiter.time_threshold:
+            return None
+        last = self.last_loiter_alert.get(track_id)
+        if last is not None and timestamp - last < self.loiter_cooldown:
+            return None
+
+        self.last_loiter_alert[track_id] = timestamp
+        return self._create_alert(
+            alert_type="loitering",
+            track_id=track_id,
+            timestamp=timestamp,
+            confidence=0.7,
+            message=f"Loitering: stayed in one spot for {dwell:.0f}s",
+            details={"dwell_seconds": round(dwell, 1),
+                     "radius_px": self.config.loiter.movement_threshold},
+        )
 
     def _create_alert(self, alert_type: str, track_id: int, timestamp: float, 
                       confidence: float, message: str, details: Dict) -> AnomalyAlert:

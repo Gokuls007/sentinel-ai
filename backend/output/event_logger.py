@@ -2,7 +2,6 @@ import sqlite3
 import os
 import json
 import logging
-from datetime import datetime
 from anomaly.engine import AnomalyAlert
 from core.utils import to_serializable
 
@@ -12,9 +11,11 @@ class EventLogger:
     def __init__(self, db_path="data/events.db"):
         self.db_path = db_path
         db_dir = os.path.dirname(db_path)
-        if not os.path.exists(db_dir):
-            os.makedirs(db_dir)
-            
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        if os.path.isdir(db_path):
+            raise RuntimeError(f"DB_PATH {db_path!r} is a directory; it must be a file path")
+
         self._init_db()
 
     def _init_db(self):
@@ -66,22 +67,35 @@ class EventLogger:
         except Exception as e:
             logger.error(f"Failed to log event: {e}")
 
-    def get_events(self, limit=50, severity=None) -> list:
+    def get_events(self, limit=50, severity=None, alert_type=None) -> list:
         query = "SELECT * FROM events"
-        params = []
+        where, params = [], []
         if severity:
-            query += " WHERE severity = ?"
+            where.append("severity = ?")
             params.append(severity)
-        
+        if alert_type:
+            where.append("alert_type = ?")
+            params.append(alert_type)
+        if where:
+            query += " WHERE " + " AND ".join(where)
+
         query += " ORDER BY timestamp DESC LIMIT ?"
-        params.append(limit)
+        params.append(max(1, min(int(limit), 1000)))
         
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute(query, params)
-                return [dict(row) for row in cursor.fetchall()]
+                rows = []
+                for row in cursor.fetchall():
+                    item = dict(row)
+                    try:
+                        item["details"] = json.loads(item.get("details") or "{}")
+                    except ValueError:
+                        pass
+                    rows.append(item)
+                return rows
         except Exception as e:
             logger.error(f"Error fetching events: {e}")
             return []
