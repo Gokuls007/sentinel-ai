@@ -22,10 +22,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from anomaly.engine import AnomalyAlert
 from config.settings import SentinelConfig
 from core.pipeline import FrameResult, SentinelPipeline
 from core.utils import to_serializable
+from events import EVENT_TYPES, GROUP_BY_KEYS, SEVERITIES, Event, EventStore
 
 logger = logging.getLogger("sentinel.api")
 
@@ -66,25 +66,19 @@ def start_pipeline(cfg: SentinelConfig) -> SentinelPipeline:
     _configure_cors(cfg.cors_origins)
     pipeline = SentinelPipeline(cfg)
 
-    @pipeline.on_alert
-    def handle_alert(alert: AnomalyAlert):
-        alert_dict = to_serializable(alert.to_dict())
+    def handle_event(event: Event):
+        # Same alert shape the dashboard always received, plus event_id and camera_id.
+        alert_dict = to_serializable(event.to_alert_dict())
         with history_lock:
             alert_history.append(alert_dict)
-        message = json.dumps({"type": "alert", "alert": alert_dict})
-        _broadcast_alert(message)
+        _broadcast_alert(json.dumps({"type": "alert", "alert": alert_dict}))
+
+    pipeline.event_bus.subscribe("websocket", handle_event)
 
     @pipeline.on_frame
     def handle_frame(result: FrameResult):
         global _latest_message, _latest_frame_number
-        image = None
-        if result.annotated_frame is not None:
-            ok, buffer = cv2.imencode(".jpg", result.annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            if ok:
-                image = base64.b64encode(buffer).decode("ascii")
-        payload = result.to_dict()
-        payload["stats"]["fps"] = pipeline.stats["avg_fps"] if pipeline else 0
-        message = json.dumps({"type": "frame", "image": image, "data": payload})
+        message = encode_frame_message(result, pipeline.stats["avg_fps"] if pipeline else 0)
         with _frame_lock:  # serialise once; every client sends the same string
             _latest_message = message
             _latest_frame_number = result.frame_number
@@ -93,6 +87,18 @@ def start_pipeline(cfg: SentinelConfig) -> SentinelPipeline:
     thread.start()
     logger.info("Sentinel Pipeline started in background thread.")
     return pipeline
+
+
+def encode_frame_message(result: FrameResult, fps: float, jpeg_quality: int = 70) -> str:
+    """The WebSocket "frame" message: annotated JPEG (base64) plus the frame's data."""
+    image = None
+    if result.annotated_frame is not None:
+        ok, buffer = cv2.imencode(".jpg", result.annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+        if ok:
+            image = base64.b64encode(buffer).decode("ascii")
+    payload = result.to_dict()
+    payload["stats"]["fps"] = fps
+    return json.dumps({"type": "frame", "image": image, "data": payload})
 
 
 def _broadcast_alert(message: str):
@@ -140,12 +146,15 @@ def get_stats():
 def get_alerts(limit: int = Query(50, ge=1, le=1000), severity: str | None = None,
                alert_type: str | None = None):
     """Recent alerts, newest first, from the SQLite event log (survives restarts)."""
-    if pipeline:
-        events = pipeline.event_logger.get_events(limit=limit, severity=severity,
-                                                  alert_type=alert_type)
+    store = getattr(pipeline, "event_store", None) if pipeline else None
+    if store is not None:
+        events = store.query(limit=limit, severity=severity, types=[alert_type] if alert_type else None)
+        out = []
         for e in events:
-            e["has_clip"] = _clip_path(e["alert_id"]) is not None
-        return events
+            item = to_serializable(e.to_alert_dict())
+            item["has_clip"] = bool(e.alert_id) and _clip_path(e.alert_id) is not None
+            out.append(item)
+        return out
     with history_lock:
         data = list(alert_history)[::-1]
     if severity:
@@ -153,6 +162,120 @@ def get_alerts(limit: int = Query(50, ge=1, le=1000), severity: str | None = Non
     if alert_type:
         data = [a for a in data if a["alert_type"] == alert_type]
     return data[:limit]
+
+
+# --- Events (unified schema) ---------------------------------------------------------
+
+def _store() -> EventStore:
+    store = getattr(pipeline, "event_store", None) if pipeline else None
+    if store is None:
+        raise HTTPException(status_code=503, detail="Event store not initialized")
+    return store
+
+
+def _csv(value: str | None) -> list[str] | None:
+    return [v.strip() for v in value.split(",") if v.strip()] if value else None
+
+
+def _event_json(event: Event) -> dict:
+    item = to_serializable(event.to_dict())
+    has_clip = bool(event.alert_id) and _clip_path(event.alert_id) is not None
+    has_thumb = bool(event.alert_id) and _incident_file(event.alert_id, "snapshot", "jpg") is not None
+    item["clip_url"] = f"/api/clips/{event.alert_id}" if has_clip else None
+    item["thumbnail_url"] = f"/api/snapshots/{event.alert_id}" if has_thumb else None
+    return item
+
+
+def _event_filters(types, severity, camera_id, zone_id, track_id, start, end) -> dict:
+    return {
+        "types": _csv(types),
+        "severity": _csv(severity),
+        "camera_id": camera_id,
+        "zone_id": zone_id,
+        "track_id": track_id,
+        "start": start,
+        "end": end,
+    }
+
+
+@app.get("/api/events")
+def list_events(
+    types: str | None = Query(None, description="Comma-separated event types"),
+    severity: str | None = Query(None, description="Comma-separated severities"),
+    camera_id: str | None = None,
+    zone_id: str | None = None,
+    track_id: int | None = None,
+    start: float | None = Query(None, description="Unix seconds; events overlapping [start, end]"),
+    end: float | None = None,
+    limit: int = Query(50, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    """Events in the unified schema, newest first, with paging and filters."""
+    store = _store()
+    filters = _event_filters(types, severity, camera_id, zone_id, track_id, start, end)
+    return {
+        "total": store.total(**filters),
+        "events": [_event_json(e) for e in store.query(limit=limit, offset=offset, **filters)],
+    }
+
+
+@app.get("/api/events/stats")
+def event_stats(
+    group_by: str = Query("type", description=f"One of: {', '.join(GROUP_BY_KEYS)}"),
+    types: str | None = None,
+    severity: str | None = None,
+    camera_id: str | None = None,
+    zone_id: str | None = None,
+    start: float | None = None,
+    end: float | None = None,
+):
+    """Event counts grouped by type, severity, zone, camera, hour of day, hour bucket or day."""
+    if group_by not in GROUP_BY_KEYS:
+        raise HTTPException(status_code=422, detail=f"group_by must be one of {list(GROUP_BY_KEYS)}")
+    filters = _event_filters(types, severity, camera_id, zone_id, None, start, end)
+    return {"group_by": group_by, "counts": _store().count(group_by, **filters)}
+
+
+@app.get("/api/events/{event_id}")
+def get_event(event_id: int):
+    event = _store().get(event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return _event_json(event)
+
+
+@app.get("/api/meta")
+def get_meta():
+    """Values for filter dropdowns and the Settings page (never includes secrets)."""
+    p = _require_pipeline()
+    store = _store()
+    n = p.config.notifications
+    return to_serializable({
+        "camera_id": p.config.camera_id,
+        "cameras": sorted(set(store.distinct("camera_id")) | {p.config.camera_id}),
+        "source": p.config.source,
+        "event_types": list(EVENT_TYPES),
+        "severities": list(SEVERITIES),
+        "zones": [
+            {"id": z["id"], "name": z["name"], "type": z["type"], "time_limit": z.get("time_limit"),
+             "direction": z.get("direction")}
+            for z in p.anomaly_engine.zone_overlay_data
+        ],
+        "notifications": {
+            "channels": [x.name for x in p.notifier.notifiers],
+            "telegram": n.telegram_enabled,
+            "email": n.email_enabled,
+            "webhook": bool(p.config.output.webhook_url),
+            "debounce_s": n.debounce_s,
+            "min_severity": n.min_severity,
+        },
+        "thresholds": {
+            "detection_confidence": p.config.detector.confidence_threshold,
+            "fall": vars(p.config.fall),
+            "loiter": vars(p.config.loiter),
+            "zone_alert_cooldown_s": p.config.zone.alert_cooldown,
+        },
+    })
 
 
 @app.get("/api/zones")

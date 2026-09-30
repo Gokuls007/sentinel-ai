@@ -37,5 +37,8 @@ def test_corridor_sample_produces_door_intrusions(tmp_config):
     types = [a.alert_type for a in alerts]
     assert types.count("zone_intrusion") >= 2
     assert "fall" not in types                       # nobody falls in this clip
-    events = pipeline.event_logger.get_events(limit=100)
-    assert len(events) == len(alerts)
+    assert pipeline.event_store.total() == len(alerts)
+    stored = pipeline.event_store.query(limit=100)
+    assert {e.alert_id for e in stored} == {a.alert_id for a in alerts}
+    assert all(e.camera_id == tmp_config.camera_id for e in stored)
+    assert all(e.thumbnail_path for e in stored)  # the snapshot written at alert time

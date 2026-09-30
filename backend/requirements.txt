@@ -13,3 +13,4 @@ imageio-ffmpeg>=0.5.1    # bundled ffmpeg: browser-playable H.264 alert clips
 scikit-learn
 matplotlib
 tqdm
+requests>=2.31          # Telegram notifications

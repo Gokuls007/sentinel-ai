@@ -122,6 +122,12 @@ class ClipRecorder:
                 self._active.append(rec)
         return clip_path
 
+    def snapshot_path(self, alert_id: str) -> str | None:
+        """Where ``save_clip`` wrote the alert's JPEG snapshot (None if it wasn't written)."""
+        safe_id = "".join(c for c in alert_id if c.isalnum() or c in "-_")
+        path = os.path.join(self.clips_dir, safe_id, f"snapshot_{safe_id}.jpg")
+        return path.replace("\\", "/") if os.path.isfile(path) else None
+
     def flush(self, timeout: float = 30.0):
         """Finish all clips now (e.g. at shutdown or the end of a video)."""
         with self._lock:

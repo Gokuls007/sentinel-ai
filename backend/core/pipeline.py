@@ -9,9 +9,9 @@ import numpy as np
 
 from anomaly.engine import AnomalyEngine
 from config.settings import SentinelConfig
+from events import Event, EventBus, EventStore
+from notifications import NotificationDispatcher, build_notifiers
 from output.clip_recorder import ClipRecorder
-from output.event_logger import EventLogger
-from output.webhook import WebhookNotifier
 
 from .detector import Detector, FrameDetections
 from .pose_estimator import PoseEstimator, PoseResult
@@ -32,6 +32,10 @@ class FrameResult:
     processing_time_ms: float = 0.0
     total_alerts: int = 0
     frame_number: int = 0
+    # Per-layer wall time for this frame (ms). Detection and tracking are one ultralytics call
+    # (model.track), so they are timed together as "detect_track".
+    timings_ms: dict[str, float] = field(default_factory=dict)
+    events: list = field(default_factory=list)  # the Event published for each alert
 
     def to_dict(self) -> dict:
         data = {
@@ -45,7 +49,8 @@ class FrameResult:
                 "active_tracks": len(self.poses),
                 "alert_count": self.total_alerts,
                 "processing_time_ms": self.processing_time_ms
-            }
+            },
+            "timings_ms": self.timings_ms,
         }
         # The JPEG is sent once, as the top-level "image" field of the WebSocket message.
         return to_serializable(data)
@@ -62,7 +67,6 @@ class SentinelPipeline:
         self.total_alerts = 0
         self.start_time = time.time()
         
-        self._on_alert: Callable | None = None
         self._on_frame: Callable | None = None
         
         # Instantiate layers
@@ -91,20 +95,24 @@ class SentinelPipeline:
         
         self.anomaly_engine = AnomalyEngine(config)
         
-        # Output layer
-        self.event_logger = EventLogger(config.output.db_path)
+        # Output layer. Every alert becomes an Event published on the bus; the store
+        # subscribes first so later subscribers (notifications, WebSocket) see its id.
         self.clip_recorder = ClipRecorder(
             clips_dir=config.output.clips_dir,
             buffer_seconds=config.output.clip_duration,
             fps=config.target_fps
         )
-        self.webhook = WebhookNotifier(config.output.webhook_url) if config.output.webhook_url else None
+        self.event_store = EventStore(config.output.db_path)
+        self.event_bus = EventBus()
+        self.event_bus.subscribe("store", self.event_store.emit)
+        self.notifier = NotificationDispatcher(
+            build_notifiers(config),
+            debounce_s=config.notifications.debounce_s,
+            min_severity=config.notifications.min_severity,
+        )
+        self.event_bus.subscribe("notifications", self.notifier.handle)
 
         logger.info("Pipeline initialized successfully")
-
-    def on_alert(self, callback: Callable):
-        self._on_alert = callback
-        return callback
 
     def on_frame(self, callback: Callable):
         self._on_frame = callback
@@ -112,39 +120,55 @@ class SentinelPipeline:
 
     def process_frame(self, frame: np.ndarray, timestamp: float) -> FrameResult:
         self.frame_count += 1
-        processing_start = time.time()
-        
-        # 1. Detection & Tracking
+        timings: dict[str, float] = {}
+        start = mark = time.perf_counter()
+
+        def lap(name: str) -> None:
+            nonlocal mark
+            now = time.perf_counter()
+            timings[name] = (now - mark) * 1000
+            mark = now
+
+        # 1. Detection & tracking (one ultralytics call)
         detections = self.detector.detect_and_track(frame)
-        
-        # 2. Pose Estimation
+        lap("detect_track")
+
+        # 2. Pose estimation
         person_detections = [d for d in detections.detections if d.class_name == "person" and d.track_id is not None]
         track_ids = [d.track_id for d in person_detections]
         bboxes = [d.bbox for d in person_detections]
         poses = self.pose_estimator.estimate(frame, track_ids, bboxes, timestamp)
-        
-        # 3. Anomaly Detection
+        lap("pose")
+
+        # 3. Analytics (fall, zones, loitering)
         all_features = self.pose_estimator.get_all_features()
         alerts = self.anomaly_engine.process(poses, all_features, timestamp)
-        
+        lap("analytics")
+
         # 4. Annotation (clips and snapshots use the annotated frame)
         annotated_frame = self._annotate_frame(frame.copy(), detections, poses, alerts)
+        lap("annotate")
 
-        # 5. Persistence & Callbacks
+        # 5. Events: clip + snapshot, then publish (store -> notifications -> WebSocket)
+        events = []
         for alert in alerts:
             self.total_alerts += 1
             # Forensic clip (pre + post alert) is encoded in the background.
             clip_path = self.clip_recorder.save_clip(alert.alert_id, alert.timestamp,
                                                      snapshot=annotated_frame)
-            alert.details = {**alert.details, "clip_path": clip_path.replace("\\", "/")}
-            self.event_logger.log_event(alert, clip_path)
-            if self.webhook:
-                self.webhook.send(to_serializable(alert.to_dict()))
-            if self._on_alert:
-                self._on_alert(alert)
+            clip_path = clip_path.replace("\\", "/") if clip_path else None
+            alert.details = {**alert.details, "clip_path": clip_path}
+            event = Event.from_alert(
+                alert,
+                camera_id=self.config.camera_id,
+                clip_path=clip_path,
+                thumbnail_path=self.clip_recorder.snapshot_path(alert.alert_id),
+            )
+            events.append(self.event_bus.publish(event))
         self.clip_recorder.add_frame(annotated_frame, timestamp)
+        lap("events_and_clips")
 
-        processing_time_ms = (time.time() - processing_start) * 1000
+        processing_time_ms = (time.perf_counter() - start) * 1000
         
         result = FrameResult(
             frame=frame,
@@ -155,12 +179,17 @@ class SentinelPipeline:
             annotated_frame=annotated_frame,
             processing_time_ms=processing_time_ms,
             total_alerts=self.total_alerts,
-            frame_number=self.frame_count
+            frame_number=self.frame_count,
+            timings_ms=timings,
+            events=events,
         )
-        
+
+        # 6. Streaming (JPEG encode + serialise for the dashboard), timed separately
         if self._on_frame:
+            stream_start = time.perf_counter()
             self._on_frame(result)
-            
+            timings["stream"] = (time.perf_counter() - stream_start) * 1000
+
         return result
 
     def _annotate_frame(self, frame, detections, poses, alerts) -> np.ndarray:
@@ -263,8 +292,7 @@ class SentinelPipeline:
     def stop(self):
         self.video_source.stop()
         self.clip_recorder.flush()
-        if self.webhook:
-            self.webhook.close()
+        self.notifier.close()
         uptime = time.time() - self.start_time
         logger.info(
             f"Pipeline stopped. Uptime: {uptime:.1f}s | Total Frames: {self.frame_count} "
@@ -280,5 +308,6 @@ class SentinelPipeline:
             "uptime_seconds": round(uptime, 1),
             "avg_fps": round(self.frame_count / uptime, 1) if uptime > 0 else 0,
             "source_stats": self.video_source.stats,
-            "active_tracks": len(self.pose_estimator.get_all_features())
+            "active_tracks": len(self.pose_estimator.get_all_features()),
+            "notifications": dict(self.notifier.stats),
         }

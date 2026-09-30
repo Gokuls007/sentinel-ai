@@ -1,9 +1,6 @@
-"""VideoSource (file timeline, EOF, looping), ClipRecorder, EventLogger, webhook."""
+"""VideoSource (file timeline, EOF, looping) and ClipRecorder."""
 
-import http.server
 import itertools
-import json
-import threading
 import time
 
 import cv2
@@ -12,8 +9,6 @@ import pytest
 
 from core.video_source import VideoSource
 from output.clip_recorder import ClipRecorder
-from output.event_logger import EventLogger
-from output.webhook import WebhookNotifier
 
 
 @pytest.fixture
@@ -102,47 +97,3 @@ def test_clip_playback_fps_follows_timestamps(tmp_path):
     cap = cv2.VideoCapture(path)
     assert cap.get(cv2.CAP_PROP_FPS) == pytest.approx(5, abs=0.5)
     cap.release()
-
-
-class _Alert:
-    def __init__(self, i):
-        self.alert_id, self.alert_type, self.track_id = f"ALT-{i}", "fall", i
-        self.timestamp, self.confidence, self.severity = float(i), 0.9, "critical"
-        self.message, self.details = "m", {"k": i}
-
-
-def test_event_logger_roundtrip_and_filters(tmp_path):
-    log = EventLogger(str(tmp_path / "new_dir" / "events.db"))
-    for i in range(3):
-        log.log_event(_Alert(i), "")
-    events = log.get_events(limit=2)
-    assert [e["alert_id"] for e in events] == ["ALT-2", "ALT-1"]
-    assert events[0]["details"] == {"k": 2}
-    assert log.get_events(severity="low") == []
-
-
-def test_event_logger_rejects_directory(tmp_path):
-    with pytest.raises(RuntimeError, match="is a directory"):
-        EventLogger(str(tmp_path))
-
-
-def test_webhook_posts_json():
-    received = []
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_POST(self):
-            received.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-            self.send_response(204)
-            self.end_headers()
-
-        def log_message(self, *args):
-            pass
-
-    httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    hook = WebhookNotifier(f"http://127.0.0.1:{httpd.server_port}/hook")
-    hook.send({"alert_id": "ALT-1", "severity": "high"})
-    hook.close()
-    httpd.shutdown()
-    assert received == [{"alert_id": "ALT-1", "severity": "high"}]
-    assert hook.sent == 1 and hook.failed == 0

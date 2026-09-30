@@ -78,6 +78,33 @@ class OutputConfig:
     clip_duration: int = 10
     webhook_url: str = ""
 
+
+@dataclass
+class NotificationConfig:
+    # At most one notification per (event type, track_id) within this many seconds.
+    debounce_s: float = 60.0
+    # Events below this severity are not sent (low | medium | high | critical).
+    min_severity: str = "medium"
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_to: list[str] = field(default_factory=list)
+    smtp_starttls: bool = True
+    smtp_ssl: bool = False
+
+    @property
+    def telegram_enabled(self) -> bool:
+        return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+    @property
+    def email_enabled(self) -> bool:
+        return bool(self.smtp_host and self.smtp_from and self.smtp_to)
+
+
 @dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
@@ -95,8 +122,10 @@ class SentinelConfig:
     anomaly: AnomalyConfig = field(default_factory=AnomalyConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    notifications: NotificationConfig = field(default_factory=NotificationConfig)
     
     source: str = "0"
+    camera_id: str = "cam-0"  # recorded on every event; one pipeline = one camera
     loop: bool = False  # restart video files when they end (demo / kiosk mode)
     target_fps: int = 25
     frame_width: int = 1280
@@ -152,6 +181,23 @@ class SentinelConfig:
         cfg.output.clips_dir = env("CLIPS_DIR", str, cfg.output.clips_dir)
         cfg.output.clip_duration = env("CLIP_DURATION", int, cfg.output.clip_duration)
         cfg.output.webhook_url = env("WEBHOOK_URL", str, cfg.output.webhook_url)
+        cfg.camera_id = env("CAMERA_ID", str, cfg.camera_id)
+
+        n = cfg.notifications
+        n.debounce_s = env("NOTIFY_DEBOUNCE_S", float, n.debounce_s)
+        n.min_severity = env("NOTIFY_MIN_SEVERITY", str, n.min_severity)
+        n.telegram_bot_token = env("TELEGRAM_BOT_TOKEN", str, n.telegram_bot_token)
+        n.telegram_chat_id = env("TELEGRAM_CHAT_ID", str, n.telegram_chat_id)
+        n.smtp_host = env("SMTP_HOST", str, n.smtp_host)
+        n.smtp_port = env("SMTP_PORT", int, n.smtp_port)
+        n.smtp_user = env("SMTP_USER", str, n.smtp_user)
+        n.smtp_password = env("SMTP_PASSWORD", str, n.smtp_password)
+        n.smtp_from = env("SMTP_FROM", str, n.smtp_from)
+        recipients = env("SMTP_TO", str, None)
+        if recipients:
+            n.smtp_to = [r.strip() for r in recipients.split(",") if r.strip()]
+        n.smtp_starttls = env("SMTP_STARTTLS", bool, n.smtp_starttls)
+        n.smtp_ssl = env("SMTP_SSL", bool, n.smtp_ssl)
 
         cfg.server.host = env("HOST", str, cfg.server.host)
         cfg.server.port = env("PORT", int, cfg.server.port)

@@ -112,3 +112,84 @@ def test_tracks_stats_zones_with_numpy_values(client, monkeypatch, tmp_path):
     assert track["track_id"] == 4 and track["speed"] == 5.0 and track["fall_state"] == "upright"
     assert client.get("/api/stats").json()["avg_fps"] == 17.5
     assert len(client.get("/api/zones").json()) == 3
+
+
+# --- unified events API ------------------------------------------------------------
+
+
+@pytest.fixture
+def events_client(client, monkeypatch, tmp_path, tmp_config):
+    from types import SimpleNamespace
+
+    from anomaly.zone_monitor import ZoneMonitor
+    from events import Event, EventStore
+    from notifications import NotificationDispatcher
+
+    store = EventStore(str(tmp_path / "ev.db"))
+    for i, (typ, sev, zone, ts) in enumerate(
+        [("zone_intrusion", "high", "lab", 1000.0), ("fall", "critical", None, 2000.0),
+         ("loitering", "low", "lab", 3000.0)], start=1):
+        store.emit(Event(type=typ, severity=sev, start_ts=ts, end_ts=ts, zone_id=zone,
+                         track_id=i, alert_id=f"ALT-{i:06d}", message=typ))
+    zones = ZoneMonitor(zones_file=str(tmp_path / "z.json"))
+    fake = SimpleNamespace(
+        event_store=store,
+        config=tmp_config,
+        notifier=NotificationDispatcher([]),
+        anomaly_engine=SimpleNamespace(zone_overlay_data=zones.get_zones_for_overlay()),
+    )
+    monkeypatch.setattr(server, "pipeline", fake)
+    return client
+
+
+def test_events_endpoint_filters_pages_and_links_media(events_client, tmp_config):
+    from pathlib import Path
+
+    d = Path(tmp_config.output.clips_dir) / "ALT-000002"
+    d.mkdir(parents=True)
+    (d / "clip_ALT-000002.mp4").write_bytes(b"x")
+    (d / "snapshot_ALT-000002.jpg").write_bytes(b"x")
+
+    body = events_client.get("/api/events").json()
+    assert body["total"] == 3 and body["events"][0]["alert_id"] == "ALT-000003"
+    fall = events_client.get("/api/events", params={"types": "fall"}).json()["events"][0]
+    assert fall["clip_url"] == "/api/clips/ALT-000002" and fall["thumbnail_url"] == "/api/snapshots/ALT-000002"
+    assert events_client.get("/api/events", params={"zone_id": "lab", "severity": "low"}).json()["total"] == 1
+    assert events_client.get("/api/events", params={"start": 1500, "end": 2500}).json()["total"] == 1
+    page = events_client.get("/api/events", params={"limit": 1, "offset": 2}).json()
+    assert page["total"] == 3 and page["events"][0]["alert_id"] == "ALT-000001"
+    one = events_client.get(f"/api/events/{fall['id']}").json()
+    assert one["type"] == "fall"
+    assert events_client.get("/api/events/99999").status_code == 404
+
+
+def test_event_stats_and_meta(events_client):
+    assert events_client.get("/api/events/stats", params={"group_by": "type"}).json()["counts"] == {
+        "fall": 1, "loitering": 1, "zone_intrusion": 1}
+    assert events_client.get("/api/events/stats", params={"group_by": "zone"}).json()["counts"] == {
+        "": 1, "lab": 2}
+    assert events_client.get("/api/events/stats", params={"group_by": "evil"}).status_code == 422
+    meta = events_client.get("/api/meta").json()
+    assert meta["cameras"] == ["cam-0"] and "fall" in meta["event_types"]
+    assert meta["notifications"]["telegram"] is False
+    assert "telegram_bot_token" not in json.dumps(meta)  # never expose secrets
+
+
+def test_alerts_endpoint_keeps_its_old_shape_from_the_store(events_client):
+    alerts = events_client.get("/api/alerts").json()
+    assert [a["alert_type"] for a in alerts] == ["loitering", "fall", "zone_intrusion"]
+    first = alerts[-1]
+    assert first["details"]["zone_id"] == "lab" and first["timestamp"] == 1000.0 and first["has_clip"] is False
+    assert [a["alert_type"] for a in events_client.get("/api/alerts", params={"alert_type": "fall"}).json()] == ["fall"]
+
+
+def test_serialisation_keeps_booleans_and_handles_numpy_bools():
+    import numpy as np
+
+    from core.utils import to_serializable
+
+    out = to_serializable({"a": True, "b": np.bool_(False), "c": np.int64(3), "d": (1, np.float32(0.5))})
+    assert out == {"a": True, "b": False, "c": 3, "d": [1, 0.5]}
+    assert out["a"] is True and out["b"] is False
+    json.dumps(out)
+
