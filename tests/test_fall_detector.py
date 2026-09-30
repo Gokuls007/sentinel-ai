@@ -23,11 +23,11 @@ class Sim:
         self.events = []
 
     def hold(self, params, seconds):
-        for _ in range(int(round(seconds / DT))):
+        for _ in range(round(seconds / DT)):
             self.step(params)
 
     def move(self, start, end, seconds):
-        n = int(round(seconds / DT))
+        n = round(seconds / DT)
         for i in range(1, n + 1):
             self.step(lerp(start, end, i / n))
 

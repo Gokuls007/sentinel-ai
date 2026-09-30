@@ -23,7 +23,7 @@ jobs:
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements-dev.txt
       - name: Lint
-        run: ruff check backend scripts training tests --select F,E9
+        run: ruff check .   # rules in pyproject.toml
       - name: Unit tests
         run: pytest -q
       - name: End-to-end on the sample video (real models)

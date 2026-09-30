@@ -1,15 +1,16 @@
+import logging
+import os
+from typing import ClassVar
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-import os
-import logging
-from typing import Optional, Tuple
 
 logger = logging.getLogger("sentinel.anomaly.temporal")
 
 class ActionLSTM(nn.Module):
     def __init__(self, input_size=34, hidden_size=128, num_layers=2, num_classes=7):
-        super(ActionLSTM, self).__init__()
+        super().__init__()
         self.layer_norm = nn.LayerNorm(input_size)
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=0.3)
         self.dropout_lstm = nn.Dropout(0.3)
@@ -32,10 +33,12 @@ class ActionLSTM(nn.Module):
         return out
 
 class TemporalClassifier:
-    ACTION_LABELS = ["walking", "running", "standing", "sitting", "fallen", "fighting", "loitering"]
-    ANOMALY_ACTIONS = {"fallen", "fighting", "loitering"}
+    ACTION_LABELS: ClassVar[list[str]] = [
+        "walking", "running", "standing", "sitting", "fallen", "fighting", "loitering",
+    ]
+    ANOMALY_ACTIONS: ClassVar[set[str]] = {"fallen", "fighting", "loitering"}
 
-    def __init__(self, model_path: str = None, hidden_size=128, num_layers=2, 
+    def __init__(self, model_path: str | None = None, hidden_size=128, num_layers=2, 
                  device="auto", min_sequence_length=15):
         
         self.min_seq_len = min_sequence_length
@@ -63,7 +66,7 @@ class TemporalClassifier:
 
         self.model.eval()
 
-    def predict(self, pose_sequence: np.ndarray) -> Optional[Tuple[str, float, np.ndarray]]:
+    def predict(self, pose_sequence: np.ndarray) -> tuple[str, float, np.ndarray] | None:
         """
         pose_sequence: (seq_len, 34)
         Returns: (label, confidence, all_probs)
@@ -88,7 +91,7 @@ class TemporalClassifier:
         
         return label, confidence, probs
 
-    def is_anomaly(self, pose_sequence: np.ndarray, threshold=0.7) -> Optional[Tuple[str, float]]:
+    def is_anomaly(self, pose_sequence: np.ndarray, threshold=0.7) -> tuple[str, float] | None:
         if not self.loaded:
             return None
         res = self.predict(pose_sequence)

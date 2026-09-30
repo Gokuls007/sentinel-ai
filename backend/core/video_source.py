@@ -13,7 +13,6 @@ import logging
 import queue
 import threading
 import time
-from typing import Dict, Optional, Tuple
 
 import cv2
 from numpy import ndarray
@@ -40,10 +39,10 @@ class VideoSource:
         self.frame_height = frame_height
         self.reconnect_delay = reconnect_delay
 
-        self.frame_queue: "queue.Queue[Tuple[ndarray, float]]" = queue.Queue(maxsize=max(1, queue_size))
+        self.frame_queue: queue.Queue[tuple[ndarray, float]] = queue.Queue(maxsize=max(1, queue_size))
         self.stop_event = threading.Event()
-        self.capture_thread: Optional[threading.Thread] = None
-        self.cap: Optional[cv2.VideoCapture] = None
+        self.capture_thread: threading.Thread | None = None
+        self.cap: cv2.VideoCapture | None = None
 
         # Stats
         self.frames_read = 0
@@ -76,7 +75,7 @@ class VideoSource:
             self.cap.release()
         logger.info("VideoSource stopped")
 
-    def read(self) -> Optional[Tuple[ndarray, float]]:
+    def read(self) -> tuple[ndarray, float] | None:
         try:
             return self.frame_queue.get_nowait()
         except queue.Empty:
@@ -107,7 +106,7 @@ class VideoSource:
                     self.source_fps)
         return True
 
-    def _put(self, item: Tuple[ndarray, float]):
+    def _put(self, item: tuple[ndarray, float]):
         """Keep only the newest frames: drop the oldest when the consumer is behind."""
         while True:
             try:
@@ -194,7 +193,7 @@ class VideoSource:
         return capturing or not self.frame_queue.empty()
 
     @property
-    def stats(self) -> Dict:
+    def stats(self) -> dict:
         return {
             "frames_read": self.frames_read,
             "frames_dropped": self.frames_dropped,

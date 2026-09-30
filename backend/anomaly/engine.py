@@ -1,14 +1,16 @@
-import uuid
 import logging
-import numpy as np
+import uuid
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
+from typing import ClassVar
+
+import numpy as np
+
+from config.settings import SentinelConfig
+from core.pose_estimator import PoseResult, TrackFeatures
 
 from .fall_detector import FallDetector
-from .zone_monitor import ZoneMonitor
 from .temporal_model import TemporalClassifier
-from core.pose_estimator import PoseResult, TrackFeatures
-from config.settings import SentinelConfig
+from .zone_monitor import ZoneMonitor
 
 logger = logging.getLogger("sentinel.anomaly.engine")
 
@@ -21,9 +23,9 @@ class AnomalyAlert:
     confidence: float
     severity: str  # "low", "medium", "high", "critical"
     message: str
-    details: Dict = field(default_factory=dict)
+    details: dict = field(default_factory=dict)
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return {
             "alert_id": self.alert_id,
             "alert_type": self.alert_type,
@@ -36,7 +38,7 @@ class AnomalyAlert:
         }
 
 class AnomalyEngine:
-    SEVERITY_MAP = {
+    SEVERITY_MAP: ClassVar[dict[str, str]] = {
         "fall": "critical",
         "zone_intrusion": "high",
         "time_exceeded": "medium",
@@ -77,12 +79,12 @@ class AnomalyEngine:
         )
         
         # Loitering state: where each person has been hanging around, and since when.
-        self.loiter_anchor: Dict[int, Tuple[np.ndarray, float]] = {}
-        self.last_loiter_alert: Dict[int, float] = {}
+        self.loiter_anchor: dict[int, tuple[np.ndarray, float]] = {}
+        self.last_loiter_alert: dict[int, float] = {}
         self.loiter_cooldown = 60.0
 
-    def process(self, poses: Dict[int, PoseResult], features: Dict[int, TrackFeatures], 
-                timestamp: float) -> List[AnomalyAlert]:
+    def process(self, poses: dict[int, PoseResult], features: dict[int, TrackFeatures], 
+                timestamp: float) -> list[AnomalyAlert]:
         
         alerts = []
 
@@ -95,7 +97,8 @@ class AnomalyEngine:
 
         for tid, pose in poses.items():
             feat = features.get(tid)
-            if not feat: continue
+            if not feat:
+                continue
 
             # 1. Fall Detection (one alert per fall, raised when the fall is confirmed)
             fall_reported = False
@@ -115,7 +118,9 @@ class AnomalyEngine:
             zone_violations = self.zone_monitor.check(tid, pose.mid_hip, timestamp)
             for violation in zone_violations:
                 alerts.append(self._create_alert(
-                    alert_type="zone_intrusion" if violation.violation_type == "intrusion" else violation.violation_type,
+                    alert_type=(
+                        "zone_intrusion" if violation.violation_type == "intrusion" else violation.violation_type
+                    ),
                     track_id=tid,
                     timestamp=timestamp,
                     confidence=violation.confidence,
@@ -153,7 +158,7 @@ class AnomalyEngine:
         return alerts
 
     def _check_loitering(self, track_id: int, position: np.ndarray,
-                         timestamp: float) -> Optional[AnomalyAlert]:
+                         timestamp: float) -> AnomalyAlert | None:
         """Alert when a person stays within movement_threshold px of one spot for
         longer than time_threshold seconds. Moving further away restarts the clock."""
         position = np.asarray(position, dtype=float)
@@ -181,7 +186,7 @@ class AnomalyEngine:
         )
 
     def _create_alert(self, alert_type: str, track_id: int, timestamp: float, 
-                      confidence: float, message: str, details: Dict) -> AnomalyAlert:
+                      confidence: float, message: str, details: dict) -> AnomalyAlert:
         
         self._alert_counter += 1
         # Generates ALT-XXXXXX format
@@ -200,5 +205,5 @@ class AnomalyEngine:
         )
 
     @property
-    def zone_overlay_data(self) -> List[Dict]:
+    def zone_overlay_data(self) -> list[dict]:
         return self.zone_monitor.get_zones_for_overlay()

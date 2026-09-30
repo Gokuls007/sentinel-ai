@@ -72,7 +72,7 @@ def test_time_limited_alerts_after_limit_only(monitor):
 
 def test_time_limited_timer_resets_on_exit(monitor):
     use(monitor, zone_type="time_limited", time_limit=5.0)
-    alerts, t = run(monitor, [INSIDE] * 40 + [OUTSIDE] + [INSIDE] * 40)
+    alerts, _t = run(monitor, [INSIDE] * 40 + [OUTSIDE] + [INSIDE] * 40)
     assert alerts == []
 
 

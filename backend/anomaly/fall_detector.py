@@ -10,8 +10,6 @@ elapsed time, so thresholds work regardless of resolution, camera distance or FP
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional
-
 
 from core.pose_estimator import PoseResult, TrackFeatures
 
@@ -22,7 +20,7 @@ class FallEvent:
     timestamp: float
     confidence: float
     stage: str  # "confirmed"
-    signals: Dict[str, float]
+    signals: dict[str, float]
     head_y: float
     hip_y: float
     velocity: float  # descent speed that started the fall (body heights / s)
@@ -32,12 +30,12 @@ class FallEvent:
 @dataclass
 class _TrackState:
     state: str = "upright"
-    prev_hip_y: Optional[float] = None
-    prev_time: Optional[float] = None
-    upright_head_y: Optional[float] = None  # running estimate while standing
+    prev_hip_y: float | None = None
+    prev_time: float | None = None
+    upright_head_y: float | None = None  # running estimate while standing
     falling_since: float = 0.0
     fallen_since: float = 0.0
-    still_since: Optional[float] = None
+    still_since: float | None = None
     peak_descent: float = 0.0
     last_alert_time: float = field(default=-1e18)
 
@@ -61,7 +59,7 @@ class FallDetector:
         self.stillness_speed_threshold = stillness_speed_threshold
         self.fallen_timeout_seconds = fallen_timeout_seconds
         self.cooldown_seconds = cooldown_seconds
-        self.tracks: Dict[int, _TrackState] = {}
+        self.tracks: dict[int, _TrackState] = {}
 
     # -- public API ---------------------------------------------------------------------
 
@@ -70,7 +68,7 @@ class FallDetector:
         return st.state if st else self.UPRIGHT
 
     def check(self, track_id: int, pose: PoseResult, features: TrackFeatures,
-              timestamp: float) -> Optional[FallEvent]:
+              timestamp: float) -> FallEvent | None:
         """Advance the state machine for one person; returns an event on a confirmed fall."""
         st = self.tracks.setdefault(track_id, _TrackState())
         body_h = features.initial_standing_height
@@ -142,7 +140,7 @@ class FallDetector:
         st.prev_time = timestamp
 
     def _compute_signals(self, st: _TrackState, pose: PoseResult, body_h: float,
-                         timestamp: float) -> Dict[str, float]:
+                         timestamp: float) -> dict[str, float]:
         hip_y = float(pose.mid_hip[1])
         descent_speed = 0.0
         if st.prev_hip_y is not None and st.prev_time is not None:

@@ -1,17 +1,18 @@
+import argparse
+import logging
 import os
 import sys
-import argparse
-import torch
-from torch.utils.data import DataLoader
-import logging
+
 import matplotlib.pyplot as plt
-from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
+import torch
+from sklearn.metrics import ConfusionMatrixDisplay, classification_report, confusion_matrix
+from torch.utils.data import DataLoader
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'backend')))
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-from anomaly.temporal_model import ActionLSTM  # noqa: E402
-from train_fall_detector import PoseSequenceDataset, ACTION_LABELS  # noqa: E402
+from anomaly.temporal_model import ActionLSTM
+from train_fall_detector import ACTION_LABELS, PoseSequenceDataset
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -58,7 +59,7 @@ def evaluate(args):
     
     # Confusion Matrix
     cm = confusion_matrix(all_targets, all_preds)
-    fig, ax = plt.subplots(figsize=(10, 8))
+    _fig, ax = plt.subplots(figsize=(10, 8))
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=ACTION_LABELS)
     disp.plot(cmap='Blues', ax=ax, xticks_rotation=45)
     plt.title("Action Classification Confusion Matrix")

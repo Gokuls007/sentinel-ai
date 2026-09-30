@@ -7,7 +7,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "backend"))
 
-from core.pose_estimator import PoseResult, TrackFeatures  # noqa: E402
+from core.pose_estimator import PoseResult, TrackFeatures
 
 
 def make_pose(track_id=1, cx=320.0, top=200.0, w=60.0, h=180.0, head_visible=True,

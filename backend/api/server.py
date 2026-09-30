@@ -8,13 +8,13 @@ never lost to frame-rate throttling.
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Dict, Optional
 
 import cv2
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -33,16 +33,16 @@ MAX_FEED_FPS = 15
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 # --- Global state (written by the pipeline thread, read by async handlers) ---
-pipeline: Optional[SentinelPipeline] = None
-config: Optional[SentinelConfig] = None
+pipeline: SentinelPipeline | None = None
+config: SentinelConfig | None = None
 alert_history: deque = deque(maxlen=1000)
 history_lock = threading.Lock()
-_latest_message: Optional[str] = None  # pre-serialised "frame" message
+_latest_message: str | None = None  # pre-serialised "frame" message
 _latest_frame_number = -1
 _frame_lock = threading.Lock()
-_clients: Dict[WebSocket, asyncio.Queue] = {}
+_clients: dict[WebSocket, asyncio.Queue] = {}
 _clients_lock = threading.Lock()
-_loop: Optional[asyncio.AbstractEventLoop] = None
+_loop: asyncio.AbstractEventLoop | None = None
 
 app = FastAPI(title="Sentinel AI API", version="1.3.0")
 
@@ -106,10 +106,8 @@ def _broadcast_alert(message: str):
 
 def _offer(q: asyncio.Queue, message: str):
     if q.full():  # a stalled client must not grow memory without bound
-        try:
+        with contextlib.suppress(asyncio.QueueEmpty):
             q.get_nowait()
-        except asyncio.QueueEmpty:
-            pass
     q.put_nowait(message)
 
 
@@ -139,8 +137,8 @@ def get_stats():
 
 
 @app.get("/api/alerts")
-def get_alerts(limit: int = Query(50, ge=1, le=1000), severity: Optional[str] = None,
-               alert_type: Optional[str] = None):
+def get_alerts(limit: int = Query(50, ge=1, le=1000), severity: str | None = None,
+               alert_type: str | None = None):
     """Recent alerts, newest first, from the SQLite event log (survives restarts)."""
     if pipeline:
         events = pipeline.event_logger.get_events(limit=limit, severity=severity,
@@ -177,7 +175,7 @@ def get_tracks():
     return to_serializable(output)
 
 
-def _incident_file(alert_id: str, prefix: str, ext: str) -> Optional[Path]:
+def _incident_file(alert_id: str, prefix: str, ext: str) -> Path | None:
     """Resolve a clip/snapshot path for an alert id, refusing anything outside clips_dir."""
     if not config or not alert_id or not all(c.isalnum() or c in "-_" for c in alert_id):
         return None
@@ -188,7 +186,7 @@ def _incident_file(alert_id: str, prefix: str, ext: str) -> Optional[Path]:
     return path
 
 
-def _clip_path(alert_id: str) -> Optional[Path]:
+def _clip_path(alert_id: str) -> Path | None:
     return _incident_file(alert_id, "clip", "mp4")
 
 

@@ -1,13 +1,15 @@
 import time
+from dataclasses import dataclass, field
+from typing import ClassVar
+
 import numpy as np
 import torch
-from dataclasses import dataclass, field
-from typing import List, Dict, Optional
 from ultralytics import YOLO
+
 
 @dataclass
 class Detection:
-    track_id: Optional[int]
+    track_id: int | None
     bbox: np.ndarray  # [x1, y1, x2, y2]
     confidence: float
     class_id: int
@@ -27,7 +29,7 @@ class Detection:
         h = self.height
         return self.width / h if h > 0 else 0.0
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return {
             "track_id": self.track_id,
             "bbox": self.bbox.tolist(),
@@ -42,16 +44,16 @@ class Detection:
 
 @dataclass
 class FrameDetections:
-    detections: List[Detection] = field(default_factory=list)
+    detections: list[Detection] = field(default_factory=list)
     person_count: int = 0
     vehicle_count: int = 0
     inference_time_ms: float = 0.0
 
     @property
-    def persons(self) -> List[Detection]:
+    def persons(self) -> list[Detection]:
         return [d for d in self.detections if d.class_name == "person"]
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return {
             "detections": [d.to_dict() for d in self.detections],
             "person_count": self.person_count,
@@ -60,17 +62,17 @@ class FrameDetections:
         }
 
 class Detector:
-    COCO_NAMES = {
+    COCO_NAMES: ClassVar[dict[int, str]] = {
         0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 
         5: "bus", 7: "truck", 24: "backpack", 26: "handbag", 27: "suitcase"
     }
 
     def __init__(self, model_path: str = "yolov8n.pt", confidence_threshold: float = 0.5, 
-                 iou_threshold: float = 0.45, device: str = "auto", classes: List[int] = [0]):
+                 iou_threshold: float = 0.45, device: str = "auto", classes: list[int] | None = None):
         
         self.conf_threshold = confidence_threshold
         self.iou_threshold = iou_threshold
-        self.classes = classes
+        self.classes = classes if classes is not None else [0]  # default: people only
         
         # Auto-detect device
         if device == "auto":

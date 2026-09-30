@@ -1,7 +1,7 @@
 import json
 import os
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+
 
 @dataclass
 class DetectorConfig:
@@ -11,7 +11,7 @@ class DetectorConfig:
     confidence_threshold: float = 0.5
     iou_threshold: float = 0.45
     device: str = "auto"
-    classes: List[int] = field(default_factory=lambda: [0])  # person only
+    classes: list[int] = field(default_factory=lambda: [0])  # person only
 
 @dataclass
 class TrackerConfig:
@@ -47,11 +47,11 @@ class ZoneConfig:
     # Minimum time between repeated alerts for the same person in the same zone.
     alert_cooldown: float = 30.0
     
-    def load_zones(self) -> List[Dict]:
+    def load_zones(self) -> list[dict]:
         if not os.path.exists(self.zones_file):
             print(f"DEBUG: Zones file not found at {self.zones_file}")
             return []
-        with open(self.zones_file, "r") as f:
+        with open(self.zones_file) as f:
             data = json.load(f)
             return data.get("zones", [])
 
@@ -66,7 +66,7 @@ class AnomalyConfig:
     lstm_hidden_size: int = 128
     lstm_num_layers: int = 2
     num_action_classes: int = 7
-    action_labels: List[str] = field(default_factory=lambda: [
+    action_labels: list[str] = field(default_factory=lambda: [
         "walking", "running", "standing", "sitting", "fallen", "fighting", "loitering"
     ])
     anomaly_threshold: float = 0.7
@@ -101,13 +101,13 @@ class SentinelConfig:
     target_fps: int = 25
     frame_width: int = 1280
     frame_height: int = 720
-    cors_origins: List[str] = field(default_factory=lambda: [
+    cors_origins: list[str] = field(default_factory=lambda: [
         "http://localhost:5173", "http://127.0.0.1:5173",
         "http://localhost:8000", "http://127.0.0.1:8000",
     ])
 
     @classmethod
-    def from_env(cls, env_file: Optional[str] = ".env") -> "SentinelConfig":
+    def from_env(cls, env_file: str | None = ".env") -> "SentinelConfig":
         """Build a config from environment variables (and an optional .env file).
 
         Every variable documented in .env.example is honoured; anything unset keeps

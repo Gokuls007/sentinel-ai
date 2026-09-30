@@ -1,20 +1,22 @@
-import time
-import cv2
 import logging
-import numpy as np
-from typing import List, Dict, Optional, Callable
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import ClassVar
 
-from .video_source import VideoSource
-from .detector import Detector, FrameDetections
-from .pose_estimator import PoseEstimator, PoseResult
+import cv2
+import numpy as np
+
 from anomaly.engine import AnomalyEngine
 from config.settings import SentinelConfig
-from output.event_logger import EventLogger
 from output.clip_recorder import ClipRecorder
+from output.event_logger import EventLogger
 from output.webhook import WebhookNotifier
 
+from .detector import Detector, FrameDetections
+from .pose_estimator import PoseEstimator, PoseResult
 from .utils import to_serializable
+from .video_source import VideoSource
 
 logger = logging.getLogger(__name__)
 
@@ -23,15 +25,15 @@ class FrameResult:
     frame: np.ndarray
     timestamp: float
     detections: FrameDetections
-    poses: Dict[int, PoseResult]
-    alerts: List = field(default_factory=list) # Will hold AnomalyAlert later
-    annotated_frame: Optional[np.ndarray] = None
-    annotated_frame_base64: Optional[str] = None # For pre-optimized transmission
+    poses: dict[int, PoseResult]
+    alerts: list = field(default_factory=list) # Will hold AnomalyAlert later
+    annotated_frame: np.ndarray | None = None
+    annotated_frame_base64: str | None = None # For pre-optimized transmission
     processing_time_ms: float = 0.0
     total_alerts: int = 0
     frame_number: int = 0
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         data = {
             "timestamp": self.timestamp,
             "frame_number": self.frame_number,
@@ -49,7 +51,7 @@ class FrameResult:
         return to_serializable(data)
 
 class SentinelPipeline:
-    SKELETON = [
+    SKELETON: ClassVar[list[tuple[int, int]]] = [
         (0, 1), (0, 2), (1, 3), (2, 4), (5, 6), (5, 7), (7, 9), (6, 8), 
         (8, 10), (5, 11), (6, 12), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16)
     ]
@@ -60,8 +62,8 @@ class SentinelPipeline:
         self.total_alerts = 0
         self.start_time = time.time()
         
-        self._on_alert: Optional[Callable] = None
-        self._on_frame: Optional[Callable] = None
+        self._on_alert: Callable | None = None
+        self._on_frame: Callable | None = None
         
         # Instantiate layers
         self.video_source = VideoSource(
@@ -264,10 +266,13 @@ class SentinelPipeline:
         if self.webhook:
             self.webhook.close()
         uptime = time.time() - self.start_time
-        logger.info(f"Pipeline stopped. Uptime: {uptime:.1f}s | Total Frames: {self.frame_count} | Total Alerts: {self.total_alerts}")
+        logger.info(
+            f"Pipeline stopped. Uptime: {uptime:.1f}s | Total Frames: {self.frame_count} "
+            f"| Total Alerts: {self.total_alerts}"
+        )
 
     @property
-    def stats(self) -> Dict:
+    def stats(self) -> dict:
         uptime = time.time() - self.start_time
         return {
             "frames_processed": self.frame_count,

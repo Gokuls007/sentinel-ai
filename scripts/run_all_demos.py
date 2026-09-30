@@ -15,7 +15,7 @@ SCRIPTS = os.path.join(ROOT, "scripts")
 PYTHON = sys.executable
 
 sys.path.append(os.path.join(ROOT, "backend"))
-from core.samples import SAMPLES  # noqa: E402
+from core.samples import SAMPLES
 
 SECTORS = {"corridor": "SECTOR-01-CORRIDOR", "hallway": "SECTOR-02-HALLWAY"}
 

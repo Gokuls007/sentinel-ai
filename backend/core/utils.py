@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def to_serializable(obj):
     """
     Recursively converts numpy types to standard Python types for JSON serialization.

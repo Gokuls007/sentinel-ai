@@ -1,0 +1,30 @@
+# Tool configuration only (the app is run from backend/, not installed as a package).
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["backend", "tests", "scripts", "training"]
+extend-exclude = ["frontend", "data", "outputs", "demo_videos"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # unicode look-alikes in UI strings and docstrings are intentional
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Scripts put backend/ on sys.path before importing it.
+"scripts/*.py" = ["E402"]
+"training/*.py" = ["E402"]
+"tests/*.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["anomaly", "api", "config", "core", "output", "events", "notifications", "main", "conftest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: runs the real YOLO models on a sample video (downloads weights/sample on first run); select with -m slow",
+]
+filterwarnings = ["ignore::DeprecationWarning"]

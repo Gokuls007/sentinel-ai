@@ -1,11 +1,12 @@
-import os
 import argparse
+import logging
+import os
+from collections import defaultdict
+
 import cv2
 import numpy as np
-from ultralytics import YOLO
 from tqdm import tqdm
-import logging
-from collections import defaultdict
+from ultralytics import YOLO
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -23,7 +24,7 @@ def extract_windows(sequences, seq_length, overlap):
     
     windows = []
     step = int(seq_length * (1 - overlap))
-    if step < 1: step = 1
+    step = max(step, 1)
     
     for i in range(0, len(sequences) - seq_length + 1, step):
         window = sequences[i:i+seq_length]
@@ -103,7 +104,8 @@ def process_videos(input_dir, output_dir, seq_length, overlap, augment=False):
 def main():
     parser = argparse.ArgumentParser(description="Sentinel AI Data Preparation")
     parser.add_argument("--input_dir", type=str, default="data/raw_videos", help="Directory with labeled video folders")
-    parser.add_argument("--output_dir", type=str, default="data/poses", help="Directory to save extracted .npy sequences")
+    parser.add_argument("--output_dir", type=str, default="data/poses",
+                        help="Directory to save extracted .npy sequences")
     parser.add_argument("--seq_length", type=int, default=30, help="Number of frames per sequence")
     parser.add_argument("--overlap", type=float, default=0.5, help="Overlap between sliding windows (0-1)")
     parser.add_argument("--augment", action="store_true", help="Enable data augmentation (Horizontal Flip)")

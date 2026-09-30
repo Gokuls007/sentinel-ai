@@ -1,18 +1,19 @@
 import json
 import os
+from dataclasses import asdict, dataclass
+
 import numpy as np
-from dataclasses import dataclass, asdict
-from typing import List, Dict, Optional, Tuple
+
 
 @dataclass
 class Zone:
     id: str
     name: str
-    polygon: List[Tuple[float, float]] # Normalized 0-1
+    polygon: list[tuple[float, float]] # Normalized 0-1
     zone_type: str # "restricted", "time_limited", "one_way"
     time_limit: float = 0.0
-    required_ppe: List[str] = None
-    direction: Optional[str] = None # "left", "right", "up", "down"
+    required_ppe: list[str] = None
+    direction: str | None = None # "left", "right", "up", "down"
     active: bool = True
 
     def __post_init__(self):
@@ -21,7 +22,7 @@ class Zone:
         self.polygon = [tuple(map(float, p)) for p in self.polygon]
 
     @classmethod
-    def from_dict(cls, data: Dict) -> "Zone":
+    def from_dict(cls, data: dict) -> "Zone":
         """Build a Zone from JSON, ignoring unknown keys (e.g. a UI colour)."""
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in data.items() if k in known})
@@ -52,20 +53,20 @@ class ZoneMonitor:
         self.frame_height = frame_height
         self.alert_cooldown = alert_cooldown
 
-        self.zones: List[Zone] = []
+        self.zones: list[Zone] = []
         self._load_or_create_zones()
 
         # Track state
-        self.track_zone_entry: Dict[Tuple[int, str], float] = {}
-        self.track_inside: Dict[Tuple[int, str], bool] = {}
-        self.last_alert: Dict[Tuple[int, str], float] = {}
-        self.track_last_pos: Dict[int, np.ndarray] = {}
+        self.track_zone_entry: dict[tuple[int, str], float] = {}
+        self.track_inside: dict[tuple[int, str], bool] = {}
+        self.last_alert: dict[tuple[int, str], float] = {}
+        self.track_last_pos: dict[int, np.ndarray] = {}
 
     def set_frame_size(self, width: int, height: int):
         """Zones are normalised (0-1); tell the monitor the real frame size."""
         self.frame_width, self.frame_height = int(width), int(height)
 
-    def set_zones(self, zones: List[Zone]):
+    def set_zones(self, zones: list[Zone]):
         """Replace the active zones (e.g. from a demo config) without touching zones.json."""
         self.zones = list(zones)
         self.track_zone_entry.clear()
@@ -89,13 +90,16 @@ class ZoneMonitor:
         if not os.path.exists(self.zones_file):
             os.makedirs(os.path.dirname(self.zones_file), exist_ok=True)
             self.zones = [
-                Zone("restricted_1", "Restricted Area", [(0.0, 0.0), (0.25, 0.0), (0.25, 1.0), (0.0, 1.0)], "restricted"),
-                Zone("dock_1", "Loading Dock", [(0.75, 0.0), (1.0, 0.0), (1.0, 1.0), (0.75, 1.0)], "time_limited", time_limit=10.0),
-                Zone("exit_1", "One-Way Exit", [(0.4, 0.8), (0.6, 0.8), (0.6, 1.0), (0.4, 1.0)], "one_way", direction="down")
+                Zone("restricted_1", "Restricted Area",
+                     [(0.0, 0.0), (0.25, 0.0), (0.25, 1.0), (0.0, 1.0)], "restricted"),
+                Zone("dock_1", "Loading Dock",
+                     [(0.75, 0.0), (1.0, 0.0), (1.0, 1.0), (0.75, 1.0)], "time_limited", time_limit=10.0),
+                Zone("exit_1", "One-Way Exit",
+                     [(0.4, 0.8), (0.6, 0.8), (0.6, 1.0), (0.4, 1.0)], "one_way", direction="down"),
             ]
             self._save_zones()
         else:
-            with open(self.zones_file, "r") as f:
+            with open(self.zones_file) as f:
                 data = json.load(f)
                 self.zones = [Zone.from_dict(z) for z in data.get("zones", [])]
 
@@ -103,7 +107,7 @@ class ZoneMonitor:
         with open(self.zones_file, "w") as f:
             json.dump({"zones": [asdict(z) for z in self.zones]}, f, indent=4)
 
-    def check(self, track_id: int, centroid: np.ndarray, timestamp: float) -> List[ZoneViolation]:
+    def check(self, track_id: int, centroid: np.ndarray, timestamp: float) -> list[ZoneViolation]:
         norm_x = centroid[0] / self.frame_width
         norm_y = centroid[1] / self.frame_height
         point = (norm_x, norm_y)
@@ -169,20 +173,18 @@ class ZoneMonitor:
         return violations
 
     @staticmethod
-    def _point_in_polygon(point: Tuple[float, float], polygon: List[Tuple[float, float]]) -> bool:
+    def _point_in_polygon(point: tuple[float, float], polygon: list[tuple[float, float]]) -> bool:
         x, y = point
         n = len(polygon)
         inside = False
         p1x, p1y = polygon[0]
         for i in range(1, n + 1):
             p2x, p2y = polygon[i % n]
-            if y > min(p1y, p2y):
-                if y <= max(p1y, p2y):
-                    if x <= max(p1x, p2x):
-                        if p1y != p2y:
-                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                        if p1x == p2x or x <= xinters:
-                            inside = not inside
+            if min(p1y, p2y) < y <= max(p1y, p2y) and x <= max(p1x, p2x):
+                if p1y != p2y:
+                    xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                if p1x == p2x or x <= xinters:
+                    inside = not inside
             p1x, p1y = p2x, p2y
         return inside
 
@@ -194,10 +196,11 @@ class ZoneMonitor:
         self.zones = [z for z in self.zones if z.id != zone_id]
         self._save_zones()
 
-    def get_zones_for_overlay(self) -> List[Dict]:
+    def get_zones_for_overlay(self) -> list[dict]:
         overlay_zones = []
         for zone in self.zones:
-            if not zone.active: continue
+            if not zone.active:
+                continue
             # Denormalize polygon for frontend/HUD
             poly = []
             for px, py in zone.polygon:

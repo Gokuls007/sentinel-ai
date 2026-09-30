@@ -1,7 +1,9 @@
-import sqlite3
-import os
+import contextlib
 import json
 import logging
+import os
+import sqlite3
+
 from anomaly.engine import AnomalyAlert
 from core.utils import to_serializable
 
@@ -39,7 +41,7 @@ class EventLogger:
             conn.commit()
             logger.info(f"EventLogger initialized with DB: {self.db_path}")
 
-    def log_event(self, alert: AnomalyAlert, clip_path: str = None):
+    def log_event(self, alert: AnomalyAlert, clip_path: str | None = None):
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -90,10 +92,8 @@ class EventLogger:
                 rows = []
                 for row in cursor.fetchall():
                     item = dict(row)
-                    try:
+                    with contextlib.suppress(ValueError):
                         item["details"] = json.loads(item.get("details") or "{}")
-                    except ValueError:
-                        pass
                     rows.append(item)
                 return rows
         except Exception as e:

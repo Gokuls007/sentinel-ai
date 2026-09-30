@@ -1,9 +1,9 @@
 import time
-import numpy as np
-import torch
 from collections import deque
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+
+import numpy as np
+import torch
 from ultralytics import YOLO
 
 # Constants
@@ -31,7 +31,7 @@ class PoseResult:
     def _visible(self, idx: int) -> bool:
         return float(self.keypoints[idx, 2]) >= KEYPOINT_MIN_CONF
 
-    def _mean_visible(self, a: int, b: int) -> Optional[np.ndarray]:
+    def _mean_visible(self, a: int, b: int) -> np.ndarray | None:
         pts = [self.keypoints[i, :2] for i in (a, b) if self._visible(i)]
         return np.mean(pts, axis=0) if pts else None
 
@@ -75,7 +75,7 @@ class TrackFeatures:
     timestamps: deque = field(default_factory=lambda: deque(maxlen=60))
     first_seen: float = field(default_factory=time.time)
     initial_standing_height: float = 0.0
-    _height_samples: List[float] = field(default_factory=list)
+    _height_samples: list[float] = field(default_factory=list)
     last_updated: float = field(default_factory=time.time)
 
     @property
@@ -87,7 +87,8 @@ class TrackFeatures:
         t1 = self.timestamps[-2]
         t2 = self.timestamps[-1]
         dt = t2 - t1
-        if dt <= 0: return 0.0
+        if dt <= 0:
+            return 0.0
         dist = np.linalg.norm(p2 - p1)
         return dist / dt
 
@@ -109,20 +110,20 @@ class TrackFeatures:
 
 
     @property
-    def direction(self) -> Optional[np.ndarray]:
+    def direction(self) -> np.ndarray | None:
         if len(self.centroid_history) < 5:
             return None
         v = self.centroid_history[-1] - self.centroid_history[-5]
         mag = np.linalg.norm(v)
         return v / mag if mag > 0 else None
 
-    def get_pose_tensor(self) -> Optional[np.ndarray]:
+    def get_pose_tensor(self) -> np.ndarray | None:
         if len(self.pose_sequence) < 10:
             return None
         # Return (seq_len, 17, 2)
         return np.array([p[:, :2] for p in self.pose_sequence])
 
-    def get_flat_tensor(self) -> Optional[np.ndarray]:
+    def get_flat_tensor(self) -> np.ndarray | None:
         tensor = self.get_pose_tensor()
         if tensor is None:
             return None
@@ -143,11 +144,11 @@ class PoseEstimator:
         self.model = YOLO(model_path)
         self.model.to(self.device)
         
-        self.track_features: Dict[int, TrackFeatures] = {}
+        self.track_features: dict[int, TrackFeatures] = {}
         self.stale_timeout = 10.0
 
-    def estimate(self, frame: np.ndarray, track_ids: List[int], bboxes: List[np.ndarray], 
-                 timestamp: float) -> Dict[int, PoseResult]:
+    def estimate(self, frame: np.ndarray, track_ids: list[int], bboxes: list[np.ndarray], 
+                 timestamp: float) -> dict[int, PoseResult]:
         
         # Run pose model on full frame
         results = self.model(frame, conf=self.conf_threshold, verbose=False)
@@ -161,7 +162,7 @@ class PoseEstimator:
         results_dict = {}
         
         # Match poses to our tracked persons via IoU
-        for tid, det_bbox in zip(track_ids, bboxes):
+        for tid, det_bbox in zip(track_ids, bboxes, strict=True):
             best_iou = 0.3
             best_idx = -1
             
@@ -226,8 +227,8 @@ class PoseEstimator:
             del self.track_features[tid]
             # print(f"DEBUG: Cleaned up stale track {tid}")
 
-    def get_features(self, track_id: int) -> Optional[TrackFeatures]:
+    def get_features(self, track_id: int) -> TrackFeatures | None:
         return self.track_features.get(track_id)
 
-    def get_all_features(self) -> Dict[int, TrackFeatures]:
+    def get_all_features(self) -> dict[int, TrackFeatures]:
         return self.track_features

@@ -11,7 +11,6 @@ import os
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
 
 logger = logging.getLogger("sentinel.samples")
 
@@ -39,7 +38,7 @@ class Sample:
         return DEMO_CONFIG_DIR / f"{self.name}_demo.json"
 
 
-SAMPLES: Dict[str, Sample] = {s.name: s for s in [
+SAMPLES: dict[str, Sample] = {s.name: s for s in [
     Sample("corridor", "corridor_sample.mp4", _BASE + "people-detection.mp4",
            "18ffe8672d741e3e29c9d891d22c59d453720b086c25b35c88b393d55f92f693",
            "People walking through an office corridor past a restricted doorway"),
@@ -79,5 +78,5 @@ def ensure_sample(name: str = DEFAULT_SAMPLE) -> Path:
     return sample.path
 
 
-def ensure_all() -> Dict[str, Path]:
+def ensure_all() -> dict[str, Path]:
     return {name: ensure_sample(name) for name in SAMPLES}

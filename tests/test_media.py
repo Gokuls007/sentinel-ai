@@ -1,6 +1,7 @@
 """VideoSource (file timeline, EOF, looping), ClipRecorder, EventLogger, webhook."""
 
 import http.server
+import itertools
 import json
 import threading
 import time
@@ -60,7 +61,7 @@ def test_file_source_loops(video):
     assert len(frames) >= 45
     assert src.loops_completed >= 2
     ts = [t for _, t in frames]
-    assert all(b > a for a, b in zip(ts, ts[1:]))  # timeline keeps increasing across loops
+    assert all(b > a for a, b in itertools.pairwise(ts))  # timeline keeps increasing across loops
 
 
 def test_missing_file_reports_error(tmp_path):
@@ -121,7 +122,7 @@ def test_event_logger_roundtrip_and_filters(tmp_path):
 
 
 def test_event_logger_rejects_directory(tmp_path):
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="is a directory"):
         EventLogger(str(tmp_path))
 
 

@@ -4,12 +4,12 @@ Delivery happens on a background thread so a slow endpoint never stalls the vide
 If the endpoint falls behind, the oldest undelivered alerts are dropped (and logged).
 """
 
+import contextlib
 import json
 import logging
 import queue
 import threading
 import urllib.request
-from typing import Dict, Optional
 
 logger = logging.getLogger("sentinel.webhook")
 
@@ -18,21 +18,21 @@ class WebhookNotifier:
     def __init__(self, url: str, timeout: float = 5.0, max_pending: int = 100):
         self.url = url
         self.timeout = timeout
-        self._queue: "queue.Queue[Optional[Dict]]" = queue.Queue(maxsize=max_pending)
+        self._queue: queue.Queue[dict | None] = queue.Queue(maxsize=max_pending)
         self.sent = 0
         self.failed = 0
         self.dropped = 0
         self._thread = threading.Thread(target=self._worker, name="webhook", daemon=True)
         self._thread.start()
 
-    def send(self, payload: Dict) -> None:
+    def send(self, payload: dict) -> None:
         try:
             self._queue.put_nowait(payload)
         except queue.Full:
             self.dropped += 1
             logger.warning("Webhook queue full; dropping alert %s", payload.get("alert_id"))
 
-    def _post(self, payload: Dict) -> None:
+    def _post(self, payload: dict) -> None:
         body = json.dumps(payload, default=str).encode("utf-8")
         req = urllib.request.Request(self.url, data=body, method="POST",
                                      headers={"Content-Type": "application/json",
@@ -53,8 +53,6 @@ class WebhookNotifier:
                 logger.warning("Webhook delivery failed: %s", e)
 
     def close(self, timeout: float = 5.0) -> None:
-        try:
+        with contextlib.suppress(queue.Full):
             self._queue.put(None, timeout=timeout)
-        except queue.Full:
-            pass
         self._thread.join(timeout)

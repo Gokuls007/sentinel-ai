@@ -5,11 +5,13 @@ Creates title cards, normalizes segments, stitches demo reel, and extracts GIF.
 Usage:
     python scripts/post_production.py
 """
-import cv2
-import numpy as np
+import contextlib
 import os
 import subprocess
+
+import cv2
 import imageio_ffmpeg
+import numpy as np
 
 # Reel parameters
 TARGET_W, TARGET_H = 1280, 720
@@ -101,7 +103,8 @@ def normalize_segment(input_file, output_file, max_duration=SEGMENT_DURATION):
         ffmpeg_exe, '-y',
         '-i', input_file,
         '-t', str(max_duration),
-        '-vf', f'scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=decrease,pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2',
+        '-vf', (f'scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=decrease,'
+                f'pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2'),
         '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
         '-preset', 'fast', '-crf', '20',
         '-r', str(TARGET_FPS),
@@ -144,10 +147,8 @@ def stitch_videos(segments, output_file):
     print(f"  Stitching {len(valid)} segments -> {output_file}")
     result = subprocess.run(cmd, capture_output=True)
     
-    try:
+    with contextlib.suppress(OSError):
         os.remove(list_file)
-    except OSError:
-        pass
     
     if result.returncode != 0:
         print(f"  ERROR: Stitch failed: {result.stderr.decode()[-200:]}")
@@ -186,10 +187,8 @@ def extract_gif(input_file, output_file, start_time=0, duration=5, width=800, fp
             output_file
         ]
         subprocess.run(cmd2, capture_output=True)
-        try:
+        with contextlib.suppress(OSError):
             os.remove(palette_file)
-        except OSError:
-            pass
     else:
         # Fallback: single-pass
         cmd = [
@@ -228,7 +227,7 @@ if __name__ == "__main__":
         "hallway": ("outputs/hallway_demo.mp4", "outputs/temp/n_hallway.mp4"),
     }
     
-    for name, (src, dst) in demo_segments.items():
+    for src, dst in demo_segments.values():
         if os.path.exists(src):
             normalize_segment(src, dst)
         else:

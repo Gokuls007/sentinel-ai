@@ -19,7 +19,6 @@ import subprocess
 import threading
 from collections import deque
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -38,7 +37,7 @@ except Exception:  # pragma: no cover - optional dependency
 class _Recording:
     alert_id: str
     path: str
-    frames: List[Tuple[bytes, float]]  # (JPEG, timestamp)
+    frames: list[tuple[bytes, float]]  # (JPEG, timestamp)
     remaining: int  # frame-count cap on post-alert recording
     end_time: float = float("inf")  # stop post-alert recording at this timestamp
     done: threading.Event = field(default_factory=threading.Event)
@@ -54,23 +53,23 @@ class ClipRecorder:
         self.jpeg_quality = jpeg_quality
         self.frame_buffer: deque = deque(maxlen=1)  # (JPEG, timestamp); sized by set_fps
         self.set_fps(fps)
-        self._active: List[_Recording] = []
+        self._active: list[_Recording] = []
         self._lock = threading.Lock()
-        self._jobs: "queue.Queue[Optional[_Recording]]" = queue.Queue()
+        self._jobs: queue.Queue[_Recording | None] = queue.Queue()
         self._worker = threading.Thread(target=self._write_loop, daemon=True, name="clip-writer")
         self._worker.start()
         os.makedirs(clips_dir, exist_ok=True)
 
     def set_fps(self, fps: float):
         """Match the source frame rate so clip durations (and playback speed) are right."""
-        self.fps = max(1, int(round(fps)))
+        self.fps = max(1, round(fps))
         self.pre_frames = max(1, int(self.buffer_seconds * self.fps))
         self.post_frames = max(0, int(self.post_seconds * self.fps))
         self.frame_buffer = deque(self.frame_buffer, maxlen=self.pre_frames)
 
     # -- frames -------------------------------------------------------------------------
 
-    def _encode(self, frame: np.ndarray) -> Optional[bytes]:
+    def _encode(self, frame: np.ndarray) -> bytes | None:
         h, w = frame.shape[:2]
         if w > self.max_width:
             scale = self.max_width / w
@@ -101,7 +100,7 @@ class ClipRecorder:
     # -- alerts -------------------------------------------------------------------------
 
     def save_clip(self, alert_id: str, alert_timestamp: float = 0.0,
-                  snapshot: Optional[np.ndarray] = None) -> str:
+                  snapshot: np.ndarray | None = None) -> str:
         """Start a clip for ``alert_id``; returns the path the MP4 will be written to."""
         safe_id = "".join(c for c in alert_id if c.isalnum() or c in "-_")
         incident_dir = os.path.join(self.clips_dir, safe_id)

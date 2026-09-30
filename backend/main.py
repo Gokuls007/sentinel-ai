@@ -50,7 +50,7 @@ def parse_args(argv=None):
 def apply_demo_config(config: SentinelConfig, path) -> None:
     """Point zones at the scenario file and apply its setting overrides, if any."""
     config.zone.zones_file = str(path)
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         demo = json.load(f)
     for section, values in demo.get("overrides", {}).items():
         target = getattr(config, section, None)

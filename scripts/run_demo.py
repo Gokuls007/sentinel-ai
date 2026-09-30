@@ -7,28 +7,29 @@ Usage:
     python scripts/run_demo.py --demo hallway
     python scripts/run_demo.py --source my_clip.mp4 --config config/demo/corridor_demo.json
 """
-import cv2
-import time
 import json
 import os
-import sys
 import subprocess
-import imageio_ffmpeg
+import sys
+import time
 from datetime import datetime
 from pathlib import Path
+
+import cv2
+import imageio_ffmpeg
 
 # Add backend to path
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-from core.pipeline import SentinelPipeline  # noqa: E402
-from config.settings import SentinelConfig  # noqa: E402
-from core.samples import SAMPLES, ensure_sample  # noqa: E402
-from main import apply_demo_config  # noqa: E402
+from config.settings import SentinelConfig
+from core.pipeline import SentinelPipeline
+from core.samples import SAMPLES, ensure_sample
+from main import apply_demo_config
 
 
 class DemoEngine:
-    def __init__(self, video_path: str, output_path: str = None, config_path: str = None,
-                 sector_id: str = "SECTOR-04-NORTH", scenario: str = None):
+    def __init__(self, video_path: str, output_path: str | None = None, config_path: str | None = None,
+                 sector_id: str = "SECTOR-04-NORTH", scenario: str | None = None):
         self.video_path = video_path
         self.sector_id = sector_id
         self.scenario = scenario
@@ -54,7 +55,7 @@ class DemoEngine:
         self.sentinel_config = SentinelConfig.from_env()
         self.sentinel_config.source = video_path
         self.sentinel_config.frame_width, self.sentinel_config.frame_height = native_w, native_h
-        self.sentinel_config.target_fps = int(round(self.fps))
+        self.sentinel_config.target_fps = round(self.fps)
         if config_path and os.path.exists(config_path):
             apply_demo_config(self.sentinel_config, config_path)
             print(f"Loaded zones and overrides from {config_path}")
@@ -231,7 +232,8 @@ class DemoEngine:
                     if self.total_frames > 0:
                         pct = (frame_idx / self.total_frames) * 100
                         eta = (self.total_frames - frame_idx) / fps_actual if fps_actual > 0 else 0
-                        print(f"  Frame {frame_idx}/{self.total_frames} ({pct:.0f}%) | {fps_actual:.1f} fps | ETA: {eta:.0f}s")
+                        print(f"  Frame {frame_idx}/{self.total_frames} ({pct:.0f}%) | "
+                              f"{fps_actual:.1f} fps | ETA: {eta:.0f}s")
                     else:
                         print(f"  Frame {frame_idx} | {fps_actual:.1f} fps")
                     
