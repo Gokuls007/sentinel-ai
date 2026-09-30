@@ -27,7 +27,7 @@ const AlertTimeline = ({ alerts }) => {
   return (
     <DashboardPanel title="Temporal Threat Density" headerAction={`LAST ${MINUTES} MIN`} className="h-full">
       <div className="w-full h-full min-h-[140px]">
-        <ResponsiveContainer width="100%" height="100%">
+        <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
           <AreaChart data={chartData}>
             <defs>
               <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">

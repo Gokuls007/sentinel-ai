@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import DashboardPanel from './DashboardPanel';
 import { apiUrl, useNow } from '../lib/api';
 
@@ -53,6 +54,15 @@ const AlertItem = ({ alert, nowMs }) => {
               TID::{alert.track_id ?? '--'} // {alert.alert_id}
               {typeof alert.confidence === 'number' && ` // ${(alert.confidence * 100).toFixed(0)}%`}
             </span>
+            <span className="flex items-center gap-1.5">
+            {alert.event_id != null && (
+              <Link
+                to={`/events?event=${encodeURIComponent(alert.event_id)}`}
+                className="text-[8px] mono uppercase font-bold px-1.5 py-px border border-current opacity-70 hover:opacity-100"
+              >
+                Details
+              </Link>
+            )}
             {clipLikely && !clipFailed && (
               <button
                 type="button"
@@ -62,6 +72,7 @@ const AlertItem = ({ alert, nowMs }) => {
                 {showClip ? 'Hide clip' : 'View clip'}
               </button>
             )}
+            </span>
           </div>
         </div>
       </div>

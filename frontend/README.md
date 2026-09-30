@@ -23,6 +23,25 @@ Then either:
   Vite proxies `/api` and `/ws` to `http://localhost:8000` (override with the
   `SENTINEL_BACKEND` environment variable).
 
+## Pages
+
+A left sidebar links the pages (client-side routes; the backend serves
+`index.html` for unknown non-API paths, so reloading any route works):
+
+- `/` **Live**: annotated feed, stats (with per-layer timings), tracks, live
+  alert strip, alert timeline and zones. Panels can be shown or hidden; the
+  choice is remembered in localStorage.
+- `/events` **Events**: filterable, paged event table with thumbnails, an
+  events-per-hour chart and a clip player. `/events?event=<id>` opens one event.
+- `/analytics` **Analytics**: events per hour, zone, type and severity.
+- `/settings` **Settings**: read-only camera, zones, notification channels and
+  thresholds from `/api/meta`.
+- `/search`, `/rules`: placeholders for later phases.
+
+One WebSocket connection (`src/context/WebSocketProvider.jsx`) is shared by all
+pages. Frames go to a separate context so only the video and stats re-render
+per frame.
+
 ## Configuration
 
 Optional build-time environment variables:
@@ -39,6 +58,8 @@ Optional build-time environment variables:
 - `GET /api/alerts`: persisted alert history.
 - `GET /api/tracks`, `/api/zones`: track registry and zone list.
 - `GET /api/snapshots/{id}`, `/api/clips/{id}`: incident media.
+- `GET /api/events`, `/api/events/{id}`, `/api/events/stats`: event log and counts.
+- `GET /api/meta`: filter options and the Settings page.
 
 ## Scripts
 

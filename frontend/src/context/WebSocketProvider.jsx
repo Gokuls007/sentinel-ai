@@ -1,35 +1,20 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { fetchJson, wsUrl } from '../lib/api';
+import { FeedContext, FrameContext, mergeAlerts } from './liveFeed';
 
-const MAX_ALERTS = 200;
 const BACKOFF_START_MS = 1000;
 const BACKOFF_MAX_MS = 10000;
 
-/** Merge alerts by alert_id (later fields win, has_clip is sticky), newest first, capped. */
-export function mergeAlerts(prev, incoming) {
-  if (!incoming || incoming.length === 0) return prev;
-  const byId = new Map(prev.map((a) => [a.alert_id, a]));
-  for (const a of incoming) {
-    if (!a || !a.alert_id) continue;
-    const old = byId.get(a.alert_id);
-    byId.set(a.alert_id, old ? { ...old, ...a, has_clip: Boolean(old.has_clip || a.has_clip) } : a);
-  }
-  return [...byId.values()]
-    .sort((x, y) => (y.timestamp || 0) - (x.timestamp || 0))
-    .slice(0, MAX_ALERTS);
-}
-
 /**
- * Live connection to the Sentinel backend feed (`/ws/feed`).
+ * One live connection to the Sentinel backend feed (`/ws/feed`), shared by every page.
  *
  * status: 'connecting' | 'live' | 'disconnected'
- * Nothing here is simulated: when the backend is unreachable the frame/stats
- * are cleared and status is 'disconnected'.
+ * Nothing here is simulated: when the backend is unreachable the frame is
+ * cleared and status is 'disconnected'.
  */
-const useWebSocket = (url = wsUrl()) => {
+export default function WebSocketProvider({ url = wsUrl(), children }) {
   const [status, setStatus] = useState('connecting');
-  const [frame, setFrame] = useState(null);
-  const [frameData, setFrameData] = useState(null);
+  const [frameState, setFrameState] = useState({ frame: null, frameData: null });
   const [alerts, setAlerts] = useState([]);
   const [lastError, setLastError] = useState(null);
 
@@ -75,8 +60,8 @@ const useWebSocket = (url = wsUrl()) => {
           if (msg.alert) setAlerts((prev) => mergeAlerts(prev, [msg.alert]));
           break;
         case 'frame':
-          if (msg.image) setFrame(msg.image);
-          setFrameData(msg.data || null);
+          // One state update per frame (image + data together).
+          setFrameState((prev) => ({ frame: msg.image || prev.frame, frameData: msg.data || null }));
           break;
         default:
           break;
@@ -112,8 +97,7 @@ const useWebSocket = (url = wsUrl()) => {
         if (socket === ws) socket = null;
         if (disposed) return;
         setStatus('disconnected');
-        setFrame(null);
-        setFrameData(null);
+        setFrameState({ frame: null, frameData: null });
         scheduleReconnect();
       };
     }
@@ -130,8 +114,16 @@ const useWebSocket = (url = wsUrl()) => {
     };
   }, [url]);
 
-  const stats = frameData?.stats || null;
-  return { status, connected: status === 'live', frame, frameData, alerts, stats, lastError, url };
-};
+  const feed = useMemo(
+    () => ({ status, connected: status === 'live', alerts, lastError, url }),
+    [status, alerts, lastError, url],
+  );
 
-export default useWebSocket;
+  // `children` is created by the parent, so a frame update re-renders only
+  // FrameContext consumers, not the page tree.
+  return (
+    <FeedContext.Provider value={feed}>
+      <FrameContext.Provider value={frameState}>{children}</FrameContext.Provider>
+    </FeedContext.Provider>
+  );
+}

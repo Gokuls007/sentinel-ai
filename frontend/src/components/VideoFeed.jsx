@@ -25,7 +25,7 @@ const Tag = ({ className = 'bg-cyan-950/80 border-cyan-400/30 text-cyan-400', ch
   </div>
 );
 
-const VideoFeed = ({ frame, status, stats, sourceStats, source }) => {
+const VideoFeed = ({ frame, status, stats, sourceStats, source, showOverlay = true }) => {
   const connected = status === 'live';
   const hwError = connected && sourceStats?.hardware_error;
   const sourceName = source != null ? basename(source) : null;
@@ -76,7 +76,7 @@ const VideoFeed = ({ frame, status, stats, sourceStats, source }) => {
         <div className="absolute inset-0 border-[20px] border-black/20 pointer-events-none" />
 
         {/* Real source info from /api/stats + /api/health */}
-        {connected && (
+        {connected && showOverlay && (
           <div className="absolute bottom-4 left-4 flex flex-wrap gap-2">
             {sourceName && <Tag>Source: {sourceName}</Tag>}
             {sourceStats?.is_file && sourceStats?.loop && (
@@ -91,7 +91,7 @@ const VideoFeed = ({ frame, status, stats, sourceStats, source }) => {
           </div>
         )}
 
-        {connected && stats?.fps != null && (
+        {connected && showOverlay && stats?.fps != null && (
           <div className="absolute top-4 right-4 text-right">
             <div className="text-[10px] mono text-cyan-500/70 font-bold uppercase">Pipeline FPS</div>
             <div className="text-xl mono font-bold text-white tracking-tighter">

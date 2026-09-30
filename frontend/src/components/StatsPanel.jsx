@@ -7,6 +7,16 @@ const COLOR_CLASSES = {
   red: { icon: 'text-red-400', label: 'text-red-500/70' },
 };
 
+// Pipeline layers reported in frame data `timings_ms`, in pipeline order.
+const LAYERS = [
+  ['detect_track', 'Detect+Track'],
+  ['pose', 'Pose'],
+  ['analytics', 'Analytics'],
+  ['annotate', 'Annotate'],
+  ['events_and_clips', 'Events+Clips'],
+  ['stream', 'Stream'],
+];
+
 const StatCard = ({ icon, value, label, color = 'cyan' }) => {
   const Icon = icon;
   const c = COLOR_CLASSES[color] || COLOR_CLASSES.cyan;
@@ -27,7 +37,27 @@ const StatCard = ({ icon, value, label, color = 'cyan' }) => {
 
 const show = (v, fmt = (x) => x) => (v == null ? '--' : fmt(v));
 
-const StatsPanel = ({ stats }) => (
+/** Small per-layer latency breakdown (bars scaled to the slowest layer). */
+const Timings = ({ timings }) => {
+  const rows = LAYERS.filter(([k]) => typeof timings?.[k] === 'number').map(([k, label]) => [label, timings[k]]);
+  if (rows.length === 0) return null;
+  const max = Math.max(...rows.map(([, v]) => v), 1);
+  return (
+    <div className="mt-3 space-y-1" aria-label="Per-layer processing time">
+      {rows.map(([label, v]) => (
+        <div key={label} className="flex items-center gap-2 text-[8px] mono uppercase">
+          <span className="w-20 flex-none text-white/40 truncate">{label}</span>
+          <div className="flex-1 h-1 bg-cyan-500/10">
+            <div className="h-full bg-cyan-400/60" style={{ width: `${(v / max) * 100}%` }} />
+          </div>
+          <span className="w-12 flex-none text-right text-cyan-500/80 tabular-nums">{v.toFixed(1)}ms</span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const StatsPanel = ({ stats, timings }) => (
   <DashboardPanel title="Nexus Statistics" headerAction={stats ? 'LIVE' : 'NO_DATA'}>
     <div className="grid grid-cols-2 gap-px bg-cyan-500/10 border border-cyan-500/10">
       <StatCard icon={Users} value={show(stats?.person_count)} label="Persons" />
@@ -39,6 +69,7 @@ const StatsPanel = ({ stats }) => (
       />
       <StatCard icon={AlertTriangle} value={show(stats?.alert_count)} label="Alerts" color="red" />
     </div>
+    <Timings timings={timings} />
   </DashboardPanel>
 );
 
