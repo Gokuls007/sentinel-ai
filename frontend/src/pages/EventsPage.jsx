@@ -61,7 +61,9 @@ const Filters = ({ meta, filters, onChange }) => {
   const id = useId();
   const types = meta?.event_types || [];
   const severities = meta?.severities || SEVERITIES;
-  const cameras = meta?.cameras || [];
+  // Keep a deep-linked camera selectable even before it has any events.
+  const known = meta?.cameras || [];
+  const cameras = filters.camera_id && !known.includes(filters.camera_id) ? [...known, filters.camera_id] : known;
   const zones = meta?.zones || [];
   const set = (patch) => onChange({ ...filters, ...patch });
   const dirty = JSON.stringify(filters) !== JSON.stringify(DEFAULT_FILTERS);
@@ -233,7 +235,15 @@ const EventsPage = () => {
   const { status, alerts } = useFeed();
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedId = searchParams.get('event');
-  const [filters, setFilters] = useState(DEFAULT_FILTERS);
+  // `?camera_id=` deep link (e.g. from My Camera); kept in sync with the camera filter.
+  const urlCamera = searchParams.get('camera_id') || '';
+  const [filters, setFilters] = useState(() => ({ ...DEFAULT_FILTERS, camera_id: urlCamera }));
+  const [seenUrlCamera, setSeenUrlCamera] = useState(urlCamera);
+  if (urlCamera !== seenUrlCamera) {
+    // URL changed underneath us (back/forward, a link): follow it.
+    setSeenUrlCamera(urlCamera);
+    setFilters((f) => ({ ...f, camera_id: urlCamera }));
+  }
   const [offset, setOffset] = useState(0);
 
   // Relative time presets re-anchor every 30 s; a new live alert refreshes page 1.
@@ -257,6 +267,18 @@ const EventsPage = () => {
   const updateFilters = (next) => {
     setFilters(next);
     setOffset(0);
+    if (next.camera_id !== urlCamera) {
+      setSeenUrlCamera(next.camera_id);
+      setSearchParams(
+        (p) => {
+          const q = new URLSearchParams(p);
+          if (next.camera_id) q.set('camera_id', next.camera_id);
+          else q.delete('camera_id');
+          return q;
+        },
+        { replace: true },
+      );
+    }
   };
   const openEvent = (id) =>
     setSearchParams((p) => {

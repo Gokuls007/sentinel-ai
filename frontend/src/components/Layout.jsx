@@ -1,14 +1,15 @@
 import { Suspense, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { Shield, Video, ListVideo, Search, ScrollText, ChartColumn, Settings } from 'lucide-react';
+import { Shield, Video, Webcam, ListVideo, Search, ScrollText, ChartColumn, Settings } from 'lucide-react';
 import StatusBadge from './StatusBadge';
 import EmptyState from './EmptyState';
 import PageErrorBoundary from './PageErrorBoundary';
 import { useFeed } from '../context/liveFeed';
-import { loadStored, saveStored } from '../lib/api';
+import { loadStored, saveStored, usePoll } from '../lib/api';
 
 const NAV = [
   { to: '/', label: 'Live', title: 'Live Observation', icon: Video, end: true },
+  { to: '/camera', label: 'My Camera', title: 'My Camera', icon: Webcam, cameraDot: true },
   { to: '/events', label: 'Events', title: 'Event Log', icon: ListVideo, badge: true },
   { to: '/search', label: 'Search', title: 'Search', icon: Search },
   { to: '/rules', label: 'Rules', title: 'Safety Rules', icon: ScrollText },
@@ -41,7 +42,7 @@ function useUnseenAlerts(onEvents) {
   return n;
 }
 
-const Sidebar = ({ unseen }) => (
+const Sidebar = ({ unseen, cameraOn }) => (
   <nav aria-label="Main" className="flex-none w-14 lg:w-52 flex flex-col border-r border-cyan-500/10 bg-black/40 backdrop-blur-md">
     <div className="flex items-center gap-3 px-3 lg:px-4 py-4 border-b border-cyan-500/10">
       <div className="relative group flex-none">
@@ -56,7 +57,7 @@ const Sidebar = ({ unseen }) => (
       </div>
     </div>
     <ul className="flex-1 py-3 space-y-1">
-      {NAV.map(({ to, label, icon, end, badge }) => {
+      {NAV.map(({ to, label, icon, end, badge, cameraDot }) => {
         const Icon = icon;
         return (
           <li key={to}>
@@ -72,8 +73,14 @@ const Sidebar = ({ unseen }) => (
                 }`
               }
             >
-              <Icon className="w-4 h-4 flex-none" aria-hidden="true" />
+              <span className="relative flex-none">
+              <Icon className="w-4 h-4" aria-hidden="true" />
+              {cameraDot && cameraOn && (
+                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-500 animate-pulse ring-2 ring-black" aria-hidden="true" />
+              )}
+            </span>
               <span className="hidden lg:inline">{label}</span>
+            {cameraDot && cameraOn && <span className="sr-only">(camera on)</span>}
               {badge && unseen > 0 && (
                 <span
                   className="absolute lg:static top-0.5 right-0.5 lg:ml-auto min-w-[18px] px-1 py-px text-center text-[9px] mono font-bold bg-red-600 text-white rounded-sm tracking-normal"
@@ -94,6 +101,10 @@ const Layout = () => {
   const { pathname } = useLocation();
   const onEvents = pathname.startsWith('/events');
   const unseen = useUnseenAlerts(onEvents);
+  const { connected } = useFeed();
+  // "Camera on" dot for My Camera: the webcam keeps running when you leave that page.
+  const { data: cams } = usePoll('/api/cameras', 5000, connected);
+  const cameraOn = Array.isArray(cams) && cams.some((c) => c.id === 'laptop' && c.status === 'running');
   const current = NAV.find((n) => (n.end ? pathname === n.to : pathname.startsWith(n.to))) || null;
 
   useEffect(() => {
@@ -102,7 +113,7 @@ const Layout = () => {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#0A0A0F] text-white selection:bg-cyan-500/30 font-outfit">
-      <Sidebar unseen={unseen} />
+      <Sidebar unseen={unseen} cameraOn={cameraOn} />
       <div className="flex-1 min-w-0 flex flex-col">
         <header className="flex-none flex items-center justify-between px-4 py-3 border-b border-cyan-500/10">
           <h1 className="text-base font-bold tracking-[0.35em] text-cyan-400 uppercase leading-none small-caps">

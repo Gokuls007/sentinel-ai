@@ -5,6 +5,7 @@ import Layout from './components/Layout';
 import LivePage from './pages/LivePage';
 
 // Non-live pages load on demand to keep the initial bundle small.
+const CameraPage = lazy(() => import('./pages/CameraPage'));
 const EventsPage = lazy(() => import('./pages/EventsPage'));
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
@@ -24,6 +25,7 @@ function App() {
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<LivePage />} />
+            <Route path="camera" element={<CameraPage />} />
             <Route path="events" element={<EventsPage />} />
             <Route path="search" element={<SearchPage />} />
             <Route path="rules" element={<RulesPage />} />

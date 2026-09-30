@@ -25,7 +25,10 @@ const Tag = ({ className = 'bg-cyan-950/80 border-cyan-400/30 text-cyan-400', ch
   </div>
 );
 
-const VideoFeed = ({ frame, status, stats, sourceStats, source, showOverlay = true }) => {
+const VideoFeed = ({
+  frame, status, stats, sourceStats, source, showOverlay = true,
+  title = 'Live Observation Terminal', offlineHint = null,
+}) => {
   const connected = status === 'live';
   const hwError = connected && sourceStats?.hardware_error;
   const sourceName = source != null ? basename(source) : null;
@@ -34,12 +37,16 @@ const VideoFeed = ({ frame, status, stats, sourceStats, source, showOverlay = tr
   if (!connected) {
     placeholder = (
       <Placeholder tone="red" title={status === 'connecting' ? 'CONNECTING...' : 'BACKEND_OFFLINE'}>
-        <p className="text-[10px] mono text-red-400/70 mt-3 max-w-md">
-          No live feed. Start the backend (runs on bundled sample videos, no camera needed):
-        </p>
-        <p className="text-[11px] mono text-cyan-300 mt-2 px-2 py-1 bg-black/60 border border-cyan-500/20 inline-block">
-          {BACKEND_START_HINT}
-        </p>
+        {offlineHint || (
+          <>
+            <p className="text-[10px] mono text-red-400/70 mt-3 max-w-md">
+              No live feed. Start the backend (runs on bundled sample videos, no camera needed):
+            </p>
+            <p className="text-[11px] mono text-cyan-300 mt-2 px-2 py-1 bg-black/60 border border-cyan-500/20 inline-block">
+              {BACKEND_START_HINT}
+            </p>
+          </>
+        )}
       </Placeholder>
     );
   } else if (hwError) {
@@ -59,7 +66,7 @@ const VideoFeed = ({ frame, status, stats, sourceStats, source, showOverlay = tr
   return (
     <DashboardPanel
       className="h-full overflow-hidden"
-      title="Live Observation Terminal"
+      title={title}
       headerAction={connected && sourceName ? sourceName : null}
     >
       <div className="relative w-full h-full bg-black/60 rounded-sm overflow-hidden group">

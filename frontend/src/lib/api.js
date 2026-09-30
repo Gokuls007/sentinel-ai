@@ -10,10 +10,12 @@ export function apiUrl(path) {
   return `${API_BASE}${path}`;
 }
 
-export function wsUrl() {
-  if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL;
+/** Feed socket URL; `camera` selects which camera's frames to receive (default: primary). */
+export function wsUrl(camera) {
+  const q = camera ? `?camera=${encodeURIComponent(camera)}` : '';
+  if (import.meta.env.VITE_WS_URL) return `${import.meta.env.VITE_WS_URL}${q}`;
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${window.location.host}/ws/feed`;
+  return `${proto}://${window.location.host}/ws/feed${q}`;
 }
 
 export async function fetchJson(path, { signal } = {}) {
@@ -24,6 +26,35 @@ export async function fetchJson(path, { signal } = {}) {
     throw err;
   }
   return res.json();
+}
+
+/** POST a JSON body; errors carry `.status` and the backend's `.detail`. */
+export async function postJson(path, body = {}) {
+  let res;
+  try {
+    res = await fetch(apiUrl(path), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    err.status = null; // network failure: backend offline
+    throw err;
+  }
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    // empty or non-JSON body
+  }
+  if (!res.ok) {
+    const detail = typeof data?.detail === 'string' ? data.detail : null;
+    const err = new Error(detail || `${path}: HTTP ${res.status}`);
+    err.status = res.status;
+    err.detail = detail;
+    throw err;
+  }
+  return data;
 }
 
 /** True when an error means the backend is unreachable or the pipeline is still starting. */
