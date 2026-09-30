@@ -126,6 +126,8 @@ class SentinelConfig:
     
     source: str = "0"
     camera_id: str = "cam-0"  # recorded on every event; one pipeline = one camera
+    # Allow starting the laptop webcam from other machines on the network (off: this computer only).
+    allow_remote_camera_control: bool = False
     loop: bool = False  # restart video files when they end (demo / kiosk mode)
     target_fps: int = 25
     frame_width: int = 1280
@@ -182,6 +184,7 @@ class SentinelConfig:
         cfg.output.clip_duration = env("CLIP_DURATION", int, cfg.output.clip_duration)
         cfg.output.webhook_url = env("WEBHOOK_URL", str, cfg.output.webhook_url)
         cfg.camera_id = env("CAMERA_ID", str, cfg.camera_id)
+        cfg.allow_remote_camera_control = env("ALLOW_REMOTE_CAMERA_CONTROL", bool, False)
 
         n = cfg.notifications
         n.debounce_s = env("NOTIFY_DEBOUNCE_S", float, n.debounce_s)

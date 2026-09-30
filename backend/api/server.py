@@ -9,6 +9,7 @@ never lost to frame-rate throttling.
 import asyncio
 import base64
 import contextlib
+import copy
 import json
 import logging
 import threading
@@ -17,10 +18,11 @@ from collections import deque
 from pathlib import Path
 
 import cv2
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from config.settings import SentinelConfig
 from core.pipeline import FrameResult, SentinelPipeline
@@ -44,7 +46,22 @@ _clients: dict[WebSocket, asyncio.Queue] = {}
 _clients_lock = threading.Lock()
 _loop: asyncio.AbstractEventLoop | None = None
 
-app = FastAPI(title="Sentinel AI API", version="1.3.0")
+# Extra cameras beside the primary pipeline (the laptop webcam). Each has its own pipeline,
+# frame slot and state; events from every camera share the store and the alert stream.
+LAPTOP_CAMERA = "laptop"
+_cameras: dict[str, SentinelPipeline] = {}
+_camera_threads: dict[str, threading.Thread] = {}
+_camera_state: dict[str, dict] = {}
+_camera_frames: dict[str, tuple[str, int]] = {}
+_cameras_lock = threading.Lock()
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app):
+    yield
+    stop_cameras()  # release the webcam when the server shuts down
+
+
+app = FastAPI(title="Sentinel AI API", version="1.3.0", lifespan=_lifespan)
 
 
 def _configure_cors(origins):
@@ -65,6 +82,15 @@ def start_pipeline(cfg: SentinelConfig) -> SentinelPipeline:
     config = cfg
     _configure_cors(cfg.cors_origins)
     pipeline = SentinelPipeline(cfg)
+    _attach(pipeline, primary=True)
+    thread = threading.Thread(target=pipeline.run, daemon=True, name="sentinel-pipeline")
+    thread.start()
+    logger.info("Sentinel Pipeline started in background thread.")
+    return pipeline
+
+
+def _attach(p: SentinelPipeline, primary: bool) -> None:
+    """Broadcast ``p``'s events to every client and publish its frames to its slot."""
 
     def handle_event(event: Event):
         # Same alert shape the dashboard always received, plus event_id and camera_id.
@@ -73,20 +99,18 @@ def start_pipeline(cfg: SentinelConfig) -> SentinelPipeline:
             alert_history.append(alert_dict)
         _broadcast_alert(json.dumps({"type": "alert", "alert": alert_dict}))
 
-    pipeline.event_bus.subscribe("websocket", handle_event)
+    p.event_bus.subscribe("websocket", handle_event)
+    camera_id = p.config.camera_id
 
-    @pipeline.on_frame
+    @p.on_frame
     def handle_frame(result: FrameResult):
         global _latest_message, _latest_frame_number
-        message = encode_frame_message(result, pipeline.stats["avg_fps"] if pipeline else 0)
-        with _frame_lock:  # serialise once; every client sends the same string
-            _latest_message = message
-            _latest_frame_number = result.frame_number
-
-    thread = threading.Thread(target=pipeline.run, daemon=True, name="sentinel-pipeline")
-    thread.start()
-    logger.info("Sentinel Pipeline started in background thread.")
-    return pipeline
+        message = encode_frame_message(result, p.stats["avg_fps"])
+        with _frame_lock:  # serialise once; every client of this camera sends the same string
+            if primary:
+                _latest_message, _latest_frame_number = message, result.frame_number
+            else:
+                _camera_frames[camera_id] = (message, result.frame_number)
 
 
 def encode_frame_message(result: FrameResult, fps: float, jpeg_quality: int = 70) -> str:
@@ -125,6 +149,18 @@ def _require_pipeline() -> SentinelPipeline:
     return pipeline
 
 
+def _pipeline_for(camera: str | None) -> SentinelPipeline:
+    """The primary pipeline, or the extra camera named ``camera`` (404/503 if it isn't running)."""
+    primary = _require_pipeline() if camera is None else pipeline
+    if camera is None or (primary is not None and camera == primary.config.camera_id):
+        return _require_pipeline()
+    with _cameras_lock:
+        p = _cameras.get(camera)
+    if p is None:
+        raise HTTPException(status_code=404, detail=f"camera {camera!r} is not running")
+    return p
+
+
 @app.get("/api/health")
 def health_check():
     source = pipeline.video_source.stats if pipeline else {}
@@ -138,8 +174,130 @@ def health_check():
 
 
 @app.get("/api/stats")
-def get_stats():
-    return to_serializable(_require_pipeline().stats)
+def get_stats(camera: str | None = None):
+    return to_serializable(_pipeline_for(camera).stats)
+
+
+# --- Cameras: the primary source plus the laptop webcam, started on request ----------
+
+class CameraStart(BaseModel):
+    index: int = Field(0, ge=0, le=9, description="Webcam device index (0 = built-in camera)")
+
+
+def _check_camera_control(request: Request) -> None:
+    """Turning a webcam on is sensitive, so:
+    - only this machine may do it (the server listens on the LAN by default), unless
+      ALLOW_REMOTE_CAMERA_CONTROL=true;
+    - the body must be JSON. A cross-site page can't send a JSON POST without a CORS
+      preflight, and CORS here allows GET only, so another site can't switch the camera on.
+    """
+    host = request.client.host if request.client else ""
+    local = host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.")
+    if not local and not (config and config.allow_remote_camera_control):
+        raise HTTPException(status_code=403, detail="camera control is only allowed from this computer")
+    if not request.headers.get("content-type", "").startswith("application/json"):
+        raise HTTPException(status_code=415, detail="send a JSON body")
+
+
+def _camera_info(camera_id: str) -> dict:
+    with _cameras_lock:
+        p = _cameras.get(camera_id)
+        state = dict(_camera_state.get(camera_id, {"status": "stopped"}))
+    if p is not None:
+        src = p.video_source.stats
+        state.update(fps=p.stats["avg_fps"], frames=p.frame_count,
+                     source_error=src.get("error_message") or "",
+                     hardware_error=bool(src.get("hardware_error")))
+    return {"id": camera_id, "kind": "webcam", **state}
+
+
+@app.get("/api/cameras")
+def list_cameras():
+    cams = []
+    if pipeline:
+        cams.append({"id": pipeline.config.camera_id, "kind": "primary", "status": "running",
+                     "source": pipeline.config.source, "fps": pipeline.stats["avg_fps"]})
+    cams.append(_camera_info(LAPTOP_CAMERA))
+    return to_serializable(cams)
+
+
+def _laptop_config(index: int) -> SentinelConfig:
+    cfg = copy.deepcopy(config)
+    cfg.source = str(index)
+    cfg.loop = False
+    cfg.camera_id = LAPTOP_CAMERA
+    cfg.frame_width, cfg.frame_height = 1280, 720
+    # No zones by default: the primary camera's zones are drawn for its own view.
+    zones = Path(cfg.output.db_path).resolve().parent / "zones_laptop.json"
+    zones.parent.mkdir(parents=True, exist_ok=True)
+    if not zones.exists():
+        zones.write_text(json.dumps({"zones": []}), encoding="utf-8")
+    cfg.zone.zones_file = str(zones)
+    return cfg
+
+
+def _run_camera(camera_id: str, cfg: SentinelConfig) -> None:
+    try:
+        p = SentinelPipeline(cfg)  # loads the models: a few seconds
+        _attach(p, primary=False)
+        with _cameras_lock:
+            stopped_meanwhile = _camera_state.get(camera_id, {}).get("status") != "starting"
+            if not stopped_meanwhile:
+                _cameras[camera_id] = p
+                _camera_state[camera_id] = {"status": "running", "source": cfg.source,
+                                            "started_at": time.time()}
+        if stopped_meanwhile:  # Stop was pressed while the models were loading
+            p.stop()
+            return
+        p.run()  # returns when stopped (or the camera can't be opened and is stopped)
+    except Exception as e:
+        logger.exception("camera %s failed", camera_id)
+        with _cameras_lock:
+            _camera_state[camera_id] = {"status": "error", "error": str(e), "source": cfg.source}
+    finally:
+        with _cameras_lock:
+            _cameras.pop(camera_id, None)
+            _camera_frames.pop(camera_id, None)
+            if _camera_state.get(camera_id, {}).get("status") in ("running", "stopping"):
+                _camera_state[camera_id] = {"status": "stopped"}
+
+
+@app.post("/api/cameras/laptop/start", status_code=202)
+def start_laptop_camera(body: CameraStart, request: Request):
+    """Start detection on the laptop webcam (device ``index``) as camera "laptop"."""
+    _check_camera_control(request)
+    _require_pipeline()
+    with _cameras_lock:
+        status = _camera_state.get(LAPTOP_CAMERA, {}).get("status")
+        if status in ("starting", "running"):
+            return _camera_state[LAPTOP_CAMERA] | {"id": LAPTOP_CAMERA}
+        _camera_state[LAPTOP_CAMERA] = {"status": "starting", "source": str(body.index)}
+        thread = threading.Thread(
+            target=_run_camera, args=(LAPTOP_CAMERA, _laptop_config(body.index)),
+            daemon=True, name="camera-laptop",
+        )
+        _camera_threads[LAPTOP_CAMERA] = thread
+    thread.start()
+    logger.info("Laptop camera %d starting", body.index)
+    return {"id": LAPTOP_CAMERA, "status": "starting", "source": str(body.index)}
+
+
+@app.post("/api/cameras/laptop/stop")
+def stop_laptop_camera(request: Request):
+    """Stop the laptop webcam pipeline and release the camera."""
+    _check_camera_control(request)
+    with _cameras_lock:
+        p = _cameras.get(LAPTOP_CAMERA)
+        thread = _camera_threads.get(LAPTOP_CAMERA)
+        _camera_state[LAPTOP_CAMERA] = {"status": "stopping" if p else "stopped"}
+    if p is not None:
+        p.video_source.stop()  # releases the device; the pipeline loop then ends and cleans up
+    if thread is not None:
+        thread.join(timeout=15)
+    with _cameras_lock:
+        if _camera_state.get(LAPTOP_CAMERA, {}).get("status") == "stopping":
+            _camera_state[LAPTOP_CAMERA] = {"status": "stopped"}
+    return _camera_info(LAPTOP_CAMERA)
 
 
 @app.get("/api/alerts")
@@ -279,13 +437,13 @@ def get_meta():
 
 
 @app.get("/api/zones")
-def get_zones():
-    return to_serializable(_require_pipeline().anomaly_engine.zone_overlay_data)
+def get_zones(camera: str | None = None):
+    return to_serializable(_pipeline_for(camera).anomaly_engine.zone_overlay_data)
 
 
 @app.get("/api/tracks")
-def get_tracks():
-    p = _require_pipeline()
+def get_tracks(camera: str | None = None):
+    p = _pipeline_for(camera)
     output = []
     for tid, feat in p.pose_estimator.get_all_features().items():
         output.append({
@@ -332,7 +490,8 @@ def get_snapshot(alert_id: str):
 # --- WebSocket live feed -------------------------------------------------------------
 
 @app.websocket("/ws/feed")
-async def websocket_feed(websocket: WebSocket):
+async def websocket_feed(websocket: WebSocket, camera: str | None = None):
+    """Alerts from every camera; frames from the primary camera, or from ``?camera=<id>``."""
     global _loop
     await websocket.accept()
     _loop = asyncio.get_running_loop()
@@ -346,16 +505,19 @@ async def websocket_feed(websocket: WebSocket):
             history = list(alert_history)[-50:]
         await websocket.send_text(json.dumps({"type": "history", "alerts": history}))
 
-        last_sent = -1
+        last_sent = None  # the last frame message sent (a camera restart resets frame numbers)
         while True:
             # Alerts first, so none are delayed by frame throttling.
             while not alerts.empty():
                 await websocket.send_text(alerts.get_nowait())
             with _frame_lock:
-                message, number = _latest_message, _latest_frame_number
-            if message is not None and number > last_sent:
+                if camera and not (pipeline and camera == pipeline.config.camera_id):
+                    message = _camera_frames.get(camera, (None, -1))[0]
+                else:
+                    message = _latest_message
+            if message is not None and message is not last_sent:
                 await websocket.send_text(message)
-                last_sent = number
+                last_sent = message
             await asyncio.sleep(1 / MAX_FEED_FPS)
     except (WebSocketDisconnect, RuntimeError):
         pass  # client went away; RuntimeError = send after close
@@ -365,6 +527,16 @@ async def websocket_feed(websocket: WebSocket):
         with _clients_lock:
             _clients.pop(websocket, None)
         logger.info("Client disconnected. Total: %d", len(_clients))
+
+
+def stop_cameras() -> None:
+    """Release every extra camera (used at shutdown)."""
+    with _cameras_lock:
+        pipelines = list(_cameras.values())
+    for p in pipelines:
+        p.video_source.stop()
+
+
 
 
 # --- Dashboard (built React app) -----------------------------------------------------

@@ -11,6 +11,7 @@
 
 import logging
 import queue
+import sys
 import threading
 import time
 
@@ -86,7 +87,15 @@ class VideoSource:
     def _connect(self) -> bool:
         if self.cap:
             self.cap.release()
-        self.cap = cv2.VideoCapture(self.source)
+        if isinstance(self.source, int) and sys.platform == "win32":
+            # DirectShow opens laptop webcams in about a second; the default (MSMF) backend
+            # can take 10+ s or fail. Fall back to the default if DirectShow can't open it.
+            self.cap = cv2.VideoCapture(self.source, cv2.CAP_DSHOW)
+            if not self.cap.isOpened():
+                self.cap.release()
+                self.cap = cv2.VideoCapture(self.source)
+        else:
+            self.cap = cv2.VideoCapture(self.source)
         if not self.cap.isOpened():
             self.hardware_error = True
             self.error_message = f"Failed to open source: {self.source}"
