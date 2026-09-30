@@ -243,8 +243,7 @@ class DemoEngine:
                 self.process.stdin.close()
                 self.process.wait()
             self.pipeline.clip_recorder.flush()  # finish clips of late alerts
-            if self.pipeline.webhook:
-                self.pipeline.webhook.close()
+            self.pipeline.notifier.close()  # deliver notifications for late alerts
 
             # Save alerts log
             log_path = self.output_path.replace(".mp4", "_alerts.json")
@@ -268,6 +267,8 @@ if __name__ == "__main__":
     parser.add_argument("--config", default=None, help="Path to demo config JSON with zone definitions")
     parser.add_argument("--sector", default="SECTOR-04-NORTH", help="Sector ID for HUD display")
     parser.add_argument("--scenario", default=None, help="Scenario label (e.g. 'FALL DETECTION')")
+    parser.add_argument("--notify", action="store_true",
+                        help="send alerts to the configured Telegram/email/webhook (off by default)")
     args = parser.parse_args()
     if args.demo:
         sample = SAMPLES[args.demo]
@@ -283,4 +284,6 @@ if __name__ == "__main__":
         sector_id=args.sector,
         scenario=args.scenario
     )
+    if not args.notify:  # an offline render shouldn't message anyone unless asked
+        engine.pipeline.notifier.notifiers = []
     engine.run()
