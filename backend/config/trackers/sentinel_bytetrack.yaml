@@ -1,0 +1,19 @@
+# ByteTrack settings for Sentinel AI (ultralytics tracker config).
+#
+# ByteTrack matches tracks in two stages: confident detections first, then low-confidence
+# ones, which keep a track alive through partial occlusion, odd poses (sitting, bending,
+# half out of frame) and motion blur. Ultralytics' default config only sees detections above
+# the `conf` passed to model.track(), so with conf=0.5 the second stage never ran. On a laptop
+# webcam, two people produced 154 track IDs in 87 s, and every new ID restarted the loitering
+# clock and fall calibration.
+#
+# Detector now calls model.track() with conf=0.1 and uses this file:
+tracker_type: bytetrack
+track_high_thresh: 0.5  # first stage: the detection confidence threshold (DETECTION_CONFIDENCE default)
+track_low_thresh: 0.1   # second stage: weak detections may continue an existing track...
+new_track_thresh: 0.6   # ...but a new person needs more (+0.1, as in the ByteTrack paper): a
+                        # half-visible fragment of a tracked person (legs leaving the frame)
+                        # must not become a second person with its own alerts
+track_buffer: 90        # keep a lost track ~3 s at 30 fps (~5 s at webcam speed) for re-association
+match_thresh: 0.8
+fuse_score: true
