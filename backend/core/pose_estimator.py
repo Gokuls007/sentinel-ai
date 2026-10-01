@@ -21,6 +21,12 @@ LEFT_ANKLE, RIGHT_ANKLE = 15, 16
 
 KEYPOINT_MIN_CONF = 0.3  # below this a keypoint is treated as not visible
 
+# Average adult proportions (fractions of stature): nose-to-ankle ~0.90, nose-to-hip ~0.41,
+# shoulder-to-hip ~0.29. Used to estimate the head-to-ankle scale when ankles are hidden.
+NOSE_HIP_TO_BODY = 0.90 / 0.41
+SHOULDER_HIP_TO_BODY = 0.90 / 0.29
+UPRIGHT_TORSO_MAX_DEG = 30.0  # calibrate only while the torso is within this of vertical
+
 
 @dataclass
 class PoseResult:
@@ -66,6 +72,41 @@ class PoseResult:
         if ankle is None or not self.head_valid:
             return 0.0
         return abs(float(ankle[1]) - self.head_y)
+
+    @property
+    def torso_angle(self) -> float | None:
+        """Angle of the hip->shoulder line from vertical, in degrees (0 = upright, 90 = lying).
+        None unless a shoulder and a hip are visible."""
+        sh = self._mean_visible(LEFT_SHOULDER, RIGHT_SHOULDER)
+        hip = self._mean_visible(LEFT_HIP, RIGHT_HIP)
+        if sh is None or hip is None:
+            return None
+        dx, dy = float(sh[0] - hip[0]), float(sh[1] - hip[1])
+        if abs(dx) + abs(dy) < 1e-6:
+            return None
+        return float(np.degrees(np.arctan2(abs(dx), -dy)))  # image y grows downward
+
+    @property
+    def scale_estimate(self) -> float:
+        """Head-to-ankle height in px, estimated from whatever is visible, or 0.0.
+
+        A laptop webcam rarely sees the ankles, so when they are hidden the height is
+        scaled up from the nose-to-hip or shoulder-to-hip distance using average adult
+        proportions (nose-to-ankle ~0.90 of stature, nose-to-hip ~0.41, shoulder-to-hip
+        ~0.29). Only used upright, where vertical distances equal the real ones.
+        """
+        full = self.body_height
+        if full > 0:
+            return full
+        hip = self._mean_visible(LEFT_HIP, RIGHT_HIP)
+        if hip is None:
+            return 0.0
+        if self.head_valid:
+            return max(0.0, float(hip[1]) - self.head_y) * NOSE_HIP_TO_BODY
+        sh = self._mean_visible(LEFT_SHOULDER, RIGHT_SHOULDER)
+        if sh is None:
+            return 0.0
+        return max(0.0, float(hip[1] - sh[1])) * SHOULDER_HIP_TO_BODY
 
 @dataclass
 class TrackFeatures:
@@ -210,12 +251,19 @@ class PoseEstimator:
         feat.timestamps.append(timestamp)
         feat.last_updated = timestamp
         
-        # Calibration: median head-to-ankle height over 10 upright frames with a
-        # fully visible body (lying/occluded frames would give a wrong reference).
-        bw, bh = pose.bbox[2] - pose.bbox[0], pose.bbox[3] - pose.bbox[1]
-        upright = bh > 0 and bw / bh < 1.0
-        if feat.initial_standing_height == 0.0 and upright and pose.body_height > 0:
-            feat._height_samples.append(pose.body_height)
+        # Calibration: median head-to-ankle scale over 10 upright frames. With the full body
+        # visible it is measured; with ankles hidden (laptop webcam) it is estimated from the
+        # torso. Upright = torso near vertical when visible, else a tall box. Lying or
+        # bent-over frames would give a wrong reference, so they are skipped.
+        torso = pose.torso_angle
+        if torso is not None:
+            upright = torso <= UPRIGHT_TORSO_MAX_DEG
+        else:
+            bw, bh = pose.bbox[2] - pose.bbox[0], pose.bbox[3] - pose.bbox[1]
+            upright = bh > 0 and bw / bh < 1.0
+        scale = pose.scale_estimate
+        if feat.initial_standing_height == 0.0 and upright and scale > 0:
+            feat._height_samples.append(scale)
             if len(feat._height_samples) >= 10:
                 feat.initial_standing_height = float(np.median(feat._height_samples))
                 # print(f"DEBUG: Calibrated Track {track_id} height to {feat.initial_standing_height:.1f}px")

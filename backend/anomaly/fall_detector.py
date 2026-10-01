@@ -9,6 +9,7 @@ All speeds are normalised by the person's calibrated standing height and by real
 elapsed time, so thresholds work regardless of resolution, camera distance or FPS.
 """
 
+from collections import deque
 from dataclasses import dataclass, field
 
 from core.pose_estimator import PoseResult, TrackFeatures
@@ -38,6 +39,7 @@ class _TrackState:
     still_since: float | None = None
     peak_descent: float = 0.0
     last_alert_time: float = field(default=-1e18)
+    hip_history: deque = field(default_factory=deque)  # (timestamp, hip_y) for stillness
 
 
 class FallDetector:
@@ -47,6 +49,9 @@ class FallDetector:
     CONFIRMED = "confirmed"
 
     FALLING_WINDOW_S = 1.5  # a fall must reach the ground within this time
+    LYING_TORSO_DEG = 60.0  # torso this far from vertical = lying
+    TILTED_TORSO_DEG = 35.0  # a wide box counts as lying only with the torso at least this tilted
+    STILLNESS_WINDOW_S = 0.5
 
     def __init__(self, descent_speed_threshold: float = 1.2, aspect_ratio_threshold: float = 1.2,
                  head_drop_ratio: float = 0.5, stillness_seconds: float = 1.0,
@@ -152,17 +157,38 @@ class FallDetector:
         bbox_h = float(pose.bbox[3] - pose.bbox[1])
         aspect_ratio = bbox_w / bbox_h if bbox_h > 0 else 0.0
 
+        # Lying = the torso is near horizontal. Without a visible torso, fall back to a wide
+        # box. (A wide box alone also fits someone sitting close to a webcam, so when the
+        # torso is visible it must be tilted too.)
+        torso = getattr(pose, "torso_angle", None)
+        wide = aspect_ratio > self.aspect_ratio_threshold
+        horizontal = wide if torso is None else (
+            torso > self.LYING_TORSO_DEG or (wide and torso > self.TILTED_TORSO_DEG))
+
         head_known = pose.head_valid and st.upright_head_y is not None
         head_drop = (pose.head_y - st.upright_head_y) / body_h if head_known else 0.0
+
+        # Stillness over a short window, not frame to frame: keypoints jitter by a few
+        # pixels per frame, which at 30 fps alone exceeds the speed threshold.
+        st.hip_history.append((timestamp, hip_y))
+        while st.hip_history and timestamp - st.hip_history[0][0] > self.STILLNESS_WINDOW_S:
+            st.hip_history.popleft()
+        span = st.hip_history[-1][0] - st.hip_history[0][0]
+        if span >= 0.6 * self.STILLNESS_WINDOW_S:
+            ys = [y for _, y in st.hip_history]
+            is_still = (max(ys) - min(ys)) / span / body_h < self.stillness_speed_threshold
+        else:
+            is_still = abs(descent_speed) < self.stillness_speed_threshold
 
         return {
             "descent_speed": descent_speed,
             "aspect_ratio": aspect_ratio,
-            "horizontal_pose": aspect_ratio > self.aspect_ratio_threshold,
+            "torso_angle": torso if torso is not None else -1.0,
+            "horizontal_pose": horizontal,
             "head_known": head_known,
             "head_drop": head_drop,
             "head_dropped": head_known and head_drop > self.head_drop_ratio,
-            "is_still": abs(descent_speed) < self.stillness_speed_threshold,
+            "is_still": is_still,
         }
 
     @staticmethod
