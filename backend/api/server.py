@@ -20,7 +20,7 @@ from pathlib import Path
 import cv2
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -219,10 +219,15 @@ def _check_camera_control(request: Request) -> None:
     - the body must be JSON. A cross-site page can't send a JSON POST without a CORS
       preflight, and CORS here allows GET only, so another site can't switch the camera on.
     """
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "camera control")
+
+
+def _check_local_json(request: Request, allow_remote: bool, action: str) -> None:
+    """This machine only (unless ``allow_remote``), and a JSON body (see above)."""
     host = request.client.host if request.client else ""
     local = host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.")
-    if not local and not (config and config.allow_remote_camera_control):
-        raise HTTPException(status_code=403, detail="camera control is only allowed from this computer")
+    if not local and not allow_remote:
+        raise HTTPException(status_code=403, detail=f"{action} is only allowed from this computer")
     if not request.headers.get("content-type", "").startswith("application/json"):
         raise HTTPException(status_code=415, detail="send a JSON body")
 
@@ -465,6 +470,108 @@ def get_meta():
             "zone_alert_cooldown_s": p.config.zone.alert_cooldown,
         },
     })
+
+
+# --- Search (plain-English questions over the event log) -------------------------------------
+
+class SearchIn(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
+
+
+_search_times: deque = deque()
+_search_lock = threading.Lock()
+
+
+def _search_config():
+    p = _require_pipeline()
+    return p.config
+
+
+def _zone_names() -> dict[str, str]:
+    """Zone id -> display name across every running camera (for 'the loading dock')."""
+    names: dict[str, str] = {}
+    with _cameras_lock:
+        pipelines = [pipeline, *_cameras.values()]
+    for p in pipelines:
+        engine = getattr(p, "anomaly_engine", None)
+        for z in (getattr(engine, "zone_overlay_data", None) or []):
+            if z.get("id"):
+                names.setdefault(z["id"], z.get("name") or z["id"])
+    return names
+
+
+def _search_rate_ok(limit_per_min: int) -> bool:
+    now = time.time()
+    with _search_lock:
+        while _search_times and now - _search_times[0] > 60:
+            _search_times.popleft()
+        if len(_search_times) >= max(1, limit_per_min):
+            return False
+        _search_times.append(now)
+        return True
+
+
+@app.get("/api/search/status")
+def search_status():
+    """Whether search is configured (provider, model); never returns keys."""
+    from llm import DEFAULT_MODELS, LLMError, build_llm
+
+    cfg = _search_config()
+    try:
+        client = build_llm(cfg.llm)
+        return {"enabled": True, "provider": client.provider, "model": client.model, "reason": None}
+    except LLMError as e:
+        provider = cfg.llm.provider
+        return {"enabled": False, "provider": provider, "model": cfg.llm.model or DEFAULT_MODELS.get(provider),
+                "reason": str(e)}
+
+
+@app.post("/api/search")
+def search(body: SearchIn, request: Request):
+    """Answer a question about recorded events. Streams Server-Sent Events: ``tool_call`` and
+    ``tool_result`` steps as the agent works, then one ``done`` with the answer and the cited
+    events (or ``error``). Read-only; only event metadata is sent to the LLM provider."""
+    from llm import LLMError, build_llm
+    from search import SearchAgent, SearchTools
+
+    cfg = _search_config()
+    _check_local_json(request, cfg.search.allow_remote, "search")
+    store = _store()
+    try:
+        llm = build_llm(cfg.llm)
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    if not _search_rate_ok(cfg.search.rate_limit_per_min):
+        raise HTTPException(status_code=429, detail="too many questions; try again in a minute")
+
+    agent = SearchAgent(llm, SearchTools(store, _zone_names()), max_steps=cfg.search.max_steps,
+                        max_tokens=cfg.search.max_tokens_per_question)
+
+    def sse(payload: dict) -> str:
+        return f"data: {json.dumps(to_serializable(payload))}\n\n"
+
+    def stream():
+        try:
+            for step in agent.run(body.question):
+                if step["type"] != "done":
+                    yield sse(step)
+                    continue
+                r = step["result"]
+                cited = [store.get(i) for i in r.citations]
+                yield sse({
+                    "type": "done", "answer": r.answer, "stop": r.stop, "error": r.error,
+                    "citations": [_event_json(e) for e in cited if e is not None],
+                    "removed_citations": r.removed_citations, "steps": r.steps,
+                    "tool_calls": r.tool_calls, "latency_s": r.latency_s,
+                    "usage": {"input_tokens": r.usage.input_tokens, "output_tokens": r.usage.output_tokens},
+                    "provider": r.provider, "model": r.model,
+                })
+        except Exception as e:  # never leave the client hanging mid-stream
+            logger.exception("search failed")
+            yield sse({"type": "error", "error": f"search failed: {e}"})
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/zones")
