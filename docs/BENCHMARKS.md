@@ -7,6 +7,7 @@ replaced in place by `--write docs/BENCHMARKS.md`.
 |---|---|
 | Latency and throughput | `python scripts/benchmark.py --write docs/BENCHMARKS.md` |
 | Fall detection accuracy (URFD) | `python training/eval_fall.py --download --write docs/BENCHMARKS.md` |
+| Fall confirmation time sweep | `python training/sweep_fall_confirm.py --write docs/BENCHMARKS.md` |
 | False alarms on other non-fall footage | `python training/eval_false_alarms.py --write docs/BENCHMARKS.md` |
 | Search accuracy | `python scripts/eval_search.py --write docs/BENCHMARKS.md` |
 
@@ -65,6 +66,30 @@ _No squat or kneel footage evaluated yet. Add the ergonomics clip to `data/recor
 This footage totals 3.2 minutes. That is far too little for a real field false-alarm rate, which needs hours of normal work at the target site.
 <!-- benchmark:false-alarms:end -->
 
+## Fall confirmation time sweep
+
+<!-- benchmark:fall-sweep:start -->
+_Measured 2026-10-01 with `python training/sweep_fall_confirm.py` on cuda._ The confirmation time is how long a person must lie still on the ground before the alert. The current default is **1 s**. Detection and pose ran once per video, and only the fall state machine was replayed at each setting. The "gave up" timeout is at least confirmation + 2 s.
+
+No-fall footage: **8.1 min** (URFD ADL 5.0 min, sample clips 3.2 min).
+
+| Confirmation time | URFD recall (confirmed alerts) | Confirmable on URFD | Confirmable but missed (why) | False alarms / hour (no-fall footage) | False alarms (count) |
+|---|---|---|---|---|---|
+| 0.5 s | 3 / 30 (10%) | 23 / 30 | 15 lost from view, 3 left the ground state, 2 not still long enough | 14.8 | 2 |
+| 1 s (default) | 0 / 30 (0%) | 14 / 30 | 7 lost from view, 4 not still long enough, 3 left the ground state | 7.4 | 1 |
+| 2 s | 0 / 30 (0%) | 2 / 30 | 1 lost from view, 1 not still long enough | 0.0 | 0 |
+| 3 s | 0 / 30 (0%) | 0 / 30 | none | 0.0 | 0 |
+| 5 s | 0 / 30 (0%) | 0 / 30 | none | 0.0 | 0 |
+
+**"On the ground" stage recall** (reached FALLEN, the step before confirmation; it is the same at every setting): **25 / 30 (83%)** of URFD falls. 11 of 42 no-fall videos also reached that stage without confirming.
+
+How to read it:
+- URFD trims each fall clip about 1–2 s after the fall. So "Confirmable" caps recall, and at 2 s and above URFD can't tell you anything about recall.
+- "Confirmable but missed": the clip had enough video after reaching the ground, but no alert. *Lost from view*: the person's pose was missing in most later frames. *Left the ground state*: the pose looked upright again, or the wait timed out. *Not still long enough*: the person kept moving on the ground.
+- The false-alarm rate rests on only a few minutes of no-fall video. Treat the rows as a comparison between settings, not a field rate.
+- Your own recordings (`data/recordings/`) are added automatically when this is re-run.
+<!-- benchmark:fall-sweep:end -->
+
 ## Fall detection accuracy (UR Fall Detection dataset)
 
 <!-- benchmark:falls:start -->
@@ -86,12 +111,12 @@ The false-alarm rate rests on only 5.0 minutes of non-fall video (all that URFD 
 
 | Stage | Value |
 |---|---|
-| Fall sequences that reached FALLEN (on the ground, before confirmation) | 20 / 30 (66.7%) |
+| Fall sequences that reached FALLEN (on the ground, before confirmation) | 25 / 30 (83.3%) |
 | Video left after fall onset (median) | 1.70 s |
-| Video left after reaching FALLEN (median) | 0.62 s |
-| ADL sequences that reached FALLEN (not confirmed) | 3 / 40 |
+| Video left after reaching FALLEN (median) | 1.03 s |
+| ADL sequences that reached FALLEN (not confirmed) | 11 / 40 |
 
-URFD trims each fall clip shortly after the fall. Where the detector does reach FALLEN, the median video left after that is shorter than the stillness the detector waits for, so the clip ends before an alert could fire. In about half of the clips that never reach FALLEN, the person stops being detected once on the floor (YOLOv8n misses many lying people at this camera angle). In the rest, the lying pose never crosses the aspect-ratio or head-drop threshold. These numbers describe how the detector behaves on short, trimmed clips. They are not the recall you would see on continuous video, which needs longer fall recordings to measure.
+URFD trims each fall clip shortly after the fall. Where the detector reaches FALLEN, the median video left after that (1.03 s) is barely longer than the 1.0 s of stillness the detector waits for, so many clips end before an alert could fire. The confirmation-time sweep above breaks down the clips that had enough video but still got no alert (mostly the person is lost from view once on the floor). These numbers describe how the detector behaves on short, trimmed clips. They are not the recall you would see on continuous video, which needs longer fall recordings to measure.
 <!-- benchmark:falls:end -->
 
 ## Search accuracy

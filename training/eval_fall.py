@@ -278,12 +278,13 @@ def markdown(s: dict, device: str, tolerance_s: float, stillness_s: float = 1.0)
         f"| Video left after reaching FALLEN (median) | {fmt(s['video_after_fallen_median_s'])} s |",
         f"| ADL sequences that reached FALLEN (not confirmed) | {s['adl_reaching_fallen']} / {s['adl_sequences']} |",
         "",
-        "URFD trims each fall clip shortly after the fall. Where the detector does reach FALLEN, "
-        "the median video left after that is shorter than the stillness the detector waits for, so "
-        "the clip ends before an alert could fire. In about half of the clips that never reach "
-        "FALLEN, the person stops being detected once on the floor (YOLOv8n misses many lying "
-        "people at this camera angle). In the rest, the lying pose never crosses the aspect-ratio "
-        "or head-drop threshold. These numbers describe how the detector behaves on "
+        "URFD trims each fall clip shortly after the fall. Where the detector reaches FALLEN, the "
+        f"median video left after that ({fmt(s['video_after_fallen_median_s'])} s) is "
+        f"{'shorter than' if (s['video_after_fallen_median_s'] or 0) < stillness_s else 'barely longer than'} "
+        f"the {stillness_s:.1f} s of stillness the detector waits for, so many clips end before an "
+        "alert could fire. The confirmation-time sweep above breaks down the clips that had enough "
+        "video but still got no alert (mostly the person is lost from view once on the floor). "
+        "These numbers describe how the detector behaves on "
         "short, trimmed clips. They are not the recall you would see on continuous video, "
         "which needs longer fall recordings to measure.",
         SECTION_END,
