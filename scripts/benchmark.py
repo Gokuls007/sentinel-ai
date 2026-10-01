@@ -33,7 +33,9 @@ from core.pipeline import SentinelPipeline
 from core.samples import SAMPLES, ensure_sample
 from main import apply_demo_config
 
-LAYERS = ["decode", "detect_track", "pose", "analytics", "annotate", "events_and_clips", "stream"]
+LAYERS = ["decode", "detect_track", "pose", "analytics", "ergonomics", "annotate", "events_and_clips", "stream"]
+# "ergonomics" (REBA scoring) runs inside "analytics" and is reported separately, not added to the total.
+SUB_LAYERS = {"ergonomics"}
 SECTION_START = "<!-- benchmark:latency:start -->"
 SECTION_END = "<!-- benchmark:latency:end -->"
 
@@ -83,7 +85,7 @@ def run(video: str, config_path: str | None, device: str, frames: int | None, wa
             per_layer["decode"].append(decode_ms)
             for name in LAYERS[1:]:
                 per_layer[name].append(result.timings_ms.get(name, 0.0))
-            totals.append(decode_ms + sum(result.timings_ms.values()))
+            totals.append(decode_ms + sum(v for k, v in result.timings_ms.items() if k not in SUB_LAYERS))
         i += 1
     wall = time.perf_counter() - (wall_start or time.perf_counter())
     cap.release()
@@ -150,6 +152,8 @@ def markdown(results: list[dict], sample: str) -> str:
         "`model.track` call, so they are not timed separately.",
         "- `events_and_clips` is clip/snapshot saving, event publishing (store, notifications, "
         "WebSocket) and the clip ring buffer. Encoding runs on a background thread, not here.",
+        "- `ergonomics` (REBA from the existing pose output) is part of `analytics`, shown on its own "
+        "and not counted twice in the total.",
         "- `stream` is the JPEG encode and JSON serialisation the server does once per frame for "
         "all dashboard clients.",
         "- Capture waiting is excluded: live sources are paced by the camera, and files by their "
