@@ -26,10 +26,11 @@ const ZonePanel = ({ connected }) => {
                 </span>
                 <span className="text-[8px] mono uppercase text-white/40">{z.type}</span>
               </div>
-              {((z.type === 'time_limited' && z.time_limit) || z.direction) && (
+              {((z.type === 'time_limited' && z.time_limit) || z.direction || z.load_score > 0) && (
                 <div className="text-[8px] mono text-white/40 mt-0.5">
                   {z.type === 'time_limited' && z.time_limit ? <span>LIMIT::{z.time_limit}s </span> : null}
-                  {z.direction && <span>DIR::{Array.isArray(z.direction) ? z.direction.join(',') : String(z.direction)}</span>}
+                  {z.direction && <span>DIR::{Array.isArray(z.direction) ? z.direction.join(',') : String(z.direction)} </span>}
+                  {z.load_score > 0 && <span title="REBA load/force score">LOAD::{z.load_score}</span>}
                 </div>
               )}
             </div>

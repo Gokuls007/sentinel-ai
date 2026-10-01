@@ -20,7 +20,7 @@ from pathlib import Path
 
 logger = logging.getLogger("sentinel.events.migrate")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _V1_TABLE = """
 CREATE TABLE IF NOT EXISTS events (
@@ -42,6 +42,20 @@ CREATE TABLE IF NOT EXISTS events (
     created_at REAL NOT NULL DEFAULT (strftime('%s', 'now'))
 )
 """
+# v2: seconds at each REBA risk level, accumulated per day / camera / grouping.
+# kind is "zone" (key = zone id, "" = no zone), "hour" (key = "0".."23") or "track" (key = track id).
+_V2_ERGO_TABLE = """
+CREATE TABLE IF NOT EXISTS ergo_time (
+    day TEXT NOT NULL,
+    camera_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    key TEXT NOT NULL,
+    level INTEGER NOT NULL,
+    seconds REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, camera_id, kind, key, level)
+)
+"""
+
 _V1_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_events_start ON events (start_ts)",
     "CREATE INDEX IF NOT EXISTS idx_events_type ON events (type, start_ts)",
@@ -139,6 +153,10 @@ def migrate(db_path: str | os.PathLike) -> int:
         legacy = version == 0 and _is_legacy(conn)
         if version >= SCHEMA_VERSION:
             return version
+        if version >= 1:  # v1 -> v2 only adds a table: no backup needed
+            conn.execute(_V2_ERGO_TABLE)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            return SCHEMA_VERSION
     if legacy and exists_with_data:
         saved = backup(db_path)
         logger.info("Backed up %s to %s before migrating the event schema", db_path, saved)
@@ -150,5 +168,6 @@ def migrate(db_path: str | os.PathLike) -> int:
             conn.execute(_V1_TABLE)
         for statement in _V1_INDEXES:
             conn.execute(statement)
+        conn.execute(_V2_ERGO_TABLE)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return SCHEMA_VERSION

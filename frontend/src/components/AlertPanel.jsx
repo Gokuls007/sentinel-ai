@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import DashboardPanel from './DashboardPanel';
 import { apiUrl, useNow } from '../lib/api';
+import { eventTypeLabel } from '../lib/eventTypes';
 
 const SEVERITY_COLORS = {
   critical: 'text-red-500 bg-red-950/20 border-red-500/50 glow-red',
@@ -43,7 +44,7 @@ const AlertItem = ({ alert, nowMs }) => {
               {new Date(alert.timestamp * 1000).toLocaleTimeString()}
             </span>
             <span className="text-[8px] font-extrabold tracking-widest uppercase small-caps">
-              {alert.alert_type} // {alert.severity}
+              {eventTypeLabel(alert.alert_type)} // {alert.severity}
             </span>
           </div>
           <div className="text-[10px] uppercase font-bold tracking-tight outfit break-words">

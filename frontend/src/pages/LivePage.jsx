@@ -8,11 +8,13 @@ import TrackList from '../components/TrackList';
 import AlertPanel from '../components/AlertPanel';
 import AlertTimeline from '../components/AlertTimeline';
 import ZonePanel from '../components/ZonePanel';
+import ErgonomicsPanel from '../components/ErgonomicsPanel';
 
 const PANELS_KEY = 'sentinel.live.panels';
 const PANEL_OPTIONS = [
   ['overlay', 'Video overlay'],
   ['stats', 'Stats'],
+  ['ergonomics', 'Ergonomics'],
   ['tracks', 'Tracks'],
   ['alerts', 'Alerts'],
   ['timeline', 'Timeline'],
@@ -60,6 +62,11 @@ const LiveTracks = ({ connected }) => {
   return <TrackList connected={connected} frameData={frameData} />;
 };
 
+const LiveErgonomics = ({ connected }) => {
+  const { frameData } = useFrame();
+  return <ErgonomicsPanel connected={connected} ergonomics={frameData ? frameData.ergonomics : null} />;
+};
+
 const EngineMs = () => {
   const { frameData } = useFrame();
   if (frameData?.processing_time_ms == null) return null;
@@ -95,7 +102,7 @@ const LivePage = () => {
   const { data: health } = usePoll('/api/health', 5000, connected);
   const [panels, toggle] = usePanelToggles();
 
-  const sideVisible = panels.stats || panels.tracks || panels.alerts;
+  const sideVisible = panels.stats || panels.ergonomics || panels.tracks || panels.alerts;
   const bottomVisible = panels.timeline || panels.zones;
 
   return (
@@ -145,6 +152,11 @@ const LivePage = () => {
             {panels.stats && (
               <div className="flex-none">
                 <LiveStats />
+              </div>
+            )}
+            {panels.ergonomics && (
+              <div className="flex-none border-t border-cyan-500/5 pt-2">
+                <LiveErgonomics connected={connected} />
               </div>
             )}
             {panels.tracks && (

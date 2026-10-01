@@ -15,6 +15,9 @@ class Zone:
     required_ppe: list[str] = None
     direction: str | None = None # "left", "right", "up", "down"
     active: bool = True
+    # REBA load/force score for people working in this zone (0: <5 kg, 1: 5-10 kg, 2: >10 kg,
+    # +1 shock/rapid force), e.g. 2 for a loading dock. 0 = unknown/none.
+    load_score: int = 0
 
     def __post_init__(self):
         if self.required_ppe is None:
@@ -72,6 +75,11 @@ class ZoneMonitor:
         self.track_zone_entry.clear()
         self.track_inside.clear()
         self.last_alert.clear()
+
+    def zones_of(self, track_id: int) -> list[Zone]:
+        """Active zones this person was inside at their last check."""
+        inside = {zid for (tid, zid), flag in self.track_inside.items() if tid == track_id and flag}
+        return [z for z in self.zones if z.active and z.id in inside]
 
     def replace_zones(self, zones: list[Zone]) -> None:
         """Replace the zones and save them to this monitor's zones file (zone editor)."""
@@ -219,5 +227,6 @@ class ZoneMonitor:
                 "polygon_normalized": [list(p) for p in zone.polygon],
                 "time_limit": zone.time_limit,
                 "direction": zone.direction,
+                "load_score": zone.load_score,
             })
         return overlay_zones

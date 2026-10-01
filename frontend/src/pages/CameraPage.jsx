@@ -5,6 +5,7 @@ import DashboardPanel from '../components/DashboardPanel';
 import VideoFeed from '../components/VideoFeed';
 import AlertPanel from '../components/AlertPanel';
 import ZoneEditor from '../components/ZoneEditor';
+import ErgonomicsPanel from '../components/ErgonomicsPanel';
 import { useFeed } from '../context/liveFeed';
 import { BACKEND_START_HINT, describeError, fetchJson, isOfflineError, loadStored, postJson, saveStored, wsUrl } from '../lib/api';
 import { connectFeed } from '../lib/feedSocket';
@@ -155,6 +156,10 @@ const CameraFeed = ({ cam }) => {
           }
         />
       </div>
+      {!drawing && (
+        // Frames (and their `ergonomics`) come from this camera's own socket.
+        <ErgonomicsPanel connected={status === 'live'} ergonomics={frameData ? frameData.ergonomics : null} />
+      )}
       <ZoneEditor camera={LAPTOP} frame={frame} onDrawingChange={setDrawing} />
     </div>
   );
