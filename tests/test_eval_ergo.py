@@ -50,3 +50,23 @@ def test_report_separates_reliable_frames_and_excludes_unsure():
     assert s["all_scored"]["n"] == 3 and s["all_scored"]["exact"] == pytest.approx(2 / 3)
     assert s["coverage"] == 0.5
     assert "2D approximation of REBA" in section and "1 marked unsure" in section
+
+
+def test_linear_kappa_known_value_and_weighting():
+    # On two adjacent levels both weightings reduce to Cohen's kappa (0.4 here).
+    pairs = [(1, 1)] * 20 + [(1, 2)] * 5 + [(2, 1)] * 10 + [(2, 2)] * 15
+    assert eval_ergo.weighted_kappa(pairs, weights="linear") == pytest.approx(0.4, abs=1e-9)
+    # Hand-computed 3-level case (weights |i-j|/2): observed disagreement 0.5/10 = 0.05;
+    # marginals label (5,4,1), system (4,5,1) give expected disagreement 34/100 = 0.34;
+    # kappa = 1 - 0.05 / 0.34 = 0.8529.
+    pairs = [(1, 1)] * 4 + [(1, 2)] * 1 + [(2, 2)] * 4 + [(3, 3)] * 1
+    assert eval_ergo.weighted_kappa(pairs, k=3, weights="linear") == pytest.approx(1 - 0.05 / 0.34)
+    m = eval_ergo.agreement([(1, 2), (3, 3), (5, 5)])
+    assert m["kappa_linear"] is not None and m["kappa"] is not None
+    with pytest.raises(ValueError):
+        eval_ergo.weighted_kappa(pairs, weights="cubic")
+
+
+def test_report_states_single_non_expert_labeller_and_linear_kappa():
+    section, _ = eval_ergo.report("clip.mp4", {"0": {"level": 2}}, {0: {"level": 2, "reliable": True}}, "cpu")
+    assert "single non-expert labeller" in section and "Linearly weighted kappa" in section

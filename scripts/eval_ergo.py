@@ -10,7 +10,8 @@ compared with the label.
 
 Reported:
 - exact agreement and within-one-level agreement on the 5 REBA risk levels;
-- quadratic-weighted Cohen's kappa (chance-corrected, penalising big disagreements more);
+- linearly and quadratically weighted Cohen's kappa (chance-corrected; risk levels are
+  ordinal, and quadratic weights penalise big disagreements more);
 - a confusion matrix;
 - coverage: the share of labelled frames where the system had a *reliable* (confident)
   score. Agreement is reported for reliable frames and for all scored frames.
@@ -37,8 +38,15 @@ SECTION_START = "<!-- benchmark:ergonomics:start -->"
 SECTION_END = "<!-- benchmark:ergonomics:end -->"
 
 
-def weighted_kappa(pairs: list[tuple[int, int]], k: int = 5) -> float | None:
-    """Quadratic-weighted Cohen's kappa for ordinal labels 1..k."""
+def weighted_kappa(pairs: list[tuple[int, int]], k: int = 5, weights: str = "quadratic") -> float | None:
+    """Weighted Cohen's kappa for ordinal labels 1..k.
+
+    ``weights``: "linear" (disagreement cost |i - j|) or "quadratic" ((i - j)^2), both scaled
+    to 0..1. Linear treats each level of disagreement equally; quadratic punishes large
+    disagreements (e.g. negligible vs high) much more than adjacent ones.
+    """
+    if weights not in ("linear", "quadratic"):
+        raise ValueError("weights must be 'linear' or 'quadratic'")
     n = len(pairs)
     if n == 0:
         return None
@@ -50,7 +58,7 @@ def weighted_kappa(pairs: list[tuple[int, int]], k: int = 5) -> float | None:
     num = den = 0.0
     for i in range(k):
         for j in range(k):
-            w = ((i - j) ** 2) / ((k - 1) ** 2)
+            w = abs(i - j) / (k - 1) if weights == "linear" else ((i - j) ** 2) / ((k - 1) ** 2)
             num += w * obs[i][j]
             den += w * row[i] * col[j] / n
     return 1.0 - num / den if den else None
@@ -59,12 +67,13 @@ def weighted_kappa(pairs: list[tuple[int, int]], k: int = 5) -> float | None:
 def agreement(pairs: list[tuple[int, int]]) -> dict:
     n = len(pairs)
     if not n:
-        return {"n": 0, "exact": None, "within_one": None, "kappa": None}
+        return {"n": 0, "exact": None, "within_one": None, "kappa": None, "kappa_linear": None}
     return {
         "n": n,
         "exact": sum(a == b for a, b in pairs) / n,
         "within_one": sum(abs(a - b) <= 1 for a, b in pairs) / n,
         "kappa": weighted_kappa(pairs),
+        "kappa_linear": weighted_kappa(pairs, weights="linear"),
     }
 
 
@@ -133,6 +142,7 @@ def report(video: str, labels: dict, system: dict[int, dict], device: str) -> tu
         f"| Frames compared | {rel_m['n']} | {all_m['n']} |",
         f"| Exact level agreement | {pct(rel_m['exact'])} | {pct(all_m['exact'])} |",
         f"| Within one level | {pct(rel_m['within_one'])} | {pct(all_m['within_one'])} |",
+        f"| Linearly weighted kappa | {num(rel_m['kappa_linear'])} | {num(all_m['kappa_linear'])} |",
         f"| Quadratic-weighted kappa | {num(rel_m['kappa'])} | {num(all_m['kappa'])} |",
         "",
         f"Coverage: the system had a reliable (side-view) score on **{pct(coverage)}** of labelled frames.",
@@ -143,9 +153,10 @@ def report(video: str, labels: dict, system: dict[int, dict], device: str) -> tu
         "|---|" + "---|" * 5,
         *[f"| {NAMES[r]} | " + " | ".join(str(cm[r - 1][c - 1]) for c in LEVELS) + " |" for r in LEVELS],
         "",
-        "This is a **2D approximation of REBA** compared with one person's judgement of risk level, "
-        "not a certified ergonomic assessment. Wrist angle, twisting and load are not measured "
-        "(see `backend/ergonomics/reba.py`).",
+        "**Labels come from a single non-expert labeller** (blind to the system's output), not "
+        "from a trained ergonomist, so agreement measures consistency with one person's judgement "
+        "rather than accuracy. This is a **2D approximation of REBA**, not a certified ergonomic "
+        "assessment; wrist angle, twisting and load are not measured (see `backend/ergonomics/reba.py`).",
         SECTION_END,
     ]
     summary = {"labelled": len(labelled), "unsure": unsure, "coverage": coverage,
