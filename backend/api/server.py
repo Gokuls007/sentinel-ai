@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from config.settings import SentinelConfig
 from core.pipeline import FrameResult, SentinelPipeline
+from core.recorder import Recorder
 from core.utils import to_serializable
 from events import EVENT_TYPES, GROUP_BY_KEYS, SEVERITIES, Event, EventStore
 
@@ -242,7 +243,7 @@ def _camera_info(camera_id: str) -> dict:
         state.update(fps=p.stats["avg_fps"], frames=p.frame_count,
                      source_error=src.get("error_message") or "",
                      hardware_error=bool(src.get("hardware_error")))
-    return {"id": camera_id, "kind": "webcam", **state}
+    return {"id": camera_id, "kind": "webcam", **state, "recording": _recorder_status(camera_id)}
 
 
 @app.get("/api/cameras")
@@ -292,6 +293,7 @@ def _run_camera(camera_id: str, cfg: SentinelConfig) -> None:
         with _cameras_lock:
             _camera_state[camera_id] = {"status": "error", "error": str(e), "source": cfg.source}
     finally:
+        _stop_recorder(camera_id)  # close the file if the camera stops while recording
         with _cameras_lock:
             _cameras.pop(camera_id, None)
             _camera_frames.pop(camera_id, None)
@@ -335,6 +337,61 @@ def stop_laptop_camera(request: Request):
         if _camera_state.get(LAPTOP_CAMERA, {}).get("status") == "stopping":
             _camera_state[LAPTOP_CAMERA] = {"status": "stopped"}
     return _camera_info(LAPTOP_CAMERA)
+
+
+_recorders: dict[str, Recorder] = {}
+
+
+def _recordings_dir() -> Path:
+    db_path = config.output.db_path if config else "data/events.db"
+    return Path(db_path).resolve().parent / "recordings"
+
+
+def _recorder_status(camera_id: str) -> dict:
+    """Recording state; file names only (they all live in the recordings folder)."""
+    rec = _recorders.get(camera_id)
+    status = rec.status() if rec else {"recording": False, "path": None, "seconds": 0.0, "last_path": None,
+                                       "last_seconds": 0.0}
+    for key in ("path", "last_path"):
+        if status.get(key):
+            status[key] = Path(status[key]).name
+    status["folder"] = str(_recordings_dir())
+    return status
+
+
+def _stop_recorder(camera_id: str) -> None:
+    rec = _recorders.get(camera_id)
+    if rec is not None and rec.recording:
+        rec.stop()
+
+
+@app.post("/api/cameras/laptop/record/start")
+def start_recording(request: Request):
+    """Record the laptop camera's raw frames (no overlays) to data/recordings/*.mp4."""
+    _check_camera_control(request)
+    with _cameras_lock:
+        p = _cameras.get(LAPTOP_CAMERA)
+    if p is None:
+        raise HTTPException(status_code=409, detail="start the camera first")
+    rec = _recorders.get(LAPTOP_CAMERA)
+    if rec is None:
+        rec = _recorders[LAPTOP_CAMERA] = Recorder(str(_recordings_dir()), prefix="laptop")
+    rec.start()
+    p.video_source.recorder = rec
+    return _recorder_status(LAPTOP_CAMERA)
+
+
+@app.post("/api/cameras/laptop/record/stop")
+def stop_recording(request: Request):
+    _check_camera_control(request)
+    rec = _recorders.get(LAPTOP_CAMERA)
+    if rec is not None:
+        rec.stop()
+    with _cameras_lock:
+        p = _cameras.get(LAPTOP_CAMERA)
+    if p is not None:
+        p.video_source.recorder = None
+    return _recorder_status(LAPTOP_CAMERA)
 
 
 @app.get("/api/alerts")

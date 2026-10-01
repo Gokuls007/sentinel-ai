@@ -7,7 +7,9 @@ import AlertPanel from '../components/AlertPanel';
 import ZoneEditor from '../components/ZoneEditor';
 import ErgonomicsPanel from '../components/ErgonomicsPanel';
 import { useFeed } from '../context/liveFeed';
-import { BACKEND_START_HINT, describeError, fetchJson, isOfflineError, loadStored, postJson, saveStored, wsUrl } from '../lib/api';
+import {
+  BACKEND_START_HINT, describeError, fetchJson, formatDuration, isOfflineError, loadStored, postJson, saveStored, useNow, wsUrl,
+} from '../lib/api';
 import { connectFeed } from '../lib/feedSocket';
 import { inputClass, labelClass } from '../lib/ui';
 
@@ -127,6 +129,62 @@ const StatTile = ({ icon, label, value }) => {
 };
 
 const show = (v, fmt = (x) => x) => (v == null ? '--' : fmt(v));
+
+/** Record the raw webcam video (no overlays) to data/recordings, for test clips. */
+const RecordControl = ({ cam, onChange }) => {
+  const rec = cam?.recording || {};
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [startedAt, setStartedAt] = useState(null);
+  const now = useNow(500);
+  const recording = Boolean(rec.recording);
+  // Elapsed time: the server's count at the last poll, advanced locally between polls.
+  const [base, setBase] = useState({ seconds: 0, at: 0 });
+  const [seenSeconds, setSeenSeconds] = useState(null);
+  if (rec.seconds !== seenSeconds) {
+    setSeenSeconds(rec.seconds);
+    setBase({ seconds: rec.seconds || 0, at: Date.now() });
+  }
+  const elapsed = recording ? Math.max(base.seconds + (now - base.at) / 1000, startedAt ? (now - startedAt) / 1000 : 0) : 0;
+
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const info = await postJson(`/api/cameras/${LAPTOP}/record/${recording ? 'stop' : 'start'}`, {});
+      setStartedAt(recording ? null : Date.now());
+      onChange({ id: LAPTOP, recording: info });
+    } catch (err) {
+      setError(err.detail || err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-3">
+      {!recording && rec.last_path && (
+        <span className="text-[10px] mono text-white/50" title={rec.folder}>
+          Saved {rec.last_path} ({Number(rec.last_seconds).toFixed(0)} s) in data/recordings
+        </span>
+      )}
+      {error && <span className="text-[10px] mono text-red-300">{error}</span>}
+      <button
+        type="button"
+        onClick={toggle}
+        disabled={busy}
+        aria-pressed={recording}
+        title="Saves the raw camera video (no overlays) to data/recordings, e.g. for fall or ergonomics test clips"
+        className={`${buttonBase} flex items-center gap-2 ${
+          recording ? 'border-red-500 text-white bg-red-600 hover:bg-red-500' : 'border-white/30 text-white/80 hover:border-red-400 hover:text-red-300'
+        }`}
+      >
+        <span className={`w-2.5 h-2.5 rounded-full ${recording ? 'bg-white animate-pulse' : 'bg-red-500'}`} aria-hidden="true" />
+        {recording ? `Stop recording ${formatDuration(elapsed).slice(3)}` : 'Record clip'}
+      </button>
+    </div>
+  );
+};
 
 /** Live webcam panel: owns the frame socket, so frames only re-render this subtree. */
 const CameraFeed = ({ cam }) => {
@@ -251,6 +309,8 @@ const CameraPage = () => {
           Laptop camera events
         </Link>
       </div>
+      <div className="flex items-center gap-3">
+      {running && !stopping && <RecordControl cam={cam} onChange={apply} />}
       {(running || starting) && (
         <button
           type="button"
@@ -261,6 +321,7 @@ const CameraPage = () => {
           Stop camera
         </button>
       )}
+      </div>
     </div>
   );
 

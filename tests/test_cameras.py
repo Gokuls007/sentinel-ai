@@ -1,6 +1,7 @@
 """Laptop-webcam camera API with a fake pipeline (no models, no real camera)."""
 
 import json
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -243,3 +244,35 @@ def test_laptop_camera_source_override_from_settings(cam_client, tmp_config):
     assert wait_for(lambda: laptop(cam_client)["status"] == "running")
     fake = FakePipeline.instances[0]
     assert fake.config.source == "demo_videos/corridor_sample.mp4" and fake.config.loop is True
+
+
+def test_record_raw_frames_while_the_camera_runs(cam_client, tmp_config):
+    import numpy as np
+
+    assert cam_client.post("/api/cameras/laptop/record/start", json={}).status_code == 409  # camera off
+    cam_client.post("/api/cameras/laptop/start", json={"index": 0})
+    assert wait_for(lambda: laptop(cam_client)["status"] == "running")
+    started = cam_client.post("/api/cameras/laptop/record/start", json={}).json()
+    assert started["recording"] and started["path"].startswith("laptop_") and started["path"].endswith(".mp4")
+    source = FakePipeline.instances[0].video_source
+    assert source.recorder is not None
+    for i in range(20):  # what VideoSource's capture thread does with each frame
+        source.recorder.write(np.zeros((72, 128, 3), np.uint8), 10.0 + i * 0.1)
+    assert laptop(cam_client)["recording"]["recording"] is True
+    stopped = cam_client.post("/api/cameras/laptop/record/stop", json={}).json()
+    assert not stopped["recording"] and stopped["last_path"] == started["path"]
+    assert stopped["last_seconds"] >= 1.9 and source.recorder is None
+    saved = os.path.join(os.path.dirname(tmp_config.output.db_path), "recordings", started["path"])
+    assert os.path.getsize(saved) > 0
+
+
+def test_stopping_the_camera_closes_an_open_recording(cam_client):
+    import numpy as np
+
+    cam_client.post("/api/cameras/laptop/start", json={"index": 0})
+    assert wait_for(lambda: laptop(cam_client)["status"] == "running")
+    cam_client.post("/api/cameras/laptop/record/start", json={})
+    FakePipeline.instances[0].video_source.recorder.write(np.zeros((72, 128, 3), np.uint8), 1.0)
+    cam_client.post("/api/cameras/laptop/stop", json={})
+    rec = laptop(cam_client)["recording"]
+    assert rec["recording"] is False and rec["last_path"]

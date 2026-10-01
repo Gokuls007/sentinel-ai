@@ -44,6 +44,7 @@ class VideoSource:
         self.stop_event = threading.Event()
         self.capture_thread: threading.Thread | None = None
         self.cap: cv2.VideoCapture | None = None
+        self.recorder = None  # optional core.recorder.Recorder fed every captured frame
 
         # Stats
         self.frames_read = 0
@@ -172,6 +173,9 @@ class VideoSource:
                 timestamp = time.time()
 
             self._put((frame, timestamp))
+            recorder = self.recorder
+            if recorder is not None:
+                recorder.write(frame, timestamp)
             self.frames_read += 1
             self._fps_counter += 1
 
