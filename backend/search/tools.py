@@ -118,7 +118,7 @@ class SearchTools:
     def current_time(self) -> dict[str, Any]:
         now = datetime.fromtimestamp(self.now())
         return {"now": now.strftime("%Y-%m-%dT%H:%M:%S"), "weekday": now.strftime("%A"),
-                "note": "Weeks start on Monday. All times are local."}
+                "ranges": date_ranges(now), "note": "Weeks start on Monday. All times are local."}
 
     def list_values(self, field: str = "zone", **unknown: Any) -> dict[str, Any]:
         _reject_unknown(unknown)
@@ -269,6 +269,30 @@ class SearchTools:
         if e.verified is not None:
             item["verified"] = bool(e.verified)
         return item
+
+
+def date_ranges(now: datetime) -> dict[str, dict[str, str]]:
+    """Calendar ranges people ask about, as inclusive local dates (models get weekday
+    arithmetic wrong surprisingly often, so it is done here)."""
+    today = now.date()
+    monday = today - timedelta(days=today.weekday())
+    last_monday = monday - timedelta(days=7)
+    month_start = today.replace(day=1)
+    last_month_end = month_start - timedelta(days=1)
+
+    def span(a: date, b: date) -> dict[str, str]:
+        return {"start": a.isoformat(), "end": b.isoformat()}
+
+    return {
+        "today": span(today, today),
+        "yesterday": span(today - timedelta(days=1), today - timedelta(days=1)),
+        "this_week": span(monday, monday + timedelta(days=6)),
+        "last_week": span(last_monday, last_monday + timedelta(days=6)),
+        "last_weekend": span(monday - timedelta(days=2), monday - timedelta(days=1)),
+        "this_month": span(month_start, today),
+        "last_month": span(last_month_end.replace(day=1), last_month_end),
+        "last_7_days": span(today - timedelta(days=6), today),
+    }
 
 
 def parse_local_time(value: Any, end_of_day: bool) -> float:

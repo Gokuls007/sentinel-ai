@@ -29,9 +29,26 @@ def test_seed_ids_follow_order_and_cover_every_type(tools):
                                       "ergo_risk", "near_miss"}
 
 
-def test_current_time_is_injected():
+def test_current_time_is_injected_with_calendar_ranges():
     t = SearchTools(store=None, now=now_ts).current_time()
-    assert t == {"now": "2026-09-30T15:00:00", "weekday": "Wednesday", "note": t["note"]}
+    assert (t["now"], t["weekday"]) == ("2026-09-30T15:00:00", "Wednesday")
+    r = t["ranges"]
+    assert r["today"] == {"start": "2026-09-30", "end": "2026-09-30"}
+    assert r["yesterday"] == {"start": "2026-09-29", "end": "2026-09-29"}
+    assert r["this_week"] == {"start": "2026-09-28", "end": "2026-10-04"}
+    assert r["last_week"] == {"start": "2026-09-21", "end": "2026-09-27"}
+    assert r["last_weekend"] == {"start": "2026-09-26", "end": "2026-09-27"}
+    assert r["last_month"] == {"start": "2026-08-01", "end": "2026-08-31"}
+
+
+def test_ranges_on_a_monday_and_in_january():
+    from datetime import datetime
+
+    from search.tools import date_ranges
+
+    r = date_ranges(datetime(2027, 1, 4, 9, 0))  # a Monday
+    assert r["this_week"]["start"] == "2027-01-04" and r["last_week"] == {"start": "2026-12-28", "end": "2027-01-03"}
+    assert r["last_month"] == {"start": "2026-12-01", "end": "2026-12-31"}
 
 
 @pytest.mark.parametrize(("args", "expected"), [

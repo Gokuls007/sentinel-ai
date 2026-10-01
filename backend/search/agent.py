@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Any
 
 from llm.base import LLMClient, LLMError, Message, Usage
-from search.tools import SearchTools, ToolError, tool_specs
+from search.tools import SearchTools, ToolError, date_ranges, tool_specs
 
 CITATION = re.compile(r"\[#(\d+)\]")
 BOLD_BARE_ID = re.compile(r"\*\*#(\d+)\*\*")
@@ -35,8 +35,8 @@ zone, optional track id (one tracked person on one camera), and start/end times.
 How to work:
 - Always get facts from the tools. Never guess numbers, times or ids.
 - Use count_events for "how many" questions and find_events to list or inspect events.
-- Resolve relative dates ("today", "yesterday", "this week", "after 6pm") against the \
-current local time below. Weeks start on Monday. "Last week" is the previous Monday-Sunday.
+- Resolve relative dates ("today", "yesterday", "this week", "after 6pm") with the \
+date ranges below; do not work out weekdays yourself. Weeks start on Monday.
 - If the user names a zone loosely ("the dock"), pass it as the zone filter; the tool \
 matches names. If it is ambiguous, say which zones exist.
 - If nothing matches, say so plainly (for example "No falls were recorded yesterday.").
@@ -47,7 +47,8 @@ How to answer:
 - Use local times like "Tue 30 Sep, 14:05". Don't mention the tools or JSON.
 - Track ids are per camera and are reused over time, so call them "track 12", not "person 12".
 
-Current local time: {now} ({weekday})."""
+Current local time: {now} ({weekday}).
+Date ranges (inclusive; pass them as start and end): {ranges}"""
 
 
 @dataclass
@@ -124,7 +125,9 @@ class SearchAgent:
         result = SearchResult(question=question, provider=self.llm.provider, model=self.llm.model)
         self.tools.seen_event_ids.clear()
         now = datetime.fromtimestamp(self.tools.now())
-        system = SYSTEM_PROMPT.format(now=now.strftime("%Y-%m-%d %H:%M"), weekday=now.strftime("%A"))
+        ranges = "; ".join(f"{name.replace('_', ' ')} = {r['start']} to {r['end']}"
+                           for name, r in date_ranges(now).items())
+        system = SYSTEM_PROMPT.format(now=now.strftime("%Y-%m-%d %H:%M"), weekday=now.strftime("%A"), ranges=ranges)
         messages: list[Message] = [Message(role="user", content=question)]
 
         def finish(stop: str, answer: str = "", error: str | None = None) -> dict[str, Any]:
