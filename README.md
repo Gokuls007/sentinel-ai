@@ -103,6 +103,31 @@ dashboard says so; it never shows made-up data.
 For frontend development, run `cd frontend && npm run dev` (http://localhost:5173). It
 proxies to the backend on port 8000.
 
+### Search: ask about events in plain English
+The **Search** page answers questions like "how many falls were there at the loading dock
+this week?" or "who went into chemical storage after 6pm yesterday?".
+
+How it works:
+- A language model calls read-only tools over the event log: count, find, look up one
+  event, list zones and cameras.
+- It answers with citations like `[#31]`, each linking to that event's clip.
+- Any citation to an event the tools didn't return is removed, so links never point at
+  made-up events.
+
+Setup:
+1. Put an API key in `.env`. The default, `LLM_PROVIDER=nvidia`, needs `NVIDIA_API_KEY`
+   (free trial keys at build.nvidia.com) and uses `nvidia/nemotron-3-super-120b-a12b`.
+   `LLM_PROVIDER=anthropic` needs `ANTHROPIC_API_KEY` and uses `claude-sonnet-5-5`.
+2. Restart the server.
+
+Privacy and cost:
+- Only event metadata is sent to the provider: type, zone, time, track and message. Video
+  frames and clips are never sent.
+- The model never runs per frame.
+- Search is allowed from this computer only (`ALLOW_REMOTE_SEARCH`) and is rate-limited.
+
+Accuracy is measured by `python scripts/eval_search.py` (see [docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
+
 ## API
 | Endpoint | Returns |
 |---|---|
@@ -112,6 +137,8 @@ proxies to the backend on port 8000.
 | `GET /api/zones`, `GET /api/tracks` | configured zones, and live tracks with fall state |
 | `GET /api/clips/{alert_id}`, `GET /api/snapshots/{alert_id}` | the incident MP4 (H.264) and JPEG |
 | `WS /ws/feed` | `history`, then `alert` and `frame` messages |
+| `POST /api/search {"question"}` | Server-Sent Events: `tool_call` / `tool_result` steps, then `done` with the answer and cited events |
+| `GET /api/search/status` | whether search is configured, plus the provider and model (never keys) |
 
 Set `WEBHOOK_URL` to get every alert POSTed as JSON.
 

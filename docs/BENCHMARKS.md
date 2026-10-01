@@ -8,6 +8,7 @@ replaced in place by `--write docs/BENCHMARKS.md`.
 | Latency and throughput | `python scripts/benchmark.py --write docs/BENCHMARKS.md` |
 | Fall detection accuracy (URFD) | `python training/eval_fall.py --download --write docs/BENCHMARKS.md` |
 | False alarms on other non-fall footage | `python training/eval_false_alarms.py --write docs/BENCHMARKS.md` |
+| Search accuracy | `python scripts/eval_search.py --write docs/BENCHMARKS.md` |
 
 ## Latency and throughput
 
@@ -92,3 +93,42 @@ The false-alarm rate rests on only 5.0 minutes of non-fall video (all that URFD 
 
 URFD trims each fall clip shortly after the fall. Where the detector does reach FALLEN, the median video left after that is shorter than the stillness the detector waits for, so the clip ends before an alert could fire. In about half of the clips that never reach FALLEN, the person stops being detected once on the floor (YOLOv8n misses many lying people at this camera angle). In the rest, the lying pose never crosses the aspect-ratio or head-drop threshold. These numbers describe how the detector behaves on short, trimmed clips. They are not the recall you would see on continuous video, which needs longer fall recordings to measure.
 <!-- benchmark:falls:end -->
+
+## Search accuracy
+
+<!-- benchmark:search:start -->
+_Measured 2026-10-01 with `python scripts/eval_search.py` using **nvidia** `nvidia/nemotron-3-super-120b-a12b`._ The questions are in `tests/search/questions.json`, asked over the fixed event log in `tests/search/seed.py` (45 events; now = Wed 30 Sep 2026, 15:00). Grading is deterministic (numbers, cited event ids, labels), with no LLM judge.
+
+| Metric | Value |
+|---|---|
+| **Accuracy** (3 runs of every question) | **66 / 66 (100.0%)**, 95% CI 94%–100% |
+| Accuracy per run | 100.0%, 100.0%, 100.0% |
+| Questions that passed in some runs only (flaky) | none |
+| Questions that failed in every run | none |
+| Questions written by the user | 0 |
+| Latency per question p50 / p95 | 8.7 s / 28.8 s |
+| Model turns per question (mean) | 2.4 |
+| Tokens per question (mean, input + output) | 5,659 |
+| Runs that ended without an answer (error or budget) | 0 |
+| Made-up citations removed | 0 |
+
+| Category | Passed |
+|---|---|
+| breakdown | 3 / 3 |
+| count | 27 / 27 |
+| list | 15 / 15 |
+| lookup | 9 / 9 |
+| none | 6 / 6 |
+| top-n | 6 / 6 |
+
+The target is ≥ 90%. With 30 or fewer questions, the confidence interval is wide.
+<!-- benchmark:search:end -->
+
+**How to read this.**
+- These 22 questions were written by the developer (Claude). The 8–10 questions the user writes in casual phrasing (`tests/search/user_questions.md`) are not in yet, so treat this as an upper bound until they are.
+- The confidence interval treats the 66 attempts as independent. They are really 22 questions asked 3 times, so the interval over distinct questions is wider (22/22: about 85–100%).
+- Earlier runs on 2026-10-01, before two fixes, scored 21/22 and 19/22:
+  - One failure was a correct answer that cited events as `**#4**` instead of `[#4]`. Bare ids of events the tools returned are now turned into links.
+  - Two failures were real: the model got `this week` wrong, calling Wed 23 Sep a Monday. The agent now gets pre-computed date ranges.
+  - One failure was a grader bug: a no-break space in `Loading Dock`.
+- Each fix generalises beyond these questions, but they were made after seeing these questions fail.
