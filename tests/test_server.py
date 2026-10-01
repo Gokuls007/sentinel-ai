@@ -193,3 +193,9 @@ def test_serialisation_keeps_booleans_and_handles_numpy_bools():
     assert out["a"] is True and out["b"] is False
     json.dumps(out)
 
+
+def test_dashboard_index_is_never_cached(client):
+    if not server.FRONTEND_DIST.is_dir():
+        pytest.skip("dashboard not built")
+    r = client.get("/events")  # any client-side route serves index.html
+    assert r.status_code == 200 and r.headers.get("cache-control") == "no-cache"

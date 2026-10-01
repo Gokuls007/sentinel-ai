@@ -236,3 +236,10 @@ def test_zone_editing_needs_this_computer_and_json(cam_client, running_laptop, t
     tmp_config.allow_remote_camera_control = False
     assert put(cam_client, [DOOR]).status_code == 403
 
+
+def test_laptop_camera_source_override_from_settings(cam_client, tmp_config):
+    tmp_config.laptop_camera_source = "demo_videos/corridor_sample.mp4"
+    cam_client.post("/api/cameras/laptop/start", json={"index": 2})
+    assert wait_for(lambda: laptop(cam_client)["status"] == "running")
+    fake = FakePipeline.instances[0]
+    assert fake.config.source == "demo_videos/corridor_sample.mp4" and fake.config.loop is True

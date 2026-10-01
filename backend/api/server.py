@@ -251,8 +251,11 @@ def list_cameras():
 
 def _laptop_config(index: int) -> SentinelConfig:
     cfg = copy.deepcopy(config)
-    cfg.source = str(index)
-    cfg.loop = False
+    # LAPTOP_CAMERA_SOURCE (set by the operator in .env, never by the API) swaps the webcam
+    # for an IP camera URL or a video file, which loops like the demo.
+    override = config.laptop_camera_source
+    cfg.source = override or str(index)
+    cfg.loop = bool(override) and not override.isdigit() and "://" not in override
     cfg.camera_id = LAPTOP_CAMERA
     cfg.frame_width, cfg.frame_height = 1280, 720
     # No zones by default: the primary camera's zones are drawn for its own view.
@@ -609,7 +612,9 @@ if FRONTEND_DIST.is_dir():
         candidate = (FRONTEND_DIST / path).resolve()
         if path and FRONTEND_DIST.resolve() in candidate.parents and candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(FRONTEND_DIST / "index.html")
+        # index.html names the current hashed bundles: never cache it, or browsers keep
+        # loading the previous build after an update (the hashed assets can be cached).
+        return FileResponse(FRONTEND_DIST / "index.html", headers={"Cache-Control": "no-cache"})
 else:
     @app.get("/", include_in_schema=False)
     def root():

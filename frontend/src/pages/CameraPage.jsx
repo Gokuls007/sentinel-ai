@@ -130,6 +130,7 @@ const show = (v, fmt = (x) => x) => (v == null ? '--' : fmt(v));
 /** Live webcam panel: owns the frame socket, so frames only re-render this subtree. */
 const CameraFeed = ({ cam }) => {
   const { status, frame, frameData } = useLaptopFrames();
+  const [drawing, setDrawing] = useState(false); // drawing a zone: the paused frame replaces the feed
   const stats = frameData?.stats || null;
   const sourceStats = cam?.hardware_error
     ? { hardware_error: true, error_message: cam.source_error || 'Camera could not be opened' }
@@ -141,7 +142,7 @@ const CameraFeed = ({ cam }) => {
         <StatTile icon={Users} label="Persons" value={show(stats?.person_count)} />
         <StatTile icon={Crosshair} label="Tracks" value={show(stats?.active_tracks)} />
       </div>
-      <div className="flex-1 min-h-[360px]">
+      <div className={drawing ? 'hidden' : 'h-[min(62vh,640px)] min-h-[320px]'}>
         <VideoFeed
           title="Laptop Camera"
           frame={frame}
@@ -154,7 +155,7 @@ const CameraFeed = ({ cam }) => {
           }
         />
       </div>
-      <ZoneEditor camera={LAPTOP} frame={frame} />
+      <ZoneEditor camera={LAPTOP} frame={frame} onDrawingChange={setDrawing} />
     </div>
   );
 };

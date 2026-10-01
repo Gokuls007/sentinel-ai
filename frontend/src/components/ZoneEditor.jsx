@@ -54,7 +54,7 @@ const Polygon = ({ points, color, dashed = false, label }) => {
  * Draw the laptop camera's danger zones on a frozen frame and save them.
  * Zones are normalised (0-1) image coordinates, so they fit any resolution.
  */
-const ZoneEditor = ({ camera, frame }) => {
+const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
   const id = useId();
   const imgRef = useRef(null);
   const [zones, setZones] = useState(null); // saved state from the backend (editor shape)
@@ -74,6 +74,7 @@ const ZoneEditor = ({ camera, frame }) => {
   }, [camera]);
 
   const startDraft = () => {
+    onDrawingChange(true);
     setStill(frame);
     setSaved(false);
     setError(null);
@@ -82,7 +83,8 @@ const ZoneEditor = ({ camera, frame }) => {
 
   const addPoint = (e) => {
     if (!draft || !imgRef.current) return;
-    const r = imgRef.current.getBoundingClientRect();
+    e.preventDefault();
+    const r = imgRef.current.getBoundingClientRect(); // the fixed 16:9 box the frame fills
     const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
     const y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
     setDraft((d) => ({ ...d, points: [...d.points, [Number(x.toFixed(4)), Number(y.toFixed(4))]] }));
@@ -99,7 +101,13 @@ const ZoneEditor = ({ camera, frame }) => {
     };
     setZones((z) => [...(z || []), zone]);
     setDraft(null);
+    onDrawingChange(false);
     setDirty(true);
+  };
+
+  const cancelDraft = () => {
+    setDraft(null);
+    onDrawingChange(false);
   };
 
   const remove = (zoneId) => {
@@ -141,35 +149,7 @@ const ZoneEditor = ({ camera, frame }) => {
 
         {drawing && (
           <div className="space-y-2">
-            <p className="text-[11px] mono text-cyan-300">
-              Click on the image to place corners ({draft.points.length} so far, at least 3). The frame is paused
-              while you draw.
-            </p>
-            <div className="relative inline-block w-full select-none">
-              {image ? (
-                <img
-                  ref={imgRef}
-                  src={`data:image/jpeg;base64,${image}`}
-                  alt="Paused camera frame: click to place zone corners"
-                  className="w-full h-auto block cursor-crosshair border border-cyan-500/30"
-                  onClick={addPoint}
-                  draggable={false}
-                />
-              ) : (
-                <div className="p-6 text-[11px] mono text-amber-300 border border-amber-500/30">
-                  No frame yet: wait until the camera image appears, then press Add zone again.
-                </div>
-              )}
-              {image && (
-                <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none" aria-hidden="true">
-                  {(zones || []).map((z) => (
-                    <Polygon key={z.id} points={z.polygon} color={TYPES[z.zone_type]?.color || '#22d3ee'} label={z.name} />
-                  ))}
-                  <Polygon points={draft.points} color={TYPES[draft.zone_type].color} dashed label={draft.name} />
-                </svg>
-              )}
-            </div>
-            <div className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-wrap items-end gap-3 p-2 bg-cyan-950/20 border border-cyan-500/20">
               <div>
                 <label htmlFor={`${id}-name`} className={labelClass}>Name</label>
                 <input id={`${id}-name`} className={inputClass} value={draft.name} maxLength={60}
@@ -198,17 +178,50 @@ const ZoneEditor = ({ camera, frame }) => {
                   </select>
                 </div>
               )}
-              <button type="button" className={`${button} border-white/20 text-white/70`} disabled={!draft.points.length}
-                onClick={() => setDraft({ ...draft, points: draft.points.slice(0, -1) })}>
-                <Undo2 className="w-3.5 h-3.5" aria-hidden="true" /> Undo point
-              </button>
-              <button type="button" className={`${button} border-white/20 text-white/70`} onClick={() => setDraft(null)}>
-                <X className="w-3.5 h-3.5" aria-hidden="true" /> Cancel
-              </button>
-              <button type="button" className={`${button} border-cyan-400 bg-cyan-400 text-black`} disabled={!canFinish} onClick={finishDraft}>
-                <Plus className="w-3.5 h-3.5" aria-hidden="true" /> Add this zone
-              </button>
+              <div className="flex flex-wrap gap-2 ml-auto">
+                <button type="button" className={`${button} border-white/20 text-white/70`} disabled={!draft.points.length}
+                  onClick={() => setDraft({ ...draft, points: draft.points.slice(0, -1) })}>
+                  <Undo2 className="w-3.5 h-3.5" aria-hidden="true" /> Undo point
+                </button>
+                <button type="button" className={`${button} border-white/20 text-white/70`} onClick={cancelDraft}>
+                  <X className="w-3.5 h-3.5" aria-hidden="true" /> Cancel
+                </button>
+                <button type="button" className={`${button} border-cyan-400 bg-cyan-400 text-black`} disabled={!canFinish} onClick={finishDraft}>
+                  <Plus className="w-3.5 h-3.5" aria-hidden="true" /> Add this zone
+                </button>
+              </div>
             </div>
+            <p className="text-[11px] mono text-cyan-300" role="status">
+              {draft.points.length < 3
+                ? `Click the corners of the area on the image (${draft.points.length} of at least 3). The video is paused while you draw.`
+                : `${draft.points.length} corners placed. Add more, or press "Add this zone".`}
+            </p>
+            {image ? (
+              <div
+                ref={imgRef}
+                className="relative w-full aspect-video cursor-crosshair select-none border border-cyan-500/40 bg-black"
+                onClick={addPoint}
+                role="application"
+                aria-label="Paused camera frame: click to place zone corners"
+              >
+                <img
+                  src={`data:image/jpeg;base64,${image}`}
+                  alt=""
+                  className="absolute inset-0 w-full h-full pointer-events-none"
+                  draggable={false}
+                />
+                <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none" aria-hidden="true">
+                  {(zones || []).map((z) => (
+                    <Polygon key={z.id} points={z.polygon} color={TYPES[z.zone_type]?.color || '#22d3ee'} label={z.name} />
+                  ))}
+                  <Polygon points={draft.points} color={TYPES[draft.zone_type].color} dashed label={draft.name} />
+                </svg>
+              </div>
+            ) : (
+              <div className="p-6 text-[11px] mono text-amber-300 border border-amber-500/30">
+                No frame yet: wait until the camera image appears, then press Add zone again.
+              </div>
+            )}
           </div>
         )}
 
