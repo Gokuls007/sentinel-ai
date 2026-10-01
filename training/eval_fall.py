@@ -120,6 +120,12 @@ class SequenceResult:
     fp: int = 0
     fn: int = 0
     latency_s: float | None = None
+    # Stage diagnostics: when the state machine first reached FALLEN (on the ground, waiting
+    # for stillness to confirm), and how much video was left after that.
+    fallen_s: float | None = None
+    video_after_fallen_s: float | None = None
+    video_after_onset_s: float | None = None
+    reached_fallen: bool = False
 
 
 class Models:
@@ -152,9 +158,18 @@ class Models:
 
 
 def score(result: SequenceResult, onset_frame: int | None, tolerance_s: float) -> SequenceResult:
-    """Fill tp/fp/fn/latency from the alert times (see the module docstring)."""
+    """Fill tp/fp/fn/latency from the alert times (see the module docstring), and the FALLEN
+    stage diagnostics from ``fallen_s``."""
+    end_s = max(0, result.frames - 1) / FPS
+    if result.fallen_s is not None:
+        result.video_after_fallen_s = round(end_s - result.fallen_s, 3)
     if onset_frame is not None:
         result.onset_s = (onset_frame - 1) / FPS
+        result.video_after_onset_s = round(end_s - result.onset_s, 3)
+        result.reached_fallen = result.fallen_s is not None and result.fallen_s >= result.onset_s - tolerance_s
+    else:
+        result.reached_fallen = result.fallen_s is not None
+    if onset_frame is not None:
         valid = [t for t in result.alert_times_s if t >= result.onset_s - tolerance_s]
         if valid:
             result.tp = 1
@@ -181,6 +196,10 @@ def run_sequence(models: Models, name: str, zip_path: str, onset_frame: int | No
         for tid, p in poses.items():
             if tid in feats and falls.check(tid, p, feats[tid], ts):
                 result.alert_times_s.append(round(ts, 3))
+            on_ground = falls.state_of(tid) in (falls.FALLEN, falls.CONFIRMED)
+            after_onset = onset_frame is None or ts >= (onset_frame - 1) / FPS - tolerance_s
+            if result.fallen_s is None and on_ground and after_onset:
+                result.fallen_s = round(ts, 3)
         result.frames = idx
     return score(result, onset_frame, tolerance_s)
 
@@ -198,7 +217,15 @@ def summarize(results: list[SequenceResult]) -> dict:
     f1 = 2 * precision * recall / (precision + recall) if precision and recall else None
     adl_hours = sum(r.frames for r in adls) / FPS / 3600
     latencies = [r.latency_s for r in falls if r.latency_s is not None]
+    reached = [r for r in falls if r.reached_fallen]
+    after_onset = [r.video_after_onset_s for r in falls if r.video_after_onset_s is not None]
+    after_fallen = [r.video_after_fallen_s for r in reached if r.video_after_fallen_s is not None]
     return {
+        "fallen_stage_reached": len(reached),
+        "fallen_stage_recall": len(reached) / len(falls) if falls else None,
+        "video_after_onset_median_s": float(np.median(after_onset)) if after_onset else None,
+        "video_after_fallen_median_s": float(np.median(after_fallen)) if after_fallen else None,
+        "adl_reaching_fallen": sum(r.reached_fallen for r in adls),
         "fall_sequences": len(falls), "adl_sequences": len(adls),
         "tp": tp, "fn": fn, "fp_in_fall_sequences": fp_fall, "fp_in_adl_sequences": fp_adl,
         "precision": precision, "recall": recall, "f1": f1,
@@ -215,7 +242,7 @@ def fmt(x, pct=False, digits=2):
     return f"{x:.1%}" if pct else f"{x:.{digits}f}"
 
 
-def markdown(s: dict, device: str, tolerance_s: float) -> str:
+def markdown(s: dict, device: str, tolerance_s: float, stillness_s: float = 1.0) -> str:
     minutes = s["adl_hours"] * 60
     lines = [
         SECTION_START,
@@ -238,6 +265,27 @@ def markdown(s: dict, device: str, tolerance_s: float) -> str:
         f"The false-alarm rate rests on only {minutes:.1f} minutes of non-fall video (all that URFD "
         "provides), so treat it as a rough indicator, not a measured field rate. A reliable figure "
         "needs hours of normal-activity footage from the target site.",
+        "",
+        "**Why alerts are missed here: stage diagnostics.** An alert is raised only after the state "
+        "machine reaches FALLEN (a fast descent, then a lying pose) and the person then stays still "
+        f"for {stillness_s:.1f} s.",
+        "",
+        "| Stage | Value |",
+        "|---|---|",
+        f"| Fall sequences that reached FALLEN (on the ground, before confirmation) | "
+        f"{s['fallen_stage_reached']} / {s['fall_sequences']} ({fmt(s['fallen_stage_recall'], True)}) |",
+        f"| Video left after fall onset (median) | {fmt(s['video_after_onset_median_s'])} s |",
+        f"| Video left after reaching FALLEN (median) | {fmt(s['video_after_fallen_median_s'])} s |",
+        f"| ADL sequences that reached FALLEN (not confirmed) | {s['adl_reaching_fallen']} / {s['adl_sequences']} |",
+        "",
+        "URFD trims each fall clip shortly after the fall. Where the detector does reach FALLEN, "
+        "the median video left after that is shorter than the stillness the detector waits for, so "
+        "the clip ends before an alert could fire. In about half of the clips that never reach "
+        "FALLEN, the person stops being detected once on the floor (YOLOv8n misses many lying "
+        "people at this camera angle). In the rest, the lying pose never crosses the aspect-ratio "
+        "or head-drop threshold. These numbers describe how the detector behaves on "
+        "short, trimmed clips. They are not the recall you would see on continuous video, "
+        "which needs longer fall recordings to measure.",
         SECTION_END,
     ]
     return "\n".join(lines)
@@ -302,7 +350,7 @@ def main() -> int:
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump({"summary": summary, "sequences": [asdict(r) for r in results]}, f, indent=2)
-    section = markdown(summary, args.device, args.tolerance)
+    section = markdown(summary, args.device, args.tolerance, models.cfg.fall.stillness_seconds)
     print("\n" + section + f"\n\nper-sequence results: {out}")
     if args.write:
         write_section(args.write, section)

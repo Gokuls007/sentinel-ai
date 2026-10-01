@@ -1,0 +1,14 @@
+{
+  "videos": [
+    {
+      "path": "demo_videos/corridor_sample.mp4",
+      "label": "Corridor sample (Intel, CC BY 4.0)",
+      "activities": ["walking", "standing"]
+    },
+    {
+      "path": "demo_videos/walking_sample.mp4",
+      "label": "Hallway sample (Intel, CC BY 4.0)",
+      "activities": ["walking"]
+    }
+  ]
+}
