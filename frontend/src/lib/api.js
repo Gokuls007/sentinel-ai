@@ -29,11 +29,20 @@ export async function fetchJson(path, { signal } = {}) {
 }
 
 /** POST a JSON body; errors carry `.status` and the backend's `.detail`. */
-export async function postJson(path, body = {}) {
+export function postJson(path, body = {}) {
+  return sendJson('POST', path, body);
+}
+
+/** PUT a JSON body (same error shape as postJson). */
+export function putJson(path, body = {}) {
+  return sendJson('PUT', path, body);
+}
+
+async function sendJson(method, path, body) {
   let res;
   try {
     res = await fetch(apiUrl(path), {
-      method: 'POST',
+      method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
@@ -48,7 +57,12 @@ export async function postJson(path, body = {}) {
     // empty or non-JSON body
   }
   if (!res.ok) {
-    const detail = typeof data?.detail === 'string' ? data.detail : null;
+    // FastAPI sends a string for HTTPException and a list of issues for validation errors.
+    const detail = typeof data?.detail === 'string'
+      ? data.detail
+      : Array.isArray(data?.detail)
+        ? data.detail.map((d) => `${(d.loc || []).slice(1).join('.')}: ${d.msg}`).join('; ')
+        : null;
     const err = new Error(detail || `${path}: HTTP ${res.status}`);
     err.status = res.status;
     err.detail = detail;
