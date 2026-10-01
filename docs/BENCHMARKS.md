@@ -83,6 +83,29 @@ No-fall footage: **8.1 min** (URFD ADL 5.0 min, sample clips 3.2 min).
 
 **"On the ground" stage recall** (reached FALLEN, the step before confirmation; it is the same at every setting): **25 / 30 (83%)** of URFD falls. 11 of 42 no-fall videos also reached that stage without confirming.
 
+**Fixes for losing the person on the floor**, each alone, at the default 1 s confirmation. These are replayed from the same pose cache. The region-local and rotated retries were run once per missing person and are used only where production would use them (falling or on the ground, within 3 s of the fall). The retry threshold is 0.15; normal is the pose model's threshold.
+
+| Fix | URFD catches | Lost from view (of falls reaching the ground) | Reached the ground | False alarms (no-fall footage) | False alarms / hour |
+|---|---|---|---|---|---|
+| Baseline (no fixes) | 0 / 30 | 16 / 25 | 25 / 30 | 1 | 7.4 |
+| 1. Hold lost track 5 s (last seen lying) | 6 / 30 | 17 / 26 | 26 / 30 | 4 (+3) | 29.6 |
+| 2. Region-local low threshold, as pose | 0 / 30 | 13 / 27 | 27 / 30 | 1 | 7.4 |
+| 2. Region-local low threshold, as presence | 0 / 30 | 10 / 26 | 26 / 30 | 1 | 7.4 |
+| 3. Rotated fallback, as pose | 0 / 30 | 7 / 27 | 27 / 30 | 1 | 7.4 |
+| 3. Rotated fallback, as presence | 5 / 30 | 5 / 26 | 26 / 30 | 1 | 7.4 |
+| 4. Ground-state hysteresis 0.5 s | 0 / 30 | 16 / 25 | 25 / 30 | 1 | 7.4 |
+| 2 + 3 + 4, as pose (no hold) | 0 / 30 | 0 / 27 | 27 / 30 | 1 | 7.4 |
+| 3 + 4, as presence (no hold) | 5 / 30 | 3 / 26 | 26 / 30 | 1 | 7.4 |
+| 2 + 3 + 4, as presence (no hold) | 3 / 30 | 0 / 26 | 26 / 30 | 2 (+1) | 14.8 |
+| All four, as pose | 0 / 30 | 0 / 27 | 27 / 30 | 8 (+7) | 59.1 |
+| All four, as presence | 3 / 30 | 0 / 26 | 26 / 30 | 4 (+3) | 29.6 |
+
+*Lost from view*: the person's pose (tracked or recovered) was missing in most frames after reaching the ground. Fix 1 doesn't find the person; it keeps the fall alive while they are missing, so it raises catches without lowering this count.
+
+*As pose*: a re-found person goes through the normal check. *As presence*: a re-found person who was last seen lying counts as still in place, unless clearly upright or moved more than half a body height. The re-found keypoints jitter too much to measure stillness directly.
+
+**Caveat: these rows are optimistic.** The "last seen lying" gate and the presence mode were designed after inspecting these same URFD clips. Before choosing defaults they need confirming on footage not used here: your own recordings and a held-out dataset (CAUCAFall). All fixes stay off by default until one is chosen.
+
 How to read it:
 - URFD trims each fall clip about 1–2 s after the fall. So "Confirmable" caps recall, and at 2 s and above URFD can't tell you anything about recall.
 - "Confirmable but missed": the clip had enough video after reaching the ground, but no alert. *Lost from view*: the person's pose was missing in most later frames. *Left the ground state*: the pose looked upright again, or the wait timed out. *Not still long enough*: the person kept moving on the ground.

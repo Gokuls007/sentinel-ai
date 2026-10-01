@@ -40,6 +40,14 @@ class FallDetectorConfig:
     stillness_speed_threshold: float = 0.15
     fallen_timeout_seconds: float = 5.0    # gave up waiting for stillness -> upright
     cooldown_seconds: float = 30.0         # one fall alert per person per 30 s
+    # Keeping a fallen person who the detector loses (lying people are often missed).
+    # Measured one by one in training/sweep_fall_confirm.py; 0 / False = off.
+    lost_hold_seconds: float = 0.0         # hold a lost falling/fallen track at its last spot
+    recovery_low_conf: float = 0.0         # >0: retry pose near the last box down to this confidence
+    recovery_rotated: bool = False         # also retry on that region rotated 90 degrees
+    recovery_window_seconds: float = 3.0   # retries only this long after the fall started
+    recovery_mode: str = "pose"            # re-found person: "pose" (normal check) or "presence"
+    upright_hold_seconds: float = 0.0      # "looks upright" must last this long to leave the ground
 
 @dataclass
 class ZoneConfig:

@@ -65,6 +65,8 @@ class AnomalyEngine:
             stillness_speed_threshold=f.stillness_speed_threshold,
             fallen_timeout_seconds=f.fallen_timeout_seconds,
             cooldown_seconds=f.cooldown_seconds,
+            lost_hold_seconds=f.lost_hold_seconds,
+            upright_hold_seconds=f.upright_hold_seconds,
         )
 
         self.zone_monitor = ZoneMonitor(
@@ -90,10 +92,22 @@ class AnomalyEngine:
         self.last_loiter_alert: dict[int, float] = {}
         self.loiter_cooldown = 60.0
 
-    def process(self, poses: dict[int, PoseResult], features: dict[int, TrackFeatures], 
-                timestamp: float) -> list[AnomalyAlert]:
-        
+    def process(self, poses: dict[int, PoseResult], features: dict[int, TrackFeatures],
+                timestamp: float, recovered: dict[int, PoseResult] | None = None) -> list[AnomalyAlert]:
+        """``recovered``: poses found again for fallen people the detector lost (see
+        anomaly/fall_recovery.py). They feed fall detection only."""
         alerts = []
+        recovered = recovered or {}
+
+        # Fallen people with no pose this frame: a recovered pose, or held at the last spot.
+        for tid in [t for t in features if t not in poses and self.fall_detector.is_down(t)]:
+            if tid in recovered:
+                event = self.fall_detector.check_recovered(tid, recovered[tid], features[tid], timestamp,
+                                                           mode=self.config.fall.recovery_mode)
+            else:
+                event = self.fall_detector.check_missing(tid, timestamp)
+            if event:
+                alerts.append(self._fall_alert(tid, timestamp, event))
 
         # Drop state for people who are no longer tracked (bounded memory).
         self.fall_detector.prune(features.keys())
@@ -115,14 +129,7 @@ class AnomalyEngine:
             fall_event = self.fall_detector.check(tid, pose, feat, timestamp)
             if fall_event:
                 fall_reported = True
-                alerts.append(self._create_alert(
-                    alert_type="fall",
-                    track_id=tid,
-                    timestamp=timestamp,
-                    confidence=fall_event.confidence,
-                    message="Fall detected: person down and not moving",
-                    details={**fall_event.signals, "peak_descent_speed": fall_event.velocity}
-                ))
+                alerts.append(self._fall_alert(tid, timestamp, fall_event))
 
             # 2. Zone Monitoring
             zone_violations = self.zone_monitor.check(tid, pose.mid_hip, timestamp)
@@ -232,7 +239,19 @@ class AnomalyEngine:
                      "radius_px": self.config.loiter.movement_threshold},
         )
 
-    def _create_alert(self, alert_type: str, track_id: int, timestamp: float, 
+    def _fall_alert(self, tid: int, timestamp: float, fall_event) -> AnomalyAlert:
+        held = bool(fall_event.signals.get("held_while_lost"))
+        return self._create_alert(
+            alert_type="fall",
+            track_id=tid,
+            timestamp=timestamp,
+            confidence=fall_event.confidence,
+            message=("Fall detected: person went down and is no longer visible" if held
+                     else "Fall detected: person down and not moving"),
+            details={**fall_event.signals, "peak_descent_speed": fall_event.velocity},
+        )
+
+    def _create_alert(self, alert_type: str, track_id: int, timestamp: float,
                       confidence: float, message: str, details: dict) -> AnomalyAlert:
         
         self._alert_counter += 1

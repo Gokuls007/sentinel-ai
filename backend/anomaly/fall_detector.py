@@ -12,6 +12,8 @@ elapsed time, so thresholds work regardless of resolution, camera distance or FP
 from collections import deque
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from core.pose_estimator import PoseResult, TrackFeatures
 
 
@@ -40,6 +42,11 @@ class _TrackState:
     peak_descent: float = 0.0
     last_alert_time: float = field(default=-1e18)
     hip_history: deque = field(default_factory=deque)  # (timestamp, hip_y) for stillness
+    last_seen: float | None = None  # when check() last had a pose for this track
+    last_pose: PoseResult | None = None
+    last_signals: dict | None = None
+    upright_since: float | None = None  # start of the current run of "looks upright" frames
+    anchor: object = None  # box centre where a recovered (re-found) person was lying
 
 
 class FallDetector:
@@ -56,7 +63,14 @@ class FallDetector:
     def __init__(self, descent_speed_threshold: float = 1.2, aspect_ratio_threshold: float = 1.2,
                  head_drop_ratio: float = 0.5, stillness_seconds: float = 1.0,
                  stillness_speed_threshold: float = 0.15, fallen_timeout_seconds: float = 5.0,
-                 cooldown_seconds: float = 30.0):
+                 cooldown_seconds: float = 30.0, lost_hold_seconds: float = 0.0,
+                 upright_hold_seconds: float = 0.0):
+        # lost_hold_seconds: a person who vanishes while falling / on the ground (detector
+        #   misses many lying people) is held at their last position, motionless, this long.
+        # upright_hold_seconds: "looks upright" must last this long before leaving the
+        #   ground state (one odd pose on the floor no longer cancels a fall).
+        self.lost_hold_seconds = lost_hold_seconds
+        self.upright_hold_seconds = upright_hold_seconds
         self.descent_speed_threshold = descent_speed_threshold
         self.aspect_ratio_threshold = aspect_ratio_threshold
         self.head_drop_ratio = head_drop_ratio
@@ -93,6 +107,7 @@ class FallDetector:
                 st.state = self.FALLING
                 st.falling_since = timestamp
                 st.peak_descent = signals["descent_speed"]
+                st.anchor = None
 
         elif st.state == self.FALLING:
             st.peak_descent = max(st.peak_descent, signals["descent_speed"])
@@ -106,7 +121,7 @@ class FallDetector:
                 st.state = self.UPRIGHT  # e.g. sat down or crouched quickly
 
         elif st.state == self.FALLEN:
-            if self._stood_up(signals):
+            if self._upright_held(st, signals, timestamp):
                 st.state = self.UPRIGHT
             else:
                 if signals["is_still"]:
@@ -123,11 +138,50 @@ class FallDetector:
                     st.state = self.UPRIGHT
 
         elif st.state == self.CONFIRMED:
-            if self._stood_up(signals):
+            if self._upright_held(st, signals, timestamp):
                 st.state = self.UPRIGHT
 
         self._remember(st, pose, timestamp)
+        st.last_seen, st.last_pose, st.last_signals = timestamp, pose, signals
         return event
+
+    def is_down(self, track_id: int) -> bool:
+        """Falling or on the ground (where losing the person must not lose the fall)."""
+        return self.state_of(track_id) in (self.FALLING, self.FALLEN)
+
+    def last_bbox(self, track_id: int):
+        st = self.tracks.get(track_id)
+        return None if st is None or st.last_pose is None else st.last_pose.bbox
+
+    def check_missing(self, track_id: int, timestamp: float) -> FallEvent | None:
+        """No pose this frame for a tracked person. If they vanished while falling or on the
+        ground, near the floor, hold them at the last position as motionless for up to
+        ``lost_hold_seconds`` so the fall can still be confirmed."""
+        st = self.tracks.get(track_id)
+        if (st is None or self.lost_hold_seconds <= 0 or st.last_seen is None
+                or timestamp - st.last_seen > self.lost_hold_seconds):
+            return None
+        if not self._lying(st.last_signals or {}):
+            return None  # last seen upright, crouching or bent over, not lying on the floor
+        if st.state == self.FALLING:
+            if not (st.last_signals or {}).get("head_dropped"):
+                return None  # vanished mid-descent but not near the floor (e.g. left the frame)
+            st.state = self.FALLEN
+            st.fallen_since = timestamp
+            st.still_since = None
+        if st.state != self.FALLEN:
+            return None
+        st.upright_since = None
+        st.still_since = st.still_since if st.still_since is not None else timestamp
+        if (timestamp - st.still_since >= self.stillness_seconds
+                and timestamp - st.last_alert_time >= self.cooldown_seconds):
+            st.state = self.CONFIRMED
+            st.last_alert_time = timestamp
+            signals = {**(st.last_signals or {}), "held_while_lost": True}
+            event = self._make_event(track_id, timestamp, st, signals, st.last_pose)
+            event.confidence = round(max(0.5, event.confidence - 0.1), 2)  # not seen at the moment
+            return event
+        return None
 
     def reset_track(self, track_id: int):
         self.tracks.pop(track_id, None)
@@ -191,9 +245,84 @@ class FallDetector:
             "is_still": is_still,
         }
 
+    def check_recovered(self, track_id: int, pose: PoseResult, features: TrackFeatures,
+                        timestamp: float, mode: str = "pose") -> FallEvent | None:
+        """A falling/fallen person the detector lost, found again by the recovery retries
+        (anomaly/fall_recovery.py).
+
+        ``mode="pose"`` (strict): the re-found pose goes through the normal check, like any
+        tracked pose. It never confirms more than a real pose would, but those keypoints come
+        from a crop, a lower threshold or a rotated image and jitter a lot, so stillness is
+        rarely met.
+
+        ``mode="presence"``: the re-found person is used as evidence that they are still there:
+        - clearly upright (torso near vertical, held for ``upright_hold_seconds``): back to
+          upright;
+        - moved more than half a body height from where they were: not still;
+        - otherwise: motionless in place, which counts toward confirmation like a hold.
+        """
+        if mode == "pose":
+            return self.check(track_id, pose, features, timestamp)
+        st = self.tracks.get(track_id)
+        body_h = features.initial_standing_height
+        if st is None or st.state not in (self.FALLING, self.FALLEN) or body_h <= 0:
+            return None
+        if not self._lying(st.last_signals or {}):
+            return None  # same rule as the hold: only someone last seen lying
+        torso = pose.torso_angle
+        upright = torso is not None and torso <= 30.0
+        if self._upright_held(st, {"horizontal_pose": not upright, "head_dropped": False}, timestamp):
+            st.state = self.UPRIGHT
+            return None
+        if upright:
+            return None
+        centre = np.array([(pose.bbox[0] + pose.bbox[2]) / 2, (pose.bbox[1] + pose.bbox[3]) / 2])
+        if st.anchor is None:
+            st.anchor = centre
+        moved = float(np.hypot(*(centre - st.anchor))) / body_h > 0.5
+        st.last_seen = timestamp
+        if st.state == self.FALLING:
+            st.state = self.FALLEN
+            st.fallen_since = timestamp
+            st.still_since = None
+        if moved:
+            st.anchor = centre
+            st.still_since = None
+            return None
+        st.still_since = st.still_since if st.still_since is not None else timestamp
+        if (timestamp - st.still_since >= self.stillness_seconds
+                and timestamp - st.last_alert_time >= self.cooldown_seconds):
+            st.state = self.CONFIRMED
+            st.last_alert_time = timestamp
+            signals = {**(st.last_signals or {}), "recovered": True}
+            event = self._make_event(track_id, timestamp, st, signals, st.last_pose or pose)
+            event.confidence = round(max(0.5, event.confidence - 0.1), 2)
+            return event
+        return None
+
+    def _lying(self, signals) -> bool:
+        """Last seen lying: torso within 30 degrees of horizontal (not bent over with the head
+        below the hips), or, without a visible torso, a wide box."""
+        torso = signals.get("torso_angle", -1.0)
+        if torso is None or torso < 0:
+            return bool(signals.get("horizontal_pose"))
+        return self.LYING_TORSO_DEG <= torso <= 180.0 - self.LYING_TORSO_DEG
+
     @staticmethod
     def _stood_up(signals) -> bool:
         return not signals["horizontal_pose"] and not signals["head_dropped"]
+
+    def _upright_held(self, st: _TrackState, signals, timestamp: float) -> bool:
+        """Upright now, and (with hysteresis) for at least ``upright_hold_seconds``."""
+        if not self._stood_up(signals):
+            st.upright_since = None
+            return False
+        if st.upright_since is None:
+            st.upright_since = timestamp
+        if timestamp - st.upright_since >= self.upright_hold_seconds:
+            st.upright_since = None
+            return True
+        return False
 
     def _make_event(self, track_id: int, timestamp: float, st: _TrackState, signals,
                     pose: PoseResult) -> FallEvent:

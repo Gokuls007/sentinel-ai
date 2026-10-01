@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from anomaly.engine import AnomalyEngine
+from anomaly.fall_recovery import recover_pose
 from config.settings import SentinelConfig
 from events import Event, EventBus, EventStore
 from notifications import NotificationDispatcher, build_notifiers
@@ -144,7 +145,8 @@ class SentinelPipeline:
 
         # 3. Analytics (fall, zones, loitering)
         all_features = self.pose_estimator.get_all_features()
-        alerts = self.anomaly_engine.process(poses, all_features, timestamp)
+        recovered = self._recover_fallen(frame, poses, all_features, timestamp)
+        alerts = self.anomaly_engine.process(poses, all_features, timestamp, recovered=recovered)
         lap("analytics")
         timings["ergonomics"] = self.anomaly_engine.last_ergo_ms  # included in "analytics"
         ergonomics = self.anomaly_engine.ergonomics_snapshot
@@ -198,6 +200,29 @@ class SentinelPipeline:
             timings["stream"] = (time.perf_counter() - stream_start) * 1000
 
         return result
+
+    def _recover_fallen(self, frame, poses, features, timestamp) -> dict:
+        """Retry pose on the region around falling/fallen people the detector lost this frame
+        (anomaly/fall_recovery.py). Off unless FALL recovery settings enable it."""
+        f = self.config.fall
+        if f.recovery_low_conf <= 0 and not f.recovery_rotated:
+            return {}
+        fd = self.anomaly_engine.fall_detector
+        out = {}
+        for tid in features:
+            if tid in poses or not fd.is_down(tid):
+                continue
+            st = fd.tracks.get(tid)
+            bbox = fd.last_bbox(tid)
+            if (bbox is None or st is None or timestamp - st.falling_since > f.recovery_window_seconds
+                    or (st.last_seen is not None and timestamp - st.last_seen > max(f.lost_hold_seconds, 1.0))):
+                continue
+            pose, _how = recover_pose(self.pose_estimator.model, frame, tid, bbox,
+                                      low_conf=f.recovery_low_conf or self.config.pose.confidence_threshold,
+                                      try_low=f.recovery_low_conf > 0, try_rotated=f.recovery_rotated)
+            if pose is not None:
+                out[tid] = pose
+        return out
 
     def _annotate_frame(self, frame, detections, poses, alerts) -> np.ndarray:
         # 1. Draw Zone Overlays

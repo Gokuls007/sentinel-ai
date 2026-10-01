@@ -59,11 +59,48 @@ class Cached:
     kind: str  # "fall" | "adl" | "sample" | "recording"
     fps: float
     onset_frame: int | None = None
-    frames: list = field(default_factory=list)  # [(ts, active_ids, [(tid, PoseResult, standing_h)])]
+    # [(ts, active_ids, [(tid, PoseResult, standing_h)], {tid: {chain: PoseResult | None}})]
+    frames: list = field(default_factory=list)
 
     @property
     def seconds(self) -> float:
         return len(self.frames) / self.fps
+
+
+@dataclass(frozen=True)
+class Fixes:
+    """The four 'lost on the floor' fixes (config.settings.FallDetectorConfig names)."""
+    lost_hold_seconds: float = 0.0      # 1. hold a lost falling/fallen track
+    recovery_low: bool = False          # 2. region-local low-threshold retry
+    recovery_rotated: bool = False      # 3. rotated retry
+    upright_hold_seconds: float = 0.0   # 4. hysteresis before leaving the ground state
+    recovery_mode: str = "pose"         # how a re-found person is used: "pose" or "presence"
+
+    @property
+    def chain(self) -> str | None:
+        if self.recovery_low and self.recovery_rotated:
+            return "both"
+        return "low" if self.recovery_low else "rot" if self.recovery_rotated else None
+
+
+BASELINE = Fixes()
+FIX_VARIANTS = (
+    ("Baseline (no fixes)", BASELINE),
+    ("1. Hold lost track 5 s (last seen lying)", Fixes(lost_hold_seconds=5.0)),
+    ("2. Region-local low threshold, as pose", Fixes(recovery_low=True)),
+    ("2. Region-local low threshold, as presence", Fixes(recovery_low=True, recovery_mode="presence")),
+    ("3. Rotated fallback, as pose", Fixes(recovery_rotated=True)),
+    ("3. Rotated fallback, as presence", Fixes(recovery_rotated=True, recovery_mode="presence")),
+    ("4. Ground-state hysteresis 0.5 s", Fixes(upright_hold_seconds=0.5)),
+    ("2 + 3 + 4, as pose (no hold)", Fixes(0.0, True, True, 0.5)),
+    ("3 + 4, as presence (no hold)", Fixes(0.0, False, True, 0.5, "presence")),
+    ("2 + 3 + 4, as presence (no hold)", Fixes(0.0, True, True, 0.5, "presence")),
+    ("All four, as pose", Fixes(5.0, True, True, 0.5)),
+    ("All four, as presence", Fixes(5.0, True, True, 0.5, "presence")),
+)
+RECOVERY_LOW_CONF = 0.15
+RECOVERY_WINDOW_S = 3.0
+CACHE_RECOVERY_S = 5.0  # cached retries cover this long after a track's last sighting
 
 
 # --- caching (runs the models) ------------------------------------------------------------------
@@ -72,19 +109,33 @@ def code_stamp() -> str:
     """Hash of the code and thresholds that produce the cached poses."""
     h = hashlib.sha256()
     for rel in ("backend/core/pose_estimator.py", "backend/core/detector.py", "backend/config/settings.py",
-                "backend/config/trackers/sentinel_bytetrack.yaml"):
+                "backend/config/trackers/sentinel_bytetrack.yaml", "backend/anomaly/fall_recovery.py"):
         path = os.path.join(ROOT, rel)
         if os.path.isfile(path):
             with open(path, "rb") as f:
                 h.update(f.read())
     return h.hexdigest()[:16]
 
+CHAINS = {  # cached retry chains: (try_low, try_rotated, confidence)
+    "low": (True, False, RECOVERY_LOW_CONF),
+    "rot": (False, True, None),  # rotated only: the normal pose threshold, as in production
+    "both": (True, True, RECOVERY_LOW_CONF),
+}
+
+
 def cache_frames(models, frames_iter, name, kind, fps, onset_frame=None, resize=None) -> Cached:
+    """Run the models once. Besides the tracked poses, for every tracked person missing this
+    frame (seen in the last CACHE_RECOVERY_S), run each retry chain of
+    anomaly/fall_recovery.py around that chain's last box. This is the same call production
+    makes; there it only runs for people who are down, which the replay applies."""
+    from anomaly.fall_recovery import recover_pose
     from core.pose_estimator import PoseResult
 
     out = Cached(name=name, kind=kind, fps=fps, onset_frame=onset_frame)
     models.fresh()  # reset tracker and pose history
     det, pose = models.detector, models.pose
+    normal_conf = models.cfg.pose.confidence_threshold
+    last: dict[str, dict[int, tuple[float, np.ndarray]]] = {c: {} for c in CHAINS}  # chain -> tid -> (ts, bbox)
     for idx, frame in frames_iter:
         if resize and (frame.shape[1], frame.shape[0]) != resize:
             frame = cv2.resize(frame, resize)
@@ -96,7 +147,20 @@ def cache_frames(models, frames_iter, name, kind, fps, onset_frame=None, resize=
         rows = [(tid, PoseResult(tid, p.keypoints.copy(), np.asarray(p.bbox).copy()),
                  feats[tid].initial_standing_height)
                 for tid, p in poses.items() if tid in feats]
-        out.frames.append((ts, tuple(feats.keys()), rows))
+        recov: dict[int, dict] = {}
+        for chain, (try_low, try_rot, conf) in CHAINS.items():
+            seen = last[chain]
+            for tid, p, _h in rows:
+                seen[tid] = (ts, p.bbox)
+            for tid in feats:
+                if tid in poses or tid not in seen or ts - seen[tid][0] > CACHE_RECOVERY_S:
+                    continue
+                found, _how = recover_pose(pose.model, frame, tid, seen[tid][1], low_conf=conf or normal_conf,
+                                           try_low=try_low, try_rotated=try_rot)
+                recov.setdefault(tid, {})[chain] = found
+                if found is not None:
+                    seen[tid] = (ts, found.bbox)
+        out.frames.append((ts, tuple(feats.keys()), rows, recov))
     return out
 
 
@@ -120,7 +184,7 @@ def video_frames(path):
 
 # --- replay (pure; unit-tested) -------------------------------------------------------------------
 
-def make_detector(fall_cfg, confirm_s: float):
+def make_detector(fall_cfg, confirm_s: float, fixes: Fixes = BASELINE):
     from anomaly.fall_detector import FallDetector
 
     return FallDetector(
@@ -131,21 +195,46 @@ def make_detector(fall_cfg, confirm_s: float):
         stillness_speed_threshold=fall_cfg.stillness_speed_threshold,
         fallen_timeout_seconds=max(fall_cfg.fallen_timeout_seconds, confirm_s + 2.0),
         cooldown_seconds=fall_cfg.cooldown_seconds,
+        lost_hold_seconds=fixes.lost_hold_seconds,
+        upright_hold_seconds=fixes.upright_hold_seconds,
     )
 
 
-def replay(video: Cached, detector) -> dict:
-    """Run the state machine over cached frames. Besides the alerts, it follows the first track
-    that reached the ground, to explain a missing alert (see ``why_unconfirmed``)."""
+def replay(video: Cached, detector, fixes: Fixes = BASELINE) -> dict:
+    """Run the state machine over cached frames, in the order AnomalyEngine.process uses:
+    first the people who are down but have no pose this frame (a recovered pose, if that fix
+    is on and the pipeline would have retried, else held), then the tracked poses. It also
+    follows the first track that reached the ground, to explain a missing alert."""
     alerts: list[float] = []
     fallen_s = fallen_tid = None
     frames_after = seen_after = 0
     left_ground = False
+    standing: dict[int, float] = {}
     onset_s = (video.onset_frame - 1) / video.fps if video.onset_frame else None
-    for ts, active, rows in video.frames:
+    chain = fixes.chain
+    for frame in video.frames:
+        ts, active, rows, recov = frame if len(frame) == 4 else (*frame, {})
         detector.prune(active)
         seen = False
+        posed = {tid for tid, _p, _h in rows}
+        for tid in [t for t in active if t not in posed and detector.is_down(t)]:
+            st = detector.tracks[tid]
+            pose = None
+            # The same gate as SentinelPipeline._recover_fallen.
+            if (chain and ts - st.falling_since <= RECOVERY_WINDOW_S and st.last_seen is not None
+                    and ts - st.last_seen <= max(fixes.lost_hold_seconds, 1.0)):
+                pose = recov.get(tid, {}).get(chain)
+            if pose is not None:
+                event = detector.check_recovered(
+                    tid, pose, SimpleNamespace(initial_standing_height=standing.get(tid, 0.0)), ts,
+                    mode=fixes.recovery_mode)
+                seen = seen or tid == fallen_tid
+            else:
+                event = detector.check_missing(tid, ts)
+            if event:
+                alerts.append(round(ts, 3))
         for tid, pose, standing_h in rows:
+            standing[tid] = standing_h
             if detector.check(tid, pose, SimpleNamespace(initial_standing_height=standing_h), ts):
                 alerts.append(round(ts, 3))
             on_ground = detector.state_of(tid) in (detector.FALLEN, detector.CONFIRMED)
@@ -154,6 +243,12 @@ def replay(video: Cached, detector) -> dict:
             elif tid == fallen_tid:
                 seen = True
                 left_ground = left_ground or not on_ground
+        if fallen_s is None:
+            for tid in active:  # a held/recovered track can reach the ground without a pose row
+                if tid not in posed and detector.state_of(tid) in (detector.FALLEN, detector.CONFIRMED) \
+                        and (onset_s is None or ts >= onset_s - 2.0):
+                    fallen_s, fallen_tid = ts, tid
+                    break
         if fallen_s is not None and ts > fallen_s:
             frames_after += 1
             seen_after += seen
@@ -172,18 +267,20 @@ def why_unconfirmed(r: dict) -> str:
     return "not still long enough"
 
 
-def score_setting(videos: list[Cached], fall_cfg, confirm_s: float, tolerance_s: float = 2.0) -> dict:
+def score_setting(videos: list[Cached], fall_cfg, confirm_s: float, tolerance_s: float = 2.0,
+                  fixes: Fixes = BASELINE) -> dict:
     falls = [v for v in videos if v.kind == "fall"]
     clean = [v for v in videos if v.kind != "fall"]
-    tp = reached = confirmable = 0
+    tp = reached = confirmable = lost = 0
     false_alarms: dict[str, int] = {}
     missed: dict[str, int] = {}
     for v in falls:
-        r = replay(v, make_detector(fall_cfg, confirm_s))
+        r = replay(v, make_detector(fall_cfg, confirm_s, fixes), fixes)
         hit = any(t >= r["onset_s"] - tolerance_s for t in r["alerts"])
         tp += hit
         if r["fallen_s"] is not None:
             reached += 1
+            lost += r["pose_after_ground"] is not None and r["pose_after_ground"] < 0.5
             # Enough video left after reaching the ground for this confirmation time.
             enough = r["end_s"] - r["fallen_s"] >= confirm_s
             confirmable += enough
@@ -195,7 +292,7 @@ def score_setting(videos: list[Cached], fall_cfg, confirm_s: float, tolerance_s:
     hours: dict[str, float] = {}
     clean_reached = 0
     for v in clean:
-        r = replay(v, make_detector(fall_cfg, confirm_s))
+        r = replay(v, make_detector(fall_cfg, confirm_s, fixes), fixes)
         false_alarms[v.kind] = false_alarms.get(v.kind, 0) + len(r["alerts"])
         hours[v.kind] = hours.get(v.kind, 0.0) + v.seconds / 3600
         clean_reached += r["fallen_s"] is not None
@@ -207,7 +304,7 @@ def score_setting(videos: list[Cached], fall_cfg, confirm_s: float, tolerance_s:
         "false_alarms": false_alarms, "clean_hours": clean_hours, "hours_by_kind": hours,
         "false_alarms_clean": clean_fa, "false_alarms_per_hour": clean_fa / clean_hours if clean_hours else None,
         "clean_videos_reaching_ground": clean_reached, "clean_videos": len(clean),
-        "confirmable_but_missed": missed,
+        "confirmable_but_missed": missed, "lost_from_view": lost, "fixes": fixes.__dict__,
     }
 
 
@@ -216,7 +313,47 @@ def score_setting(videos: list[Cached], fall_cfg, confirm_s: float, tolerance_s:
 KIND_LABEL = {"adl": "URFD ADL", "sample": "sample clips", "recording": "your recordings"}
 
 
-def markdown(rows: list[dict], default_s: float, device: str) -> str:
+def markdown_fixes(fix_rows: list[tuple[str, dict]], confirm_s: float) -> list[str]:
+    """One row per 'lost on the floor' fix, each alone, plus all four together."""
+    base = fix_rows[0][1]
+    lines = [
+        "",
+        f"**Fixes for losing the person on the floor**, each alone, at the default {confirm_s:g} s confirmation. "
+        "These are replayed from the same pose cache. The region-local and rotated retries were run once per "
+        "missing person and are used only where production would use them (falling or on the ground, within "
+        f"{RECOVERY_WINDOW_S:g} s of the fall). The retry threshold is {RECOVERY_LOW_CONF:g}; normal is the "
+        "pose model's threshold.",
+        "",
+        "| Fix | URFD catches | Lost from view (of falls reaching the ground) | Reached the ground "
+        "| False alarms (no-fall footage) | False alarms / hour |",
+        "|---|---|---|---|---|---|",
+    ]
+    for label, r in fix_rows:
+        fa = r["false_alarms_per_hour"]
+        delta = r["false_alarms_clean"] - base["false_alarms_clean"]
+        flag = f" ({delta:+d})" if delta else ""
+        lines.append(f"| {label} | {r['tp']} / {r['falls']} | {r['lost_from_view']} / {r['on_ground']} | "
+                     f"{r['on_ground']} / {r['falls']} | {r['false_alarms_clean']}{flag} | "
+                     f"{'n/a' if fa is None else f'{fa:.1f}'} |")
+    lines += [
+        "",
+        "*Lost from view*: the person's pose (tracked or recovered) was missing in most frames after reaching "
+        "the ground. Fix 1 doesn't find the person; it keeps the fall alive while they are missing, so it "
+        "raises catches without lowering this count.",
+        "",
+        "*As pose*: a re-found person goes through the normal check. *As presence*: a re-found person who was "
+        "last seen lying counts as still in place, unless clearly upright or moved more than half a body height. "
+        "The re-found keypoints jitter too much to measure stillness directly.",
+        "",
+        "**Caveat: these rows are optimistic.** The \"last seen lying\" gate and the presence mode were designed "
+        "after inspecting these same URFD clips. Before choosing defaults they need confirming on footage not "
+        "used here: your own recordings and a held-out dataset (CAUCAFall). All fixes stay off by default until "
+        "one is chosen.",
+    ]
+    return lines
+
+
+def markdown(rows: list[dict], default_s: float, device: str, fix_rows: list[tuple[str, dict]] | None = None) -> str:
     r0 = rows[0]
     basis = ", ".join(f"{KIND_LABEL.get(k, k)} {h * 60:.1f} min" for k, h in r0["hours_by_kind"].items())
     lines = [
@@ -247,6 +384,7 @@ def markdown(rows: list[dict], default_s: float, device: str) -> str:
         f"every setting): **{r0['on_ground']} / {r0['falls']} ({r0['on_ground_recall']:.0%})** of URFD falls. "
         f"{r0['clean_videos_reaching_ground']} of {r0['clean_videos']} no-fall videos also reached that stage "
         "without confirming.",
+        *(markdown_fixes(fix_rows, default_s) if fix_rows else []),
         "",
         "How to read it:",
         "- URFD trims each fall clip about 1–2 s after the fall. So \"Confirmable\" caps recall, and at 2 s "
@@ -278,6 +416,10 @@ def write_section(path: str, section: str) -> None:
 
 
 def main() -> int:
+    # Pickle the cache under the module's import name, so it also loads when this file is
+    # imported (tests, notebooks) rather than run as __main__.
+    sys.modules.setdefault("sweep_fall_confirm", sys.modules[__name__])
+    Cached.__module__ = Fixes.__module__ = "sweep_fall_confirm"
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--values", default=",".join(f"{v:g}" for v in DEFAULT_VALUES))
     ap.add_argument("--device", default="auto")
@@ -351,12 +493,18 @@ def main() -> int:
               f"FA {r['false_alarms_clean']} ({r['false_alarms_per_hour']:.1f}/h over "
               f"{r['clean_hours'] * 60:.1f} min)  missed-when-confirmable {r['confirmable_but_missed']}  "
               f"on-ground {r['on_ground']}/{r['falls']}", flush=True)
+    default_s = models.cfg.fall.stillness_seconds
+    fix_rows = [(label, score_setting(videos, models.cfg.fall, default_s, fixes=fx)) for label, fx in FIX_VARIANTS]
+    print(f"\nfixes at {default_s:g}s:")
+    for label, r in fix_rows:
+        print(f"  {label:<34} catches {r['tp']}/{r['falls']}  lost {r['lost_from_view']}/{r['on_ground']}  "
+              f"FA {r['false_alarms_clean']}  on-ground {r['on_ground']}", flush=True)
     out = os.path.join(ROOT, "outputs", "sweep_fall_confirm.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
-        json.dump(rows, f, indent=2)
+        json.dump({"confirmation": rows, "fixes": [{"label": lb, **r} for lb, r in fix_rows]}, f, indent=2)
     device = models.detector.device if hasattr(models.detector, "device") else args.device
-    section = markdown(rows, models.cfg.fall.stillness_seconds, str(device))
+    section = markdown(rows, default_s, str(device), fix_rows)
     print("\n" + section)
     if args.write:
         write_section(args.write, section)
