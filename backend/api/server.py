@@ -180,6 +180,34 @@ def get_stats(camera: str | None = None):
 
 # --- Cameras: the primary source plus the laptop webcam, started on request ----------
 
+ZONE_TYPES = ("restricted", "time_limited", "one_way")
+
+
+class ZoneIn(BaseModel):
+    """One zone from the editor. Points are normalised (0-1) image coordinates."""
+
+    id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=60)
+    zone_type: str = Field(pattern=r"^(restricted|time_limited|one_way)$")
+    polygon: list[tuple[float, float]] = Field(min_length=3, max_length=50)
+    time_limit: float = Field(0.0, ge=0, le=86400)
+    direction: str | None = Field(None, pattern=r"^(up|down|left|right)$")
+    active: bool = True
+
+    def checked(self) -> "ZoneIn":
+        if any(not (0.0 <= v <= 1.0) for point in self.polygon for v in point):
+            raise HTTPException(status_code=422, detail=f"zone {self.id!r}: points must be within 0-1")
+        if self.zone_type == "time_limited" and self.time_limit <= 0:
+            raise HTTPException(status_code=422, detail=f"zone {self.id!r}: time_limited needs time_limit > 0")
+        if self.zone_type == "one_way" and not self.direction:
+            raise HTTPException(status_code=422, detail=f"zone {self.id!r}: one_way needs a direction")
+        return self
+
+
+class ZonesIn(BaseModel):
+    zones: list[ZoneIn] = Field(max_length=20)
+
+
 class CameraStart(BaseModel):
     index: int = Field(0, ge=0, le=9, description="Webcam device index (0 = built-in camera)")
 
@@ -439,6 +467,34 @@ def get_meta():
 @app.get("/api/zones")
 def get_zones(camera: str | None = None):
     return to_serializable(_pipeline_for(camera).anomaly_engine.zone_overlay_data)
+
+
+@app.put("/api/zones")
+def put_zones(body: ZonesIn, request: Request, camera: str = Query(...)):
+    """Replace a camera's zones (the zone editor). Takes effect on the next frame and is saved.
+
+    Only cameras whose zones live under the data directory (the laptop webcam) can be edited;
+    the demo scenarios' zone files are part of the repository and stay read-only.
+    """
+    _check_camera_control(request)  # same rule: this computer only, JSON body
+    from anomaly.zone_monitor import Zone
+
+    p = _pipeline_for(camera)
+    monitor = p.anomaly_engine.zone_monitor
+    data_dir = Path(p.config.output.db_path).resolve().parent
+    if data_dir not in Path(monitor.zones_file).resolve().parents:
+        raise HTTPException(status_code=409, detail=f"camera {camera!r} uses read-only scenario zones")
+    ids = [z.id for z in body.zones]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(status_code=422, detail="zone ids must be unique")
+    zones = [
+        Zone(id=z.id, name=z.name, polygon=[tuple(pt) for pt in z.polygon], zone_type=z.zone_type,
+             time_limit=z.time_limit, direction=z.direction, active=z.active)
+        for z in (zone.checked() for zone in body.zones)
+    ]
+    monitor.replace_zones(zones)
+    logger.info("camera %s: %d zone(s) saved to %s", camera, len(zones), monitor.zones_file)
+    return to_serializable(monitor.get_zones_for_overlay())
 
 
 @app.get("/api/tracks")

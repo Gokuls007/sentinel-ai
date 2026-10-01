@@ -73,6 +73,11 @@ class ZoneMonitor:
         self.track_inside.clear()
         self.last_alert.clear()
 
+    def replace_zones(self, zones: list[Zone]) -> None:
+        """Replace the zones and save them to this monitor's zones file (zone editor)."""
+        self.set_zones(zones)
+        self._save_zones()
+
     def _cooled_down(self, key, timestamp: float) -> bool:
         last = self.last_alert.get(key)
         return last is None or timestamp - last >= self.alert_cooldown
