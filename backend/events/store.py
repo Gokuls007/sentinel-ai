@@ -81,6 +81,33 @@ class EventStore:
         existing = self.get_by_alert_id(event.alert_id) if event.alert_id else None
         return existing or event
 
+    def add_ergo_time(self, camera_id: str, rows) -> None:
+        """Add (day, kind, key, level, seconds) rows to the persisted time at risk."""
+        rows = [(day, camera_id, kind, str(key), int(level), float(secs)) for day, kind, key, level, secs in rows]
+        if not rows:
+            return
+        with self._lock, self._connect() as conn:
+            conn.executemany(
+                "INSERT INTO ergo_time (day, camera_id, kind, key, level, seconds) VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(day, camera_id, kind, key, level) DO UPDATE SET seconds = seconds + excluded.seconds",
+                rows,
+            )
+
+    def ergo_time(self, kind: str, day_from: str, day_to: str, camera_id: str | None = None) -> dict:
+        """{key: {level: seconds}} for kind "zone", "hour" or "track" over [day_from, day_to]."""
+        if kind not in ("zone", "hour", "track"):
+            raise ValueError(f"kind must be zone, hour or track, got {kind!r}")
+        sql = "SELECT key, level, SUM(seconds) FROM ergo_time WHERE kind = ? AND day >= ? AND day <= ?"
+        params: list = [kind, day_from, day_to]
+        if camera_id:
+            sql += " AND camera_id = ?"
+            params.append(camera_id)
+        out: dict = {}
+        with self._connect() as conn:
+            for key, level, secs in conn.execute(sql + " GROUP BY key, level", params):
+                out.setdefault(key, {})[int(level)] = float(secs)
+        return out
+
     def set_verified(self, event_id: int, verified: bool | None) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(

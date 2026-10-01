@@ -1,4 +1,5 @@
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import ClassVar
@@ -7,6 +8,7 @@ import numpy as np
 
 from config.settings import SentinelConfig
 from core.pose_estimator import PoseResult, TrackFeatures
+from ergonomics import ErgoTracker
 
 from .fall_detector import FallDetector
 from .temporal_model import TemporalClassifier
@@ -44,6 +46,7 @@ class AnomalyEngine:
         "time_exceeded": "medium",
         "wrong_direction": "medium",
         "loitering": "low",
+        "ergo_risk": "high",
         "fighting": "critical",
         "ppe": "high"
     }
@@ -78,6 +81,10 @@ class AnomalyEngine:
             device=config.detector.device
         )
         
+        # Ergonomics: REBA from the pose already computed (no extra model).
+        self.ergo = ErgoTracker(config.ergonomics) if config.ergonomics.enabled else None
+        self.last_ergo_ms = 0.0
+
         # Loitering state: where each person has been hanging around, and since when.
         self.loiter_anchor: dict[int, tuple[np.ndarray, float]] = {}
         self.last_loiter_alert: dict[int, float] = {}
@@ -94,6 +101,9 @@ class AnomalyEngine:
         for state in (self.last_loiter_alert, self.loiter_anchor):
             for tid in [t for t in state if t not in features]:
                 del state[tid]
+        if self.ergo:
+            self.ergo.prune(features.keys())
+        ergo_ms = 0.0
 
         for tid, pose in poses.items():
             feat = features.get(tid)
@@ -132,6 +142,17 @@ class AnomalyEngine:
             loiter_alert = self._check_loitering(tid, pose.mid_hip, timestamp)
             if loiter_alert:
                 alerts.append(loiter_alert)
+
+            # 4. Ergonomics (REBA): load comes from the zone the person works in, if any
+            if self.ergo:
+                started = time.perf_counter()
+                zones = self.zone_monitor.zones_of(tid)
+                load = max((z.load_score for z in zones), default=0)
+                _, ergo_alert = self.ergo.update(
+                    tid, pose.keypoints, timestamp, load=load, zone_ids=[z.id for z in zones])
+                ergo_ms += (time.perf_counter() - started) * 1000
+                if ergo_alert:
+                    alerts.append(self._ergo_alert(ergo_alert))
                 
             # 4. Temporal Action Classification (LSTM)
             # Get flat sequence (seq_len, 34)
@@ -155,7 +176,33 @@ class AnomalyEngine:
                         details={"action": label}
                     ))
                     
+        self.last_ergo_ms = ergo_ms
         return alerts
+
+    @property
+    def ergonomics_snapshot(self) -> dict[int, dict]:
+        """Current smoothed REBA per tracked person (for the dashboard)."""
+        if not self.ergo:
+            return {}
+        return {tid: view.as_dict() for tid, view in self.ergo.current.items()}
+
+    def _ergo_alert(self, a) -> AnomalyAlert:
+        part = a.dominant.replace("_", " ")
+        alert = self._create_alert(
+            alert_type="ergo_risk",
+            track_id=a.track_id,
+            timestamp=a.timestamp,
+            confidence=a.confidence,
+            message=(f"Ergonomic risk: REBA {a.peak_score} ({a.level_name.replace('_', ' ')}) "
+                     f"for {a.duration_s:.0f}s, mainly {part}"),
+            details={
+                "reba_score": a.peak_score, "risk_level": a.level_name, "dominant": a.dominant,
+                "duration": a.duration_s, "view_confidence": a.confidence, "angles": a.angles,
+                **({"zone_id": a.zone_ids[0]} if a.zone_ids else {}),
+            },
+        )
+        alert.severity = "critical" if a.level >= 5 else "high"
+        return alert
 
     def _check_loitering(self, track_id: int, position: np.ndarray,
                          timestamp: float) -> AnomalyAlert | None:

@@ -193,6 +193,7 @@ class ZoneIn(BaseModel):
     time_limit: float = Field(0.0, ge=0, le=86400)
     direction: str | None = Field(None, pattern=r"^(up|down|left|right)$")
     active: bool = True
+    load_score: int = Field(0, ge=0, le=3, description="REBA load/force score for work in this zone")
 
     def checked(self) -> "ZoneIn":
         if any(not (0.0 <= v <= 1.0) for point in self.polygon for v in point):
@@ -492,12 +493,75 @@ def put_zones(body: ZonesIn, request: Request, camera: str = Query(...)):
         raise HTTPException(status_code=422, detail="zone ids must be unique")
     zones = [
         Zone(id=z.id, name=z.name, polygon=[tuple(pt) for pt in z.polygon], zone_type=z.zone_type,
-             time_limit=z.time_limit, direction=z.direction, active=z.active)
+             time_limit=z.time_limit, direction=z.direction, active=z.active, load_score=z.load_score)
         for z in (zone.checked() for zone in body.zones)
     ]
     monitor.replace_zones(zones)
     logger.info("camera %s: %d zone(s) saved to %s", camera, len(zones), monitor.zones_file)
     return to_serializable(monitor.get_zones_for_overlay())
+
+
+# --- Ergonomics (REBA) ------------------------------------------------------------------
+
+def _all_pipelines() -> list[SentinelPipeline]:
+    with _cameras_lock:
+        extra = list(_cameras.values())
+    return ([pipeline] if pipeline else []) + extra
+
+
+@app.get("/api/ergonomics/live")
+def ergonomics_live(camera: str | None = None):
+    """Current smoothed REBA score per tracked person (track IDs, not identities)."""
+    p = _pipeline_for(camera)
+    return to_serializable({
+        "camera_id": p.config.camera_id,
+        "min_confidence": p.config.ergonomics.min_confidence,
+        "tracks": list(p.anomaly_engine.ergonomics_snapshot.values()),
+    })
+
+
+@app.get("/api/ergonomics/time")
+def ergonomics_time(
+    group_by: str = Query("zone", pattern=r"^(zone|hour|track)$"),
+    day_from: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="YYYY-MM-DD, default today"),
+    day_to: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    camera_id: str | None = None,
+):
+    """Seconds spent at each REBA risk level, grouped by zone (default), hour of day, or track ID.
+
+    Level "unknown" is time when the view was too unreliable to score (e.g. facing the camera).
+    Per track ID means per tracker identity: a person re-identified under a new ID counts twice.
+    """
+    from datetime import date
+
+    from ergonomics import LEVEL_NAMES
+
+    for p in _all_pipelines():  # include time accumulated since the last periodic flush
+        p.flush_ergo_time()
+    today = date.today().isoformat()
+    day_from = day_from or today
+    day_to = day_to or day_from
+    raw = _store().ergo_time(group_by, day_from, day_to, camera_id)
+    rows = {
+        key: {LEVEL_NAMES[lvl]: round(secs, 1) for lvl, secs in sorted(levels.items())}
+        for key, levels in raw.items()
+    }
+    return {"group_by": group_by, "day_from": day_from, "day_to": day_to,
+            "levels": [LEVEL_NAMES[i] for i in sorted(LEVEL_NAMES)], "rows": rows}
+
+
+@app.get("/api/ergonomics/postures")
+def ergonomics_postures(start: float | None = None, end: float | None = None, camera_id: str | None = None):
+    """What drove the ergo_risk events: count and peak REBA by dominant body part."""
+    events = _store().query(types=["ergo_risk"], start=start, end=end, camera_id=camera_id, limit=1000)
+    out: dict[str, dict] = {}
+    for e in events:
+        part = e.attributes.get("dominant") or "unknown"
+        row = out.setdefault(part, {"events": 0, "peak_reba": 0, "total_duration_s": 0.0})
+        row["events"] += 1
+        row["peak_reba"] = max(row["peak_reba"], int(e.attributes.get("reba_score") or 0))
+        row["total_duration_s"] = round(row["total_duration_s"] + float(e.attributes.get("duration") or 0), 1)
+    return {"postures": dict(sorted(out.items(), key=lambda kv: -kv[1]["events"]))}
 
 
 @app.get("/api/tracks")

@@ -36,6 +36,7 @@ class FrameResult:
     # (model.track), so they are timed together as "detect_track".
     timings_ms: dict[str, float] = field(default_factory=dict)
     events: list = field(default_factory=list)  # the Event published for each alert
+    ergonomics: dict = field(default_factory=dict)  # track_id -> current REBA (TrackErgo.as_dict)
 
     def to_dict(self) -> dict:
         data = {
@@ -51,6 +52,7 @@ class FrameResult:
                 "processing_time_ms": self.processing_time_ms
             },
             "timings_ms": self.timings_ms,
+            "ergonomics": {str(k): v for k, v in self.ergonomics.items()},
         }
         # The JPEG is sent once, as the top-level "image" field of the WebSocket message.
         return to_serializable(data)
@@ -144,9 +146,13 @@ class SentinelPipeline:
         all_features = self.pose_estimator.get_all_features()
         alerts = self.anomaly_engine.process(poses, all_features, timestamp)
         lap("analytics")
+        timings["ergonomics"] = self.anomaly_engine.last_ergo_ms  # included in "analytics"
+        ergonomics = self.anomaly_engine.ergonomics_snapshot
+        self._persist_ergo_time(timestamp)
 
         # 4. Annotation (clips and snapshots use the annotated frame)
         annotated_frame = self._annotate_frame(frame.copy(), detections, poses, alerts)
+        self._draw_ergo_badges(annotated_frame, detections, ergonomics)
         lap("annotate")
 
         # 5. Events: clip + snapshot, then publish (store -> notifications -> WebSocket)
@@ -182,6 +188,7 @@ class SentinelPipeline:
             frame_number=self.frame_count,
             timings_ms=timings,
             events=events,
+            ergonomics=ergonomics,
         )
 
         # 6. Streaming (JPEG encode + serialise for the dashboard), timed separately
@@ -250,6 +257,42 @@ class SentinelPipeline:
 
         return frame
 
+    ERGO_COLORS: ClassVar[dict[int, tuple[int, int, int]]] = {
+        1: (80, 200, 80), 2: (80, 200, 80), 3: (0, 215, 255), 4: (0, 140, 255), 5: (0, 0, 230),
+    }  # BGR: negligible/low green, medium yellow, high orange, very high red
+
+    def _draw_ergo_badges(self, frame: np.ndarray, detections, ergonomics: dict) -> None:
+        """A REBA badge above each scored person; grey when the view can't be trusted."""
+        for det in detections.detections:
+            info = ergonomics.get(det.track_id)
+            if not info or info.get("score") is None:
+                continue
+            x1, y1 = int(det.bbox[0]), int(det.bbox[1])
+            color = self.ERGO_COLORS.get(info["level"], (160, 160, 160)) if info["reliable"] else (130, 130, 130)
+            text = f"REBA {info['score']} {info['level_name'].replace('_', ' ').upper()}"
+            if not info["reliable"]:
+                text += " ?"
+            (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            top = max(0, y1 - 24 - h)
+            cv2.rectangle(frame, (x1, top), (x1 + w + 8, top + h + 8), color, -1)
+            cv2.putText(frame, text, (x1 + 4, top + h + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 1)
+
+    def _persist_ergo_time(self, timestamp: float, every_s: float = 10.0) -> None:
+        """Flush accumulated time at risk to the store every ``every_s`` (and at stop)."""
+        ergo = self.anomaly_engine.ergo
+        if ergo is None:
+            return
+        last = getattr(self, "_ergo_flushed_at", None)
+        if last is None:
+            self._ergo_flushed_at = timestamp
+        elif timestamp - last >= every_s or timestamp < last:
+            self.event_store.add_ergo_time(self.config.camera_id, ergo.drain_time())
+            self._ergo_flushed_at = timestamp
+
+    def flush_ergo_time(self) -> None:
+        if self.anomaly_engine.ergo is not None:
+            self.event_store.add_ergo_time(self.config.camera_id, self.anomaly_engine.ergo.drain_time())
+
     def _draw_skeleton(self, frame: np.ndarray, pose: PoseResult):
         for start_idx, end_idx in self.SKELETON:
             kp1, kp2 = pose.keypoints[start_idx], pose.keypoints[end_idx]
@@ -292,6 +335,7 @@ class SentinelPipeline:
     def stop(self):
         self.video_source.stop()
         self.clip_recorder.flush()
+        self.flush_ergo_time()
         self.notifier.close()
         uptime = time.time() - self.start_time
         logger.info(

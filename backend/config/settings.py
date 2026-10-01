@@ -2,6 +2,8 @@ import json
 import os
 from dataclasses import dataclass, field
 
+from ergonomics.config import ErgonomicsConfig
+
 
 @dataclass
 class DetectorConfig:
@@ -122,6 +124,7 @@ class SentinelConfig:
     anomaly: AnomalyConfig = field(default_factory=AnomalyConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    ergonomics: ErgonomicsConfig = field(default_factory=ErgonomicsConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     
     source: str = "0"
