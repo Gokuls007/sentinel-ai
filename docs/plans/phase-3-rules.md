@@ -1,7 +1,8 @@
 # Phase 3 plan: plain-English rules and presets (draft for approval, revised)
 
-**Status:** plan only. Implementation starts after **Phase 0 and Phase 1 are merged** and
-the **fall confirmation sweep** is done.
+**Status:** plan **approved** (decisions recorded at the end). Implementation starts only
+when the gate is met: **Phase 0 and Phase 1 merged** and the **fall confirmation sweep**
+done.
 
 ## Positioning
 Warehouse and industrial safety stays the main story. Plain-English rules let the same
@@ -28,6 +29,9 @@ deterministic code. There is no LLM in the frame loop.
     heights** of the nearest person, which works for any camera without calibration.
   - Metres are accepted only on a calibrated camera. Elsewhere the compiler refuses metres
     and offers body heights.
+  - The UI always shows body heights with an approximate conversion, marked as approximate:
+    "1.5 body heights (≈2.5 m, approx.)". The conversion assumes a 1.7 m adult. This appears
+    in the compiled-rule preview, the rule list and event details.
 - **Auto-suggested zones.** On a camera's first setup, open-vocabulary detection looks for
   doors, machines, desks and floor markings, and proposes zones from what it finds.
   - You approve, edit or reject each suggestion. Nothing is enabled without your approval.
@@ -60,7 +64,7 @@ deterministic code. There is no LLM in the frame loop.
 | `head_turned(direction, min_angle, duration)` | pose: nose vs ear midpoint | carries a confidence; low confidence never fires |
 | `looking_down_for(duration)` | pose: nose below ear line, head pitch | carries a confidence |
 | `looking_at_seat(neighbour)` | pose + seat zones | optional; seat zones auto-suggested |
-| `holding_object(class)` | open-vocab box near a wrist keypoint | e.g. phone |
+| `holding_object(class)` | object box near a wrist keypoint | phone = COCO `cell phone` (no YOLO-World) |
 | `object_passed_between(a, b)` | object track moving between two people | **stretch goal** |
 | `posture_deviation(kind, threshold)` | posture coach baseline (3.7) | kind = head_drop, hunch, lean, too_close |
 
@@ -79,7 +83,19 @@ deterministic code. There is no LLM in the frame loop.
 - The Rules page shows the compiled rule in plain words ("Person · near forklift (2 body
   heights) · for 3 s → high alert, clip"). You confirm or edit it. Only confirmed rules run.
 
-## 3.4 Open-vocabulary detection
+## 3.4 Object detection: COCO first, open-vocabulary only where needed
+- **Standard COCO YOLOv8 classes are used wherever they exist**, instead of YOLO-World:
+  `person`, `cell phone`, `laptop` and `book`. This includes `holding_object(phone)`.
+  These come from the detector the pipeline already runs, so they cost little extra.
+- YOLO-World covers only classes COCO lacks: helmet, safety vest, forklift, ladder, door
+  and desk.
+- **Accuracy test before 3b.** While 3a and 3c are built, I run a small per-class
+  accuracy test of YOLO-World on helmet, safety vest, forklift, ladder, door and desk:
+  - labelled frames from public, licence-checked images plus our own footage;
+  - precision and recall per class at the chosen confidence threshold, plus FPS cost;
+  - reported in BENCHMARKS.md before 3b starts.
+
+  A class that tests poorly isn't offered in rules. The compiler refuses it and says why.
 - The model is YOLO-World (`yolov8s-worldv2`) through `set_classes()` in Ultralytics. I'll
   confirm the current API and the weights' licence before using it.
 - It runs only for classes that active rules need, and only where the rule's other
@@ -109,6 +125,13 @@ Conditions used: `head_turned`, `looking_down_for`, `holding_object("phone")`, o
 - Seat zones are auto-suggested at the start of the exam from detected desks or seated
   people, then approved by the invigilator.
 
+**Faces are blurred by default** in flagged clips and thumbnails.
+- The blur covers the face region only, from the face keypoints. The head outline stays
+  visible, so a reviewer can still judge head direction.
+- An **Unblur** action requires a typed reason. Each unblur is logged with timestamp,
+  event id and reason, and the log is shown on the review page.
+- There is no bulk unblur.
+
 UI: an **Exam review** page.
 - A timeline of flagged moments, each with a short clip, the rule that fired and its
   confidence.
@@ -124,7 +147,8 @@ README: a **responsible-use** section covering:
 - human review is required;
 - false flags happen (with the measured rate);
 - students must be told the system is in use;
-- no automated penalties.
+- no automated penalties;
+- faces are blurred by default, and every unblur needs a logged reason.
 
 ## 3.7 Desk posture coach demo (preset "Desk posture coach")
 A laptop webcam sees you from the front, which the ergonomics module treats as low
@@ -161,16 +185,19 @@ per segment, overall and per deviation type.
 
 ## 3.9 Background workers (`backend/workers/`)
 These are optional per rule and never delay an alert:
-- `verify.py` sends 2–3 keyframes plus the rule text to a vision model and writes
-  `events.verified`. It is not used by the desk posture coach, which stays local.
+- `verify.py` (vision verification) is **skipped for now**. It will be decided at 3e,
+  behind the same provider-agnostic LLM client. It would never be used by the desk posture
+  coach, which stays local.
 - `report.py` writes a short markdown incident report for high and critical events.
 
 ## 3.10 Storage, API, evaluation
 - **Storage.** Rules, presets, baselines and review decisions are kept in SQLite (schema
   v3, after Phase 1's v2), with a backup before migrating.
 - **API.** `POST /api/rules/compile`, `POST /api/rules`, plus list, enable/disable, delete,
-  `POST /api/presets/{name}/apply`, `POST /api/posture/baseline`, and
-  `POST /api/review/{event_id}` (dismiss or keep). All are local-only with JSON bodies.
+  `POST /api/presets/{name}/apply`, `POST /api/posture/baseline`,
+  `POST /api/review/{event_id}` (dismiss or keep), and
+  `POST /api/review/{event_id}/unblur {reason}` (logged). All are local-only with JSON
+  bodies.
 - **Compiler eval.** The 40 cases are now 56, in `tests/rules/compile_cases.json`:
   warehouse, exam-hall and posture phrasings, and at least 10 that must be refused. I
   report exact and semantic match. Target ≥ 90%.
@@ -179,29 +206,31 @@ These are optional per rule and never delay an alert:
 
 ## Suggested build order (each a branch, merged on its checklist)
 1. **3a:** DSL, engine, compiler and presets, using only data the pipeline already has.
-   Zones become optional.
-2. **3b:** open-vocabulary detection: `near_object`, `missing_object`, `holding_object`,
-   auto-suggested zones, privacy zones.
-3. **3c:** desk posture coach (no open-vocabulary detection needed, and you can test it
+   Zones become optional. `holding_object` works with COCO classes.
+2. **3c:** desk posture coach (no open-vocabulary detection needed, and you can test it
    alone).
-4. **3d:** exam hall demo and review UI (needs 3b, plus your staged footage).
-5. **3e:** background workers (verification, reports).
+3. In parallel with 3a and 3c: the **YOLO-World per-class accuracy test** (3.4), reported
+   before 3b starts.
+4. **3b:** open-vocabulary detection for the classes that passed: `near_object`,
+   `missing_object`, auto-suggested zones, privacy zones.
+5. **3d:** exam hall demo and review UI, with face blur and logged unblur (needs your
+   staged footage).
+6. **3e:** background workers. Reports, plus the decision on vision verification.
 
-## Decisions needed from you
-1. **Vision model for verification (3.9).** Nemotron is text-only. The options:
-   - an NVIDIA vision model on build.nvidia.com (free trial);
-   - Claude Sonnet 5.5 (paid; needs `ANTHROPIC_API_KEY`);
-   - skip verification for now.
-2. **YOLO-World for PPE, vehicles and objects (3.4).** It costs FPS and its accuracy is
-   unmeasured. Object-relative rules, auto-suggested zones, `holding_object` and the exam
-   demo now all depend on it, so skipping it now drops those too. The options:
-   - go ahead, with per-class accuracy measured first;
-   - build 3a and 3c first and decide after measuring.
-3. **Branching.** Phase 3 needs ergonomics and schema v3, so it starts after Phases 0–2 are
-   on main and Phase 1 is merged. That's already the gate above.
-
-New questions raised by this revision:
-4. **Exam clips.** Blur faces in flagged clips by default, so reviewers judge the action
-   rather than the person?
-5. **Distance units.** Is "body heights" an acceptable unit until Phase 4 calibration, or
-   should `near_object` wait for metres?
+## Decisions (approved 2026-10-01)
+1. **Vision verification:** skipped for now. It is decided at 3e, behind the same
+   provider-agnostic client.
+2. **YOLO-World:** 3a and 3c are built first. Meanwhile I run a small per-class accuracy
+   test on helmet, safety vest, forklift, ladder, door and desk, and report it before 3b
+   starts.
+   - Standard COCO YOLOv8 classes are used wherever they exist (`cell phone`, `laptop`,
+     `book`, `person`), including for `holding_object(phone)`.
+   - So the exam demo's phone condition doesn't depend on YOLO-World. Only desk-based seat
+     suggestions do, and suggestions from seated people work without it.
+3. **Branching gate:** confirmed. No Phase 3 work starts until Phase 0 and Phase 1 are
+   merged and the fall confirmation sweep is done.
+4. **Exam clips:** faces are blurred by default, with the head outline kept visible. An
+   Unblur action requires a reason and is logged with a timestamp. The responsible-use
+   section says so (see 3.6).
+5. **Distance units:** body heights are accepted until Phase 4, always shown with an
+   approximate metre conversion marked as approximate (see 3.1).
