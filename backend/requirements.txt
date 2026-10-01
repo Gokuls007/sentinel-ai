@@ -14,3 +14,5 @@ scikit-learn
 matplotlib
 tqdm
 requests>=2.31          # Telegram notifications
+openai>=1.40            # OpenAI-compatible LLM endpoints (NVIDIA Nemotron) for search
+anthropic>=0.70         # Anthropic Messages API for search (LLM_PROVIDER=anthropic)

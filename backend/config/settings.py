@@ -106,6 +106,28 @@ class NotificationConfig:
 
 
 @dataclass
+class LLMConfig:
+    # Used only by features that answer a request (search); never in the per-frame loop.
+    provider: str = "nvidia"  # nvidia | anthropic
+    model: str = ""  # empty = the provider's default (llm/factory.py)
+    nvidia_api_key: str = ""
+    anthropic_api_key: str = ""
+    base_url: str = ""  # override the OpenAI-compatible endpoint (nvidia provider)
+    effort: str = "medium"  # anthropic only: low | medium | high
+    timeout_s: float = 90.0
+
+
+@dataclass
+class SearchConfig:
+    max_steps: int = 6  # model turns per question (each may call several tools)
+    max_tokens_per_question: int = 60_000
+    # Questions per minute, all clients together (each one costs API calls).
+    rate_limit_per_min: int = 10
+    # Allow search from other machines on the network (off: this computer only).
+    allow_remote: bool = False
+
+
+@dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
     port: int = 8000
@@ -123,6 +145,8 @@ class SentinelConfig:
     output: OutputConfig = field(default_factory=OutputConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    search: SearchConfig = field(default_factory=SearchConfig)
     
     source: str = "0"
     camera_id: str = "cam-0"  # recorded on every event; one pipeline = one camera
@@ -205,6 +229,20 @@ class SentinelConfig:
             n.smtp_to = [r.strip() for r in recipients.split(",") if r.strip()]
         n.smtp_starttls = env("SMTP_STARTTLS", bool, n.smtp_starttls)
         n.smtp_ssl = env("SMTP_SSL", bool, n.smtp_ssl)
+
+        llm = cfg.llm
+        llm.provider = env("LLM_PROVIDER", str, llm.provider).strip().lower()
+        llm.model = env("LLM_MODEL", str, llm.model)
+        llm.nvidia_api_key = env("NVIDIA_API_KEY", str, llm.nvidia_api_key)
+        llm.anthropic_api_key = env("ANTHROPIC_API_KEY", str, llm.anthropic_api_key)
+        llm.base_url = env("LLM_BASE_URL", str, llm.base_url)
+        llm.effort = env("LLM_EFFORT", str, llm.effort)
+        llm.timeout_s = env("LLM_TIMEOUT_S", float, llm.timeout_s)
+        s = cfg.search
+        s.max_steps = env("SEARCH_MAX_STEPS", int, s.max_steps)
+        s.max_tokens_per_question = env("SEARCH_MAX_TOKENS", int, s.max_tokens_per_question)
+        s.rate_limit_per_min = env("SEARCH_RATE_LIMIT_PER_MIN", int, s.rate_limit_per_min)
+        s.allow_remote = env("ALLOW_REMOTE_SEARCH", bool, s.allow_remote)
 
         cfg.server.host = env("HOST", str, cfg.server.host)
         cfg.server.port = env("PORT", int, cfg.server.port)
