@@ -73,6 +73,7 @@ const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [saved, setSaved] = useState(false);
+  const [deleted, setDeleted] = useState(null); // { zone, index } of the last deleted zone, for Undo
 
   useEffect(() => {
     let cancelled = false;
@@ -86,6 +87,7 @@ const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
     onDrawingChange(true);
     setStill(frame);
     setSaved(false);
+    setDeleted(null);
     setError(null);
     setDraft({ points: [], name: `Zone ${(zones?.length || 0) + 1}`, zone_type: 'restricted', time_limit: 10, direction: 'up', load_score: 0 });
   };
@@ -120,26 +122,38 @@ const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
     onDrawingChange(false);
   };
 
-  const remove = (zoneId) => {
-    setZones((z) => z.filter((x) => x.id !== zoneId));
-    setDirty(true);
-    setSaved(false);
-  };
-
-  const save = async () => {
+  // Saves `list` (default: the current zones). Returns true on success.
+  const persist = async (list = zones) => {
     setBusy(true);
     setError(null);
     try {
-      const overlay = await putJson(`/api/zones?camera=${camera}`, { zones });
+      const overlay = await putJson(`/api/zones?camera=${camera}`, { zones: list });
       setZones((overlay || []).map(fromOverlay));
       setDirty(false);
       setSaved(true);
       setStill(null);
+      return true;
     } catch (err) {
       setError(err.status === 403 ? 'Zones can only be edited from this computer.' : err.detail || describeError(err));
+      return false;
     } finally {
       setBusy(false);
     }
+  };
+  const save = () => persist();
+
+  // Delete takes effect at once (the zone stops alerting and leaves the video); Undo restores it.
+  const remove = async (zoneId) => {
+    const index = zones.findIndex((x) => x.id === zoneId);
+    if (index < 0) return;
+    const next = zones.filter((x) => x.id !== zoneId);
+    if (await persist(next)) setDeleted({ zone: zones[index], index });
+  };
+  const undoDelete = async () => {
+    if (!deleted) return;
+    const next = [...zones];
+    next.splice(Math.min(deleted.index, next.length), 0, deleted.zone);
+    if (await persist(next)) setDeleted(null);
   };
 
   const drawing = draft != null;
@@ -258,8 +272,8 @@ const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
                     </span>
                   )}
                 </div>
-                <button type="button" className={`${button} border-red-500/40 text-red-300`} onClick={() => remove(z.id)}
-                  aria-label={`Delete zone ${z.name}`}>
+                <button type="button" className={`${button} border-red-500/40 text-red-300 hover:bg-red-950/40`}
+                  onClick={() => remove(z.id)} disabled={busy} aria-label={`Delete zone ${z.name}`}>
                   <Trash2 className="w-3.5 h-3.5" aria-hidden="true" /> Delete
                 </button>
               </li>
@@ -268,7 +282,20 @@ const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
         )}
 
         {error && <p role="alert" className="text-[11px] text-red-300 border-l-2 border-red-500 pl-2">{error}</p>}
-        {saved && !dirty && <p role="status" className="text-[11px] text-emerald-300">Saved. Zones are active now.</p>}
+        {deleted ? (
+          <p role="status" className="text-[11px] text-emerald-300 flex items-center gap-3">
+            Deleted &quot;{deleted.zone.name}&quot;. It no longer alerts.
+            <button type="button" onClick={undoDelete} disabled={busy}
+              className="mono uppercase text-[10px] text-cyan-300 underline hover:text-cyan-100 disabled:opacity-40">
+              Undo
+            </button>
+          </p>
+        ) : (
+          saved && !dirty && <p role="status" className="text-[11px] text-emerald-300">Saved. Zones are active now.</p>
+        )}
+        {zones && zones.length === 0 && !drawing && (
+          <p className="text-[11px] mono text-white/40">No zones yet.</p>
+        )}
 
         {!drawing && (
           <div className="flex flex-wrap gap-3">
