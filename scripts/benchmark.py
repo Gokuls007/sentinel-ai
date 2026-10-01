@@ -104,6 +104,14 @@ def run(video: str, config_path: str | None, device: str, frames: int | None, wa
     }
 
 
+def os_name() -> str:
+    """platform.release() says "10" on Windows 11; the build number tells them apart."""
+    if platform.system() == "Windows":
+        build = int(platform.version().split(".")[-1] or 0)
+        return f"Windows {11 if build >= 22000 else platform.release()} (build {build})"
+    return f"{platform.system()} {platform.release()}"
+
+
 def hardware(device: str) -> str:
     if device.startswith("cuda"):
         import torch
@@ -130,7 +138,7 @@ def markdown(results: list[dict], sample: str) -> str:
         f"_Measured {datetime.now():%Y-%m-%d %H:%M} with `python scripts/benchmark.py`_ on the "
         f"`{sample}` sample ({results[0]['resolution']}, {results[0]['native_fps']:.0f} fps native), "
         f"YOLOv8n + YOLOv8n-pose, torch {torch.__version__}, ultralytics {ultralytics.__version__}, "
-        f"Python {platform.python_version()}, {platform.system()} {platform.release()}.",
+        f"Python {platform.python_version()}, {os_name()}.",
         "",
     ]
     for r in results:
