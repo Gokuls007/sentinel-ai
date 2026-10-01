@@ -63,6 +63,24 @@ def test_summary_metrics_and_false_alarms_per_hour_uses_adl_duration():
     assert "1.000 h (60.0 min, 108000 frames)" in md  # the basis of the rate is always stated
 
 
+def test_fallen_stage_diagnostics_explain_missed_alerts():
+    def staged(name, fallen_s, onset_frame=None, frames=90):
+        r = SequenceResult(name=name, is_fall=onset_frame is not None, frames=frames, fallen_s=fallen_s)
+        return score(r, onset_frame, tolerance_s=2.0)
+
+    a = staged("fall-01", 1.8, onset_frame=31, frames=76)  # onset 1.0 s, clip ends at 2.5 s
+    b = staged("fall-02", None, onset_frame=31, frames=91)
+    c = staged("adl-01", 4.0, frames=300)
+    assert a.reached_fallen and a.fn == 1
+    assert a.video_after_fallen_s == pytest.approx(0.7) and a.video_after_onset_s == pytest.approx(1.5)
+    assert not b.reached_fallen and b.video_after_fallen_s is None
+    s = summarize([a, b, c])
+    assert s["fallen_stage_reached"] == 1 and s["fallen_stage_recall"] == pytest.approx(0.5)
+    assert s["video_after_fallen_median_s"] == pytest.approx(0.7) and s["adl_reaching_fallen"] == 1
+    md = eval_fall.markdown(s, "cpu", 2.0, stillness_s=1.0)
+    assert "1 / 2 (50.0%)" in md and "still for 1.0 s" in md.replace("\n", " ")
+
+
 def test_onsets_are_the_first_falling_frame_per_sequence(tmp_path):
     labels = tmp_path / "urfall-cam0-falls.csv"
     labels.write_text(
