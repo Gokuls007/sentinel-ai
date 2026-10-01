@@ -4,11 +4,16 @@ import { ChevronLeft, ChevronRight, ImageOff, X, Film } from 'lucide-react';
 import DashboardPanel from '../components/DashboardPanel';
 import EmptyState from '../components/EmptyState';
 import HudBarChart from '../components/HudBarChart';
+import AngleTable from '../components/AngleTable';
 import TimeRangeControl from '../components/TimeRangeControl';
 import { useFeed } from '../context/liveFeed';
 import { apiUrl, describeError, formatTs, hourSeries, queryString, useFetch, useNow } from '../lib/api';
 import { DEFAULT_RANGE, rangeBounds, rangeToParams } from '../lib/timeRange';
 import { SEVERITIES, severityBadge } from '../lib/severity';
+import { eventTypeLabel } from '../lib/eventTypes';
+import {
+  ERGO_NOTE, formatPercent, formatSeconds, levelBadge, levelLabel, partLabel,
+} from '../lib/ergonomics';
 import { chipClass, inputClass, labelClass } from '../lib/ui';
 
 const PAGE_SIZE = 50;
@@ -75,7 +80,7 @@ const Filters = ({ meta, filters, onChange }) => {
         options={types}
         selected={filters.types}
         onToggle={(t) => set({ types: toggleIn(filters.types, t) })}
-        render={(t) => t.replace(/_/g, ' ')}
+        render={eventTypeLabel}
       />
       <ChipGroup
         legend="Severity"
@@ -118,6 +123,32 @@ const Field = ({ label, children }) => (
 
 const formatAttr = (v) => (v != null && typeof v === 'object' ? JSON.stringify(v) : String(v));
 
+// ergo_risk attributes shown in their own section (not repeated in the raw list).
+const ERGO_ATTRS = new Set(['reba_score', 'risk_level', 'dominant', 'duration', 'view_confidence', 'angles']);
+
+const ErgoDetail = ({ attrs }) => {
+  const score = attrs.reba_score;
+  const angles = attrs.angles && typeof attrs.angles === 'object' ? attrs.angles : null;
+  return (
+    <div>
+      <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-400 small-caps mb-1">Ergonomic risk (REBA)</h3>
+      <dl>
+        <Field label="REBA score">
+          <span className={`inline-block px-1.5 py-px border text-[9px] mono uppercase font-bold ${levelBadge(attrs.risk_level)}`}>
+            {score ?? '--'}
+          </span>
+        </Field>
+        <Field label="Risk level">{levelLabel(attrs.risk_level)}</Field>
+        <Field label="Main factor">{partLabel(attrs.dominant)}</Field>
+        <Field label="Duration">{typeof attrs.duration === 'number' ? formatSeconds(attrs.duration) : '--'}</Field>
+        <Field label="View confidence">{formatPercent(attrs.view_confidence)}</Field>
+      </dl>
+      {angles && <AngleTable angles={angles} caption="Joint angles at the peak" className="mt-2 text-[10px]" />}
+      <p className="mt-2 text-[9px] outfit text-white/40">{ERGO_NOTE}</p>
+    </div>
+  );
+};
+
 const EventDetail = ({ eventId, onClose }) => {
   const [reload, setReload] = useState(0);
   const [clipFailed, setClipFailed] = useState(false);
@@ -148,7 +179,8 @@ const EventDetail = ({ eventId, onClose }) => {
   if (error) body = <EmptyState>{error.status === 404 ? `Event ${eventId} not found` : describeError(error)}</EmptyState>;
   else if (!ev) body = <EmptyState>{loading ? 'Loading event...' : 'No data'}</EmptyState>;
   else {
-    const attrs = Object.entries(ev.attributes || {});
+    const isErgo = ev.type === 'ergo_risk';
+    const attrs = Object.entries(ev.attributes || {}).filter(([k]) => !(isErgo && ERGO_ATTRS.has(k)));
     body = (
       <div className="space-y-4">
         {ev.clip_url && !clipFailed ? (
@@ -175,7 +207,7 @@ const EventDetail = ({ eventId, onClose }) => {
         <p className="text-sm outfit text-white/90">{ev.message || '(no message)'}</p>
         <dl>
           <Field label="Event id">{ev.id}</Field>
-          <Field label="Type">{ev.type}</Field>
+          <Field label="Type">{eventTypeLabel(ev.type)}</Field>
           <Field label="Severity"><SeverityTag severity={ev.severity} /></Field>
           <Field label="Camera">{ev.camera_id || '--'}</Field>
           <Field label="Zone">{ev.zone_id || '--'}</Field>
@@ -186,6 +218,7 @@ const EventDetail = ({ eventId, onClose }) => {
           <Field label="Verified">{ev.verified ? 'yes' : 'no'}</Field>
           <Field label="Alert id">{ev.alert_id || '--'}</Field>
         </dl>
+        {isErgo && <ErgoDetail attrs={ev.attributes || {}} />}
         {attrs.length > 0 && (
           <div>
             <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-400 small-caps mb-1">Attributes</h3>
@@ -354,7 +387,7 @@ const EventsPage = () => {
                     >
                       <td className="py-1.5 pr-3"><Thumb url={ev.thumbnail_url} /></td>
                       <td className="py-1.5 pr-3 whitespace-nowrap text-white/70">{formatTs(ev.start_ts)}</td>
-                      <td className="py-1.5 pr-3 whitespace-nowrap text-cyan-300 uppercase">{ev.type}</td>
+                      <td className="py-1.5 pr-3 whitespace-nowrap text-cyan-300 uppercase">{eventTypeLabel(ev.type)}</td>
                       <td className="py-1.5 pr-3"><SeverityTag severity={ev.severity} /></td>
                       <td className="py-1.5 pr-3 text-white/60">{ev.camera_id || '--'}</td>
                       <td className="py-1.5 pr-3 text-white/60">{ev.zone_id || '--'}</td>

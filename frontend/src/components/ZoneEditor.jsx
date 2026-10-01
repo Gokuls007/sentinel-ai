@@ -10,6 +10,14 @@ const TYPES = {
   one_way: { label: 'One-way: alert on walking the wrong way', color: '#d946ef' },
 };
 const DIRECTIONS = ['up', 'down', 'left', 'right'];
+// REBA load/force score for work done in the zone.
+const LOADS = [
+  [0, '0: none / under 5 kg'],
+  [1, '1: 5-10 kg'],
+  [2, '2: over 10 kg'],
+  [3, '3: over 10 kg + shock'],
+];
+const LOAD_SHORT = { 1: '5-10 kg', 2: '>10 kg', 3: '>10 kg + shock' };
 
 const button =
   'px-3 py-1.5 text-[10px] mono uppercase font-bold tracking-widest border cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5';
@@ -26,6 +34,7 @@ const fromOverlay = (z) => ({
   polygon: z.polygon_normalized,
   time_limit: z.time_limit || 0,
   direction: z.direction || null,
+  load_score: Number(z.load_score) || 0,
 });
 
 const Polygon = ({ points, color, dashed = false, label }) => {
@@ -78,7 +87,7 @@ const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
     setStill(frame);
     setSaved(false);
     setError(null);
-    setDraft({ points: [], name: `Zone ${(zones?.length || 0) + 1}`, zone_type: 'restricted', time_limit: 10, direction: 'up' });
+    setDraft({ points: [], name: `Zone ${(zones?.length || 0) + 1}`, zone_type: 'restricted', time_limit: 10, direction: 'up', load_score: 0 });
   };
 
   const addPoint = (e) => {
@@ -98,6 +107,7 @@ const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
       polygon: draft.points,
       time_limit: draft.zone_type === 'time_limited' ? Number(draft.time_limit) : 0,
       direction: draft.zone_type === 'one_way' ? draft.direction : null,
+      load_score: Number(draft.load_score) || 0,
     };
     setZones((z) => [...(z || []), zone]);
     setDraft(null);
@@ -178,6 +188,13 @@ const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
                   </select>
                 </div>
               )}
+              <div>
+                <label htmlFor={`${id}-load`} className={labelClass}>Load (REBA, optional)</label>
+                <select id={`${id}-load`} className={inputClass} value={draft.load_score}
+                  onChange={(e) => setDraft({ ...draft, load_score: Number(e.target.value) })}>
+                  {LOADS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+                </select>
+              </div>
               <div className="flex flex-wrap gap-2 ml-auto">
                 <button type="button" className={`${button} border-white/20 text-white/70`} disabled={!draft.points.length}
                   onClick={() => setDraft({ ...draft, points: draft.points.slice(0, -1) })}>
@@ -235,6 +252,11 @@ const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
                   <span className="text-[10px] mono uppercase text-white/50">
                     {z.zone_type === 'time_limited' ? `time limit ${z.time_limit}s` : z.zone_type === 'one_way' ? `one-way (${z.direction})` : 'restricted'}
                   </span>
+                  {z.load_score > 0 && (
+                    <span className="text-[10px] mono uppercase text-amber-300/80" title="REBA load/force score for work in this zone">
+                      load {z.load_score} ({LOAD_SHORT[z.load_score]})
+                    </span>
+                  )}
                 </div>
                 <button type="button" className={`${button} border-red-500/40 text-red-300`} onClick={() => remove(z.id)}
                   aria-label={`Delete zone ${z.name}`}>

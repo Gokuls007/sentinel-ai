@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import DashboardPanel from '../components/DashboardPanel';
 import EmptyState from '../components/EmptyState';
+import ErgonomicsAnalytics from '../components/ErgonomicsAnalytics';
 import HudBarChart from '../components/HudBarChart';
 import TimeRangeControl from '../components/TimeRangeControl';
 import { useFeed } from '../context/liveFeed';
 import { describeError, hourSeries, queryString, useFetch, useNow } from '../lib/api';
 import { DEFAULT_RANGE, rangeBounds, rangeToParams } from '../lib/timeRange';
 import { SEVERITIES, SEVERITY_HEX } from '../lib/severity';
+import { eventTypeLabel } from '../lib/eventTypes';
 
 function useStats(groupBy, start, end, reloadKey) {
   return useFetch(`/api/events/stats${queryString({ group_by: groupBy, start, end })}`, reloadKey);
@@ -48,7 +50,7 @@ const AnalyticsPage = () => {
 
   const hourData = hourSeries(perHour.data?.counts, 24 * 31, rangeBounds(start, end, now));
   const zoneData = byCount(perZone.data?.counts, (k) => (k === '' ? 'No zone' : zoneNames.get(k) || k));
-  const typeData = byCount(perType.data?.counts, (k) => k.replace(/_/g, ' '));
+  const typeData = byCount(perType.data?.counts, eventTypeLabel);
   const sevCounts = perSeverity.data?.counts || {};
   // Fixed low -> critical order and status colors; unknown severities appended.
   const sevData = [...SEVERITIES, ...Object.keys(sevCounts).filter((k) => !SEVERITIES.includes(k))]
@@ -57,7 +59,10 @@ const AnalyticsPage = () => {
 
   return (
     <div className="space-y-4">
-      <DashboardPanel title="Range" headerAction="APPLIES TO ALL CHARTS">
+      <ErgonomicsAnalytics status={status} meta={meta} />
+
+      <h2 className="pt-2 text-[11px] font-bold uppercase tracking-[0.3em] text-cyan-500/70 small-caps border-t border-white/5">Events</h2>
+      <DashboardPanel title="Range" headerAction="APPLIES TO THE EVENT CHARTS">
         <TimeRangeControl value={range} onChange={setRange} />
       </DashboardPanel>
 
@@ -77,13 +82,6 @@ const AnalyticsPage = () => {
         </ChartCard>
       </div>
 
-      <DashboardPanel title="Ergonomic risk trends" headerAction="PHASE 1">
-        <div className="min-h-[120px] flex items-center justify-center border border-dashed border-white/10">
-          <p className="text-[10px] mono uppercase tracking-widest text-white/40 text-center px-4">
-            Placeholder: ergonomic risk trends arrive in Phase 1. No data is shown here yet.
-          </p>
-        </div>
-      </DashboardPanel>
     </div>
   );
 };

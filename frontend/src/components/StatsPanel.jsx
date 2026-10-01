@@ -12,6 +12,7 @@ const LAYERS = [
   ['detect_track', 'Detect+Track'],
   ['pose', 'Pose'],
   ['analytics', 'Analytics'],
+  ['ergonomics', 'Ergonomics'], // part of "analytics", shown on its own
   ['annotate', 'Annotate'],
   ['events_and_clips', 'Events+Clips'],
   ['stream', 'Stream'],
