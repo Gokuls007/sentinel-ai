@@ -9,6 +9,7 @@ it is dropped by hand, so nothing is lost either way.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -133,7 +134,7 @@ def migrate(db_path: str | os.PathLike) -> int:
     """
     db_path = str(db_path)
     exists_with_data = os.path.isfile(db_path) and os.path.getsize(db_path) > 0
-    with sqlite3.connect(db_path) as conn:
+    with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         legacy = version == 0 and _is_legacy(conn)
         if version >= SCHEMA_VERSION:
@@ -141,7 +142,7 @@ def migrate(db_path: str | os.PathLike) -> int:
     if legacy and exists_with_data:
         saved = backup(db_path)
         logger.info("Backed up %s to %s before migrating the event schema", db_path, saved)
-    with sqlite3.connect(db_path) as conn:
+    with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
         if legacy:
             copied = _migrate_v0_to_v1(conn)
             logger.info("Migrated %d event(s) to schema v1 (old table kept as events_v0)", copied)

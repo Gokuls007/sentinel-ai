@@ -6,12 +6,13 @@ never from caller input, so the store is safe to expose to search tools (Phase 2
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import sqlite3
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 from events.migrate import migrate
@@ -36,8 +37,17 @@ _GROUPS = {
     # Calendar hour bucket, e.g. "2026-09-30 14:00" (for events-per-hour charts).
     "hour_bucket": "strftime('%Y-%m-%d %H:00', start_ts, 'unixepoch', 'localtime')",
     "day": "strftime('%Y-%m-%d', start_ts, 'unixepoch', 'localtime')",
+    # Day of week in local time, "0" (Sunday) .. "6" (Saturday).
+    "weekday": "strftime('%w', start_ts, 'unixepoch', 'localtime')",
+    "track": "COALESCE(CAST(track_id AS TEXT), '')",
 }
 GROUP_BY_KEYS = tuple(_GROUPS)
+_ORDERS = {
+    "newest": "end_ts DESC, id DESC",
+    "oldest": "end_ts ASC, id ASC",
+    "longest": "(end_ts - start_ts) DESC, id DESC",
+}
+ORDERS = tuple(_ORDERS)
 
 
 class EventStore:
@@ -52,10 +62,18 @@ class EventStore:
         migrate(db_path)
         logger.info("EventStore ready: %s", db_path)
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextlib.contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """A connection that commits on success, rolls back on error, and is always closed.
+        (``with sqlite3.connect()`` alone only commits; the file stays open until GC, which
+        keeps it locked on Windows.)"""
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     # --- writing -------------------------------------------------------------------
 
@@ -126,14 +144,17 @@ class EventStore:
             params.append(float(end))
         return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
-    def query(self, *, limit: int = 50, offset: int = 0, **filters: Any) -> list[Event]:
-        """Events matching ``filters`` (see ``_where``), newest first."""
+    def query(self, *, limit: int = 50, offset: int = 0, order: str = "newest", **filters: Any) -> list[Event]:
+        """Events matching ``filters`` (see ``_where``), sorted by one of ``ORDERS``."""
+        if order not in _ORDERS:
+            raise ValueError(f"order must be one of {ORDERS}, got {order!r}")
         where, params = self._where(**filters)
         limit = max(1, min(int(limit), MAX_LIMIT))
         offset = max(0, int(offset))
+        order = _ORDERS[order]
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT {_COLUMNS} FROM events{where} ORDER BY end_ts DESC, id DESC LIMIT ? OFFSET ?",
+                f"SELECT {_COLUMNS} FROM events{where} ORDER BY {order} LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             ).fetchall()
         return [_to_event(r) for r in rows]
