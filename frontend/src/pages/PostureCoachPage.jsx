@@ -3,10 +3,11 @@ import { ArrowDown, Bell, BellOff, Crosshair, RotateCcw, Volume2, VolumeX, Webca
 import DashboardPanel from '../components/DashboardPanel';
 import VideoFeed from '../components/VideoFeed';
 import { useAppMode } from '../context/appMode';
-import { deleteJson, describeError, fetchJson, formatDuration, loadStored, postJson, saveStored } from '../lib/api';
+import { deleteJson, describeError, fetchJson, formatDuration, loadStored, postJson, putJson, saveStored } from '../lib/api';
 import { useCameraControl, useLaptopCamera, useLaptopFrames } from '../lib/laptopCamera';
 import { chipClass } from '../lib/ui';
 import { CalibrationPanel, ProbabilityBars, RecordingPrompt } from './PostureCalibration';
+import { BackToGood, BreakBanner, BreakPanel, BreakSettings, FixGuidance, TipCard } from './PostureCoaching';
 
 const BAD = new Set(['slouching', 'leaning', 'too_close', 'slumped']);
 const SETTINGS_KEY = 'sentinel.posture.reminders';
@@ -245,7 +246,7 @@ const StartCamera = ({ control, cam }) => (
   </DashboardPanel>
 );
 
-const StatusCard = ({ posture, connected, onBaseline, onCancel, busy, mode }) => {
+const StatusCard = ({ posture, connected, onBaseline, onCancel, onBreak, busy, mode }) => {
   const [debug, setDebug] = useState(() => Boolean(loadStored(DEBUG_KEY, false)));
   const toggleDebug = () => setDebug((d) => {
     saveStored(DEBUG_KEY, !d);
@@ -259,6 +260,12 @@ const StatusCard = ({ posture, connected, onBaseline, onCancel, busy, mode }) =>
     );
   }
   if (posture.recording) return <RecordingPrompt rec={posture.recording} onCancel={onCancel} />;
+  if (posture.break?.routine) {
+    return (
+      <BreakPanel routine={posture.break.routine} note={posture.break.note} busy={busy}
+        onStood={() => onBreak('stood')} onCancel={() => onBreak('cancel')} />
+    );
+  }
   const s = style(posture.status);
   const bad = BAD.has(posture.status) || posture.status === 'looking_down';
   const classifier = posture.method === 'classifier';
@@ -273,6 +280,8 @@ const StatusCard = ({ posture, connected, onBaseline, onCancel, busy, mode }) =>
             : `Recording... ${posture.calibration_left_s.toFixed(1)} s left`}
         </div>
       )}
+      <BackToGood correction={posture.back_to_good} />
+      {posture.guidance?.active && <FixGuidance guidance={posture.guidance} />}
       {bad && (
         <div className="text-[11px] mono uppercase text-white/50">for {formatDuration(posture.held_s).slice(3)}</div>
       )}
@@ -491,6 +500,8 @@ const PostureCoachPage = () => {
     }
   };
 
+  const breakAction = (action) => call(`/api/posture/break/${action}?camera=laptop`);
+
   if (!loaded) return <p className="mono text-[11px] text-white/40 uppercase">Checking camera...</p>;
 
   return (
@@ -511,6 +522,7 @@ const PostureCoachPage = () => {
         </div>
       )}
       {error && <p className="text-[11px] text-red-300">{error}</p>}
+      {running && <BreakBanner brk={posture?.break} busy={busy} call={breakAction} />}
       {!running ? (
         <StartCamera control={control} cam={cam} />
       ) : (
@@ -523,11 +535,15 @@ const PostureCoachPage = () => {
             <div className="col-span-12 lg:col-span-5 space-y-4">
               <StatusCard posture={posture} connected={feedStatus === 'live'} busy={busy} mode={mode}
                 onBaseline={() => call('/api/posture/baseline?camera=laptop')}
-                onCancel={() => call('/api/posture/recording/cancel?camera=laptop')} />
+                onCancel={() => call('/api/posture/recording/cancel?camera=laptop')}
+                onBreak={breakAction} />
+              <TipCard enabled={running} />
               <CalibrationPanel posture={posture} busy={busy}
                 call={(path, body) => call(path, null, body)}
                 remove={(path) => call(path, null, {}, deleteJson)} />
               <ReminderSettings settings={settings} update={update} />
+              <BreakSettings brk={posture?.break} busy={busy} onStart={() => breakAction('start')}
+                onMinutes={(m) => call('/api/posture/break/settings?camera=laptop', null, { sit_minutes: m }, putJson)} />
             </div>
           </div>
           <SessionSummary posture={posture} timeline={timeline}

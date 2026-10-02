@@ -35,6 +35,7 @@ from dataclasses import asdict, dataclass, field, fields
 
 import numpy as np
 
+from posture.breaks import SAFETY_NOTE, BreakConfig, BreakRoutine, BreakScheduler
 from posture.classifier import (
     POSTURE_LABELS,
     POSTURES,
@@ -46,6 +47,16 @@ from posture.classifier import (
     raw_features,
     train,
 )
+from posture.guidance import (
+    GHOST_EDGES,
+    CorrectionTracker,
+    instruction,
+    median_skeleton,
+    normalise,
+    place_ghost,
+    to_json,
+)
+from posture.history import PostureHistory
 
 logger = logging.getLogger("sentinel.posture")
 
@@ -112,6 +123,8 @@ class PostureConfig:
     looking_away_to_away_s: float = 120.0
     # Frames unlike any calibration frame (out of distribution) for this long: "not sure".
     not_sure_after_s: float = 3.0
+    # Quick "back to good" check while the ghost is shown (classifier: this frame's Good probability).
+    quick_good_prob: float = 0.6
     timeline_bucket_s: float = 10.0
 
 
@@ -141,6 +154,7 @@ class Baseline:
     mid_x: float | None = None
     mid_y: float | None = None
     yaw: float | None = None  # head yaw while recording (the looking-away reference); None = 0
+    skeleton: dict | None = None  # median face + shoulder points (the fix-guidance ghost)
 
     @classmethod
     def from_dict(cls, data: dict) -> Baseline:
@@ -400,6 +414,24 @@ class PostureCoach:
         self.ood: float | None = None  # distance to the calibration data (classifier mode)
         self._away_look_since: float | None = None  # start of the current looking-away stretch
         self._ood_since: float | None = None  # start of the current run of unfamiliar frames
+        # Coaching: fix guidance (ghost + quick "back to good"), local history, stretch breaks.
+        self.guide = CorrectionTracker()
+        self.instruction: str | None = None
+        self.lean_side: str | None = None  # "left" | "right" (your side) while leaning, if known
+        self._kp = None  # this frame's keypoints (the ghost is placed on them)
+        self._frame_good: float | None = None  # this frame's Good probability (classifier)
+        self._calib_skel: list = []
+        self.history: PostureHistory | None = None
+        if stem:
+            os.makedirs(os.path.dirname(stem) or ".", exist_ok=True)
+            self.history = PostureHistory(stem.format("history") + ".db", clock=clock)
+        bcfg = BreakConfig()
+        if self.history:
+            bcfg.sit_minutes = float(self.history.get_setting("break_sit_minutes", bcfg.sit_minutes))
+        self.breaks = BreakScheduler(bcfg)
+        self.routine: BreakRoutine | None = None
+        self.break_result: dict | None = None
+        self.ghost_good = self._calibration_ghost()
         self.calibration_counts = {p: len(v) for p, v in self.recordings().items()}
         if self.model is not None and self.status == NO_BASELINE:
             self.status = AWAY
@@ -422,6 +454,12 @@ class PostureCoach:
         with open(self.calibration_path, "w", encoding="utf-8") as f:
             json.dump({"postures": data, "features": list(RAW_FEATURES)}, f)
         self.calibration_counts = {p: len(v) for p, v in data.items()}
+        self.ghost_good = self._calibration_ghost(data)
+
+    def _calibration_ghost(self, data: dict | None = None) -> dict | None:
+        """Your Good posture from the calibration (None if recorded before the ghost existed)."""
+        frames = (data if data is not None else self.recordings()).get("good", [])
+        return median_skeleton([f.get("skeleton") for f in frames])
 
     def start_recording(self, kind: str, postures: list[str], now: float | None = None,
                         get_ready_s: float | None = None, record_s: float | None = None) -> None:
@@ -458,7 +496,10 @@ class PostureCoach:
         if ts >= r["record_from"]:
             raw = raw_features(kp, self.cfg.min_kp_conf) if kp is not None and problem is None else None
             if raw is not None:
-                r["frames"].append({"t": round(ts, 3), "features": raw})
+                frame = {"t": round(ts, 3), "features": raw}
+                if posture == "good" and r["kind"] == "calibrate":
+                    frame["skeleton"] = to_json(normalise(kp, self.cfg.min_kp_conf))
+                r["frames"].append(frame)
             else:
                 r["skipped"] += 1
         if ts < r["record_until"]:
@@ -516,6 +557,7 @@ class PostureCoach:
         if self.calibration_path and os.path.isfile(self.calibration_path):
             os.remove(self.calibration_path)
         self.calibration_counts = {}
+        self.ghost_good = None
 
     def _classify_with_model(self, kp, ts: float) -> None:
         raw = raw_features(kp, self.cfg.min_kp_conf) if kp is not None else None
@@ -534,12 +576,15 @@ class PostureCoach:
                                             "often sit, record it again (closest posture) and retrain."], ts)
             return
         self._ood_since = None
-        current = self.stable.update(self.model.predict_proba(raw), ts)
+        frame_probs = self.model.predict_proba(raw)
+        self._frame_good = frame_probs.get("good")
+        current = self.stable.update(frame_probs, ts)
         self.probs = dict(self.stable.mean)
         if current is None:  # not confident in anything yet
             self._set_status(CHECKING, ["Learning how you're sitting right now (a few seconds)"], ts)
             return
         status = {"leaning_left": LEANING, "leaning_right": LEANING}.get(current, current)
+        self.lean_side = {"leaning_left": "left", "leaning_right": "right"}.get(current)
         reasons = {
             "slouching": ["Sitting the way you slouched in calibration: sit tall, chin back"],
             "leaning_left": ["Leaning to your left: centre yourself over your hips"],
@@ -559,6 +604,7 @@ class PostureCoach:
         delay = self.cfg.baseline_delay_s if delay is None else delay
         self._calib = []
         self._calib_yaw = []
+        self._calib_skel = []
         self._calib_unclear = 0
         self._calib_start = now + delay
         self._calib_until = self._calib_start + self.cfg.baseline_seconds
@@ -614,7 +660,9 @@ class PostureCoach:
             mid_x=med([s.mid_x for s in samples]),
             mid_y=med([s.mid_y for s in samples]),
             yaw=float(np.median(yaws)) if yaws else None,
+            skeleton=to_json(median_skeleton(self._calib_skel)),
         )
+        self._calib_skel = []
         self._save()
         self._window.clear()
         self._set_status(GOOD, [], self._last_ts or self.clock())
@@ -653,6 +701,7 @@ class PostureCoach:
                     _turned, yaw, _why = head_turn(kp, self.cfg.min_kp_conf)
                     if yaw is not None:
                         self._calib_yaw.append(yaw)
+                    self._calib_skel.append(normalise(kp, self.cfg.min_kp_conf))
                 elif problem is not None:
                     self._calib_unclear += 1
             if ts >= self._calib_until:
@@ -664,6 +713,15 @@ class PostureCoach:
             self._record(kp if face_seen else None, problem, ts)
             self._account(dt, ts, count=False)
             return
+
+        if self.routine is not None:  # a stretch break: count reps, don't coach
+            self.routine.update(kp, ts)
+            if self.routine.done:
+                self._finish_break(ts)
+            self._account(dt, ts, count=False)
+            return
+
+        self._frame_good = None
 
         unclear = (bool(self._quality) and
                    sum(bad for _t, bad in self._quality) / len(self._quality) >= self.cfg.unclear_fraction)
@@ -690,8 +748,120 @@ class PostureCoach:
             self.smoothed = self._smoothed()
             a = assess(self.smoothed, self.baseline, self.cfg)
             self.hint = a["hint"]
+            self.lean_side = self._threshold_lean_side() if a["status"] in (LEANING, SLUMPED) else None
             self._propose(a["status"], a["reasons"], ts)
+        self._coach_frame(kp if face_seen else None, m, dt, ts)
         self._account(dt, ts)
+
+    def _threshold_lean_side(self) -> str | None:
+        """Your side (the webcam image is not mirrored: image right = your left)."""
+        s, b = self.smoothed, self.baseline
+        if s.lateral is not None and b.lateral is not None and abs(s.lateral - b.lateral) > self.cfg.lateral_shift:
+            return "left" if s.lateral > b.lateral else "right"
+        tilt = s.tilt_deg - b.tilt_deg  # positive: the shoulder on the image's right is lower
+        return ("left" if tilt > 0 else "right") if abs(tilt) > self.cfg.tilt_deg else None
+
+    # --- coaching: fix guidance and breaks ---------------------------------------------------
+
+    def _coach_frame(self, kp, m, dt: float, ts: float) -> None:
+        self._kp = kp
+        ok = None  # does this frame on its own look Good? (the quick "back to good" check)
+        if self.status in BAD and kp is not None and self.turn_reason is None:
+            if self.model is not None:
+                ok = None if self._frame_good is None else self._frame_good >= self.cfg.quick_good_prob
+            elif m is not None and self.baseline is not None:
+                ok = assess(m, self.baseline, self.cfg)["status"] == GOOD
+        corrected = self.guide.update(self.status, ts, ok)
+        if corrected and self.history:
+            self.history.add_correction(ts, corrected["posture"], corrected["seconds"], corrected["after_reminder"])
+        if self.status in BAD:
+            rows = (explain(self.smoothed, self.baseline, self.cfg)
+                    if self.model is None and self.smoothed is not None and self.baseline is not None else None)
+            self.instruction = instruction(self.status, rows, self.cfg)
+        else:
+            self.instruction = None
+        present = ts - self._last_seen <= self.cfg.away_after_s and self.status != AWAY
+        if self.breaks.update(present, dt, ts) and self.history:
+            self.history.add_event(ts, "break_offered", {"sat_min": round(self.breaks.sit_s / 60, 1)})
+
+    def _ghost_ref(self) -> tuple[dict | None, float | None]:
+        """(Good skeleton, Good shoulder width px): the calibration's with a model, else the baseline's."""
+        if self.model is not None and self.ghost_good:
+            return self.ghost_good, self.model.ref.get("shoulder_width")
+        if self.baseline is not None and self.baseline.skeleton:
+            return self.baseline.skeleton, self.baseline.shoulder_width
+        return None, None
+
+    def ghost(self) -> dict | None:
+        """The ghost of your Good posture in image pixels, while a poor posture is being corrected."""
+        if not self.guide.ghost_visible or self._kp is None:
+            return None
+        ref, good_width = self._ghost_ref()
+        if not ref:
+            return None
+        pts = place_ghost(ref, self._kp, good_width if self.status == TOO_CLOSE else None, self.cfg.min_kp_conf)
+        return {"points": pts, "edges": GHOST_EDGES} if pts else None
+
+    def _now(self, now: float | None) -> float:
+        if now is not None:
+            return now
+        return self._last_ts if self._last_ts is not None else self.clock()
+
+    def start_break(self, now: float | None = None) -> None:
+        if self.rec is not None or self._calib is not None:
+            raise ValueError("finish the calibration first")
+        now = self._now(now)
+        self.routine = BreakRoutine(now, self.breaks.cfg, self.cfg.min_kp_conf)
+        self.breaks.offered = False
+        self.break_result = None
+
+    def snooze_break(self, now: float | None = None) -> None:
+        now = self._now(now)
+        self.breaks.snooze(now)
+        if self.history:
+            self.history.add_event(now, "break_snoozed")
+
+    def skip_break(self, now: float | None = None) -> None:
+        now = self._now(now)
+        self.breaks.reset()
+        if self.history:
+            self.history.add_event(now, "break_skipped")
+
+    def stood_up(self, now: float | None = None) -> None:
+        if self.routine is None:
+            return
+        now = self._now(now)
+        self.routine.stood_up(now)
+        if self.routine.done:
+            self._finish_break(now)
+
+    def cancel_break(self, now: float | None = None) -> None:
+        if self.routine is not None:
+            self._finish_break(self._now(now), cancelled=True)
+
+    def _finish_break(self, ts: float, cancelled: bool = False) -> None:
+        result = self.routine.result()
+        if cancelled:
+            result["outcome"] = "cancelled"
+        self.break_result = {**result, "at": ts}
+        self.routine = None
+        self.breaks.reset()
+        self.guide.update(AWAY, ts, None)  # a fresh start after the break
+        if self.history:
+            self.history.add_event(ts, "break_" + result["outcome"], result)
+
+    def set_break_minutes(self, minutes: float) -> None:
+        self.breaks.cfg.sit_minutes = float(minutes)
+        if self.history:
+            self.history.set_setting("break_sit_minutes", float(minutes))
+
+    def _break_snapshot(self, ts: float) -> dict:
+        b = self.breaks
+        return {"offered": b.offered, "sit_min": round(b.sit_s / 60, 1), "sit_minutes": b.cfg.sit_minutes,
+                "snoozed": ts < b.snooze_until, "snooze_min": b.cfg.snooze_s / 60,
+                "routine": self.routine.snapshot(ts) if self.routine else None,
+                "result": self.break_result if self.break_result and ts - self.break_result["at"] <= 10 else None,
+                "note": SAFETY_NOTE}
 
     def _looking_away(self, kp, ref_yaw: float, ts: float) -> bool:
         """Head turned away from the screen (both methods): "looking away", neutral, with the usual
@@ -759,6 +929,9 @@ class PostureCoach:
         key = self.status if self.status in self.session.seconds else None
         if count and key and dt > 0:
             self.session.seconds[key] += dt
+            if self.history:
+                side = self.lean_side if key in (LEANING, SLUMPED) else None
+                self.history.add_seconds(ts, f"leaning_{side}" if key == LEANING and side else key, dt)
         # Timeline: the most common status in each bucket.
         if self._bucket_start is None:
             self._bucket_start = ts
@@ -777,6 +950,9 @@ class PostureCoach:
 
     def note_reminder(self) -> None:
         self.session.reminders += 1
+        self.guide.note_reminder()
+        if self.history:
+            self.history.add_event(self._now(None), "reminder", {"status": self.status})
 
     def reset_session(self) -> None:
         self.session = Session(started_at=self.clock())
@@ -839,6 +1015,14 @@ class PostureCoach:
             "recording_error": self.rec_error,
             "model": self.model_summary(),
             "calibration_counts": dict(self.calibration_counts),
+            "guidance": {
+                "active": self.guide.ghost_visible,
+                "instruction": self.instruction if self.status in BAD else None,
+                "ghost_available": self._ghost_ref()[0] is not None,
+                "since_s": round(ts - self.guide.active["start"], 1) if self.guide.ghost_visible else None,
+            },
+            "back_to_good": self.guide.recent(ts),
+            "break": self._break_snapshot(ts),
         }
 
     def model_summary(self) -> dict | None:

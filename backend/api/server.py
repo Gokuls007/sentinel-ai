@@ -31,6 +31,7 @@ from core.recorder import Recorder
 from core.utils import to_serializable
 from events import EVENT_TYPES, GROUP_BY_KEYS, SEVERITIES, Event, EventStore
 from posture.classifier import POSTURES
+from posture.history import current_tip
 
 logger = logging.getLogger("sentinel.api")
 
@@ -687,6 +688,65 @@ def get_posture_model(camera: str | None = None):
     if m is None:
         return {"model": None}
     return to_serializable({"model": p.posture.model_summary(), "report": m.report, "test_report": m.test_report})
+
+
+# Coaching: root-cause tips, stretch breaks, history.
+
+@app.get("/api/posture/tips")
+def get_posture_tip(camera: str | None = None):
+    """The strongest setup tip from the last 7 days (one at a time), with its evidence."""
+    p = _posture_pipeline(camera)
+    h = p.posture.history
+    return to_serializable({"tip": current_tip(h) if h else None})
+
+
+@app.post("/api/posture/tips/{rule}/dismiss")
+def dismiss_posture_tip(rule: str, request: Request, camera: str | None = None):
+    """Hide this tip for 7 days."""
+    _check_camera_control(request)
+    p = _posture_pipeline(camera)
+    if p.posture.history:
+        p.posture.history.dismiss(rule[:32], time.time() + 7 * 86400)
+    return {"tip": current_tip(p.posture.history) if p.posture.history else None}
+
+
+@app.get("/api/posture/history")
+def get_posture_history(camera: str | None = None, days: int = Query(7, ge=1, le=90)):
+    p = _posture_pipeline(camera)
+    h = p.posture.history
+    if not h:
+        return {"days": [], "corrections": []}
+    return to_serializable({"days": h.daily(days), "corrections": h.corrections(time.time() - days * 86400)})
+
+
+class BreakSettingsRequest(BaseModel):
+    sit_minutes: float = Field(..., ge=5, le=240)
+
+
+_BREAK_ACTIONS = {"start": "start_break", "snooze": "snooze_break", "skip": "skip_break",
+                  "stood": "stood_up", "cancel": "cancel_break"}
+
+
+@app.post("/api/posture/break/{action}")
+def posture_break(action: str, request: Request, camera: str | None = None):
+    """Stretch break: start | snooze | skip | stood (the manual stand-up) | cancel."""
+    _check_camera_control(request)
+    if action not in _BREAK_ACTIONS:
+        raise HTTPException(404, f"unknown break action: {action}")
+    p = _posture_pipeline(camera)
+    try:
+        getattr(p.posture, _BREAK_ACTIONS[action])()
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return to_serializable(p.posture.snapshot())
+
+
+@app.put("/api/posture/break/settings")
+def posture_break_settings(body: BreakSettingsRequest, request: Request, camera: str | None = None):
+    _check_camera_control(request)
+    p = _posture_pipeline(camera)
+    p.posture.set_break_minutes(body.sit_minutes)
+    return to_serializable(p.posture.snapshot()["break"])
 
 
 @app.delete("/api/posture/model")

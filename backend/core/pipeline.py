@@ -187,6 +187,8 @@ class SentinelPipeline:
                      else [] if self.mode == "posture" else list(poses.values()))
             for pose in shown:
                 self._draw_skeleton(annotated_frame, pose)
+            if self.mode == "posture":
+                self._draw_ghost(annotated_frame, self.posture.ghost())
         lap("annotate")
 
         # 5. Events: clip + snapshot, then publish (store -> notifications -> WebSocket)
@@ -351,6 +353,26 @@ class SentinelPipeline:
     def flush_ergo_time(self) -> None:
         if self.anomaly_engine.ergo is not None:
             self.event_store.add_ergo_time(self.config.camera_id, self.anomaly_engine.ergo.drain_time())
+
+    @staticmethod
+    def _draw_ghost(frame: np.ndarray, ghost: dict | None) -> None:
+        """A faint dashed outline of your Good posture (posture coach fix guidance)."""
+        if not ghost:
+            return
+        pts = ghost["points"]
+        overlay = frame.copy()
+        color = (255, 255, 255)
+        for a, b in ghost["edges"]:
+            if a not in pts or b not in pts:
+                continue
+            p, q = np.array(pts[a]), np.array(pts[b])
+            n = max(1, int(np.hypot(*(q - p)) // 10))
+            for i in range(0, n, 2):  # dashes
+                s, e = p + (q - p) * i / n, p + (q - p) * min(i + 1, n) / n
+                cv2.line(overlay, tuple(s.astype(int)), tuple(e.astype(int)), color, 3, cv2.LINE_AA)
+        for i, (x, y) in pts.items():
+            cv2.circle(overlay, (int(x), int(y)), 7 if i == 0 else 5, color, 2, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
 
     def _draw_skeleton(self, frame: np.ndarray, pose: PoseResult):
         for start_idx, end_idx in self.SKELETON:
