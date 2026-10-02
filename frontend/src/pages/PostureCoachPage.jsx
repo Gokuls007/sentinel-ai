@@ -25,9 +25,56 @@ const STATUS_STYLE = {
   away: { text: 'text-white/50', ring: 'border-white/15 bg-white/5', bar: 'bg-white/20' },
   calibrating: { text: 'text-cyan-300', ring: 'border-cyan-400/60 bg-cyan-950/30', bar: 'bg-cyan-400' },
   no_baseline: { text: 'text-white/70', ring: 'border-white/20 bg-white/5', bar: 'bg-white/20' },
+  moved: { text: 'text-sky-300', ring: 'border-sky-400/50 bg-sky-950/30', bar: 'bg-sky-500/60' },
 };
 const style = (s) => STATUS_STYLE[s] || STATUS_STYLE.away;
-const STATUS_LABELS = { good: 'Good', slouching: 'Slouching', leaning: 'Leaning', too_close: 'Too close', away: 'Away' };
+const STATUS_LABELS = {
+  good: 'Good', slouching: 'Slouching', leaning: 'Leaning', too_close: 'Too close', away: 'Away', moved: 'Moved',
+};
+const SUMMARY_KEYS = ['good', 'slouching', 'leaning', 'too_close', 'moved', 'away'];
+const DEBUG_KEY = 'sentinel.posture.debug';
+
+const fmtNum = (v, digits = 2) => (v == null || Number.isNaN(v) ? '--' : Number(v).toFixed(digits));
+
+/** The raw values behind each status: now vs baseline, the change, and the limit. */
+const DebugPanel = ({ rows }) => (
+  <div className="border border-white/10 bg-black/40 p-2 overflow-x-auto">
+    {!rows ? (
+      <p className="text-[10px] mono text-white/40">No measurements yet (set a baseline and sit in view).</p>
+    ) : (
+      <table className="w-full text-[10px] mono">
+        <caption className="sr-only">Posture measurements</caption>
+        <thead>
+          <tr className="text-white/40 text-left">
+            <th scope="col" className="font-normal pr-2">Measure</th>
+            <th scope="col" className="font-normal pr-2 text-right">Now</th>
+            <th scope="col" className="font-normal pr-2 text-right">Baseline</th>
+            <th scope="col" className="font-normal pr-2 text-right">Change</th>
+            <th scope="col" className="font-normal text-right">Limit</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.key} className={r.triggered ? style(r.status).text : 'text-white/70'}>
+              <td className="pr-2 py-0.5">{r.label}{r.triggered ? ' ●' : ''}</td>
+              <td className="pr-2 text-right">{fmtNum(r.now, r.key === 'tilt_deg' || r.key === 'face_size' ? 1 : 2)}</td>
+              <td className="pr-2 text-right">{fmtNum(r.baseline, r.key === 'tilt_deg' || r.key === 'face_size' ? 1 : 2)}</td>
+              <td className="pr-2 text-right">
+                {r.key === 'tilt_deg' || r.key === 'lateral'
+                  ? `${r.change >= 0 ? '+' : ''}${fmtNum(r.change, r.key === 'tilt_deg' ? 1 : 2)}`
+                  : r.change == null ? '--' : `${fmtNum(r.change, 2)}x`}
+              </td>
+              <td className="text-right text-white/40">{r.limit}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    )}
+    <p className="mt-1 text-[9px] mono text-white/30">
+      All relative to your shoulders and your own baseline (smoothed over 1 s). ● = over its limit.
+    </p>
+  </div>
+);
 
 /** A soft two-note chime with the Web Audio API (no audio file needed). */
 function chime() {
@@ -123,6 +170,11 @@ const StartCamera = ({ control, cam }) => (
 );
 
 const StatusCard = ({ posture, connected, onBaseline, busy, mode }) => {
+  const [debug, setDebug] = useState(() => Boolean(loadStored(DEBUG_KEY, false)));
+  const toggleDebug = () => setDebug((d) => {
+    saveStored(DEBUG_KEY, !d);
+    return !d;
+  });
   if (!connected || !posture) {
     return (
       <div className="border border-white/10 bg-white/5 p-6 text-center text-[11px] mono text-white/50 uppercase tracking-widest">
@@ -137,12 +189,16 @@ const StatusCard = ({ posture, connected, onBaseline, busy, mode }) => {
       <div className="text-[10px] mono uppercase tracking-[0.3em] text-white/40">Posture</div>
       <div className={`text-5xl md:text-6xl font-bold outfit leading-none ${s.text}`}>{posture.label}</div>
       {posture.calibrating && (
-        <div className="text-sm text-cyan-200">Recording your baseline... {posture.calibration_left_s.toFixed(1)} s</div>
+        <div className="text-sm text-cyan-200">
+          {posture.calibration_phase === 'get_ready'
+            ? `Recording starts in ${Math.ceil(posture.calibration_left_s)}...`
+            : `Recording... ${posture.calibration_left_s.toFixed(1)} s left`}
+        </div>
       )}
       {bad && (
         <div className="text-[11px] mono uppercase text-white/50">for {formatDuration(posture.held_s).slice(3)}</div>
       )}
-      {posture.reasons?.length > 0 && !posture.calibrating && (
+      {posture.reasons?.length > 0 && (
         <ul className="space-y-1 text-sm text-white/85 outfit">
           {posture.reasons.map((r) => <li key={r}>• {r}</li>)}
         </ul>
@@ -168,6 +224,10 @@ const StatusCard = ({ posture, connected, onBaseline, busy, mode }) => {
           Baseline from {new Date(posture.baseline_recorded_at * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
         </p>
       )}
+      <button type="button" onClick={toggleDebug} aria-pressed={debug} className={chipClass(debug)}>
+        {debug ? 'Hide measurements' : 'Show measurements'}
+      </button>
+      {debug && <DebugPanel rows={posture.debug} />}
     </div>
   );
 };
@@ -238,7 +298,7 @@ const SessionSummary = ({ posture, timeline, onReset }) => {
               <div className="text-[10px] mono uppercase text-white/40 mt-1">good posture</div>
             </div>
             <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-[11px] mono">
-              {['good', 'slouching', 'leaning', 'too_close', 'away'].map((k) => (
+              {SUMMARY_KEYS.map((k) => (
                 <div key={k} className="contents">
                   <dt className={`${style(k).text} uppercase`}>{STATUS_LABELS[k]}</dt>
                   <dd className="text-white/70 text-right">{formatDuration(s.seconds[k] || 0)}</dd>
@@ -260,7 +320,7 @@ const SessionSummary = ({ posture, timeline, onReset }) => {
               <p className="text-[10px] mono text-white/30">The timeline fills in every 10 seconds.</p>
             )}
             <div className="flex flex-wrap gap-3 mt-2">
-              {['good', 'slouching', 'leaning', 'too_close', 'away'].map((k) => (
+              {SUMMARY_KEYS.map((k) => (
                 <span key={k} className="flex items-center gap-1 text-[9px] mono uppercase text-white/50">
                   <span className={`w-2 h-2 ${style(k).bar}`} aria-hidden="true" /> {STATUS_LABELS[k]}
                 </span>

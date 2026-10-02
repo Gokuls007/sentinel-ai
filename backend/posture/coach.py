@@ -2,15 +2,21 @@
 their own upright baseline.
 
 REBA isn't used here: a frontal webcam can't measure trunk or neck flexion reliably (see
-ergonomics/). Instead the coach tracks ratios that a frontal view *can* see, all normalised by
-shoulder width, so moving a little closer or further doesn't by itself change them:
+ergonomics/). Every posture measurement is **relative to your own shoulders**, never to where you
+sit in the frame, so moving your chair or sitting off-centre isn't a posture problem:
 
-- head height: nose above the shoulder line. It shrinks when the head drops or juts
-  forward (slouching).
+- head height: nose above the shoulder line / shoulder width. It shrinks when the head drops
+  or juts forward (slouching).
 - face-to-shoulder ratio: eye span / shoulder width. It grows when the shoulders roll in
   (hunching).
-- shoulder tilt and the nose's sideways offset: leaning to one side.
-- face size vs baseline: sitting too close to the screen.
+- head offset: ear midpoint (else eye midpoint; never the nose, which swings sideways whenever
+  you turn your head) minus shoulder midpoint, / shoulder width. With shoulder tilt, it shows
+  leaning.
+- face size vs baseline: sitting too close to the screen (distance is the point here).
+
+If your whole body has moved a lot since the baseline (shoulders shifted by more than a shoulder
+width, or shoulder width changed by over 25% without your face growing to match), no posture is
+judged; a "You've moved" hint suggests resetting the baseline instead.
 
 Per-frame values are smoothed (median over ``smooth_s``), and the displayed status changes only
 after a new status has held for ``switch_s``, so it doesn't flicker. Everything runs locally;
@@ -25,7 +31,7 @@ import math
 import os
 import time
 from collections import deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 
 import numpy as np
 
@@ -34,17 +40,26 @@ logger = logging.getLogger("sentinel.posture")
 NOSE, L_EYE, R_EYE, L_EAR, R_EAR, L_SH, R_SH = 0, 1, 2, 3, 4, 5, 6
 
 GOOD, SLOUCHING, LEANING, TOO_CLOSE = "good", "slouching", "leaning", "too_close"
-AWAY, NO_BASELINE, CALIBRATING = "away", "no_baseline", "calibrating"
+AWAY, NO_BASELINE, CALIBRATING, MOVED = "away", "no_baseline", "calibrating", "moved"
 BAD = (SLOUCHING, LEANING, TOO_CLOSE)
 LABELS = {GOOD: "Good", SLOUCHING: "Slouching", LEANING: "Leaning", TOO_CLOSE: "Too close",
-          AWAY: "Away", NO_BASELINE: "Set your baseline", CALIBRATING: "Hold still..."}
+          AWAY: "Away", NO_BASELINE: "Set your baseline", CALIBRATING: "Hold still...",
+          MOVED: "You've moved"}
 
 
 @dataclass
 class PostureConfig:
     min_kp_conf: float = 0.4
-    baseline_seconds: float = 3.0
+    baseline_delay_s: float = 3.0   # "get ready" countdown after pressing Set baseline
+    baseline_seconds: float = 3.0   # then recording
     baseline_min_frames: int = 10
+    # A baseline is rejected if you moved while it recorded (spread of the measurements) or it
+    # doesn't look like sitting upright.
+    baseline_max_std_head: float = 0.06
+    baseline_max_std_lateral: float = 0.08
+    baseline_max_std_tilt: float = 4.0
+    baseline_max_abs_tilt: float = 12.0
+    baseline_min_head_ratio: float = 0.2
     smooth_s: float = 1.0          # median window for per-frame measurements
     switch_s: float = 2.0          # a new status must hold this long before it is shown
     away_after_s: float = 2.0      # no usable pose this long: "away"
@@ -52,8 +67,13 @@ class PostureConfig:
     head_drop_ratio: float = 0.80  # head height falls below 80% of baseline
     hunch_ratio: float = 1.15      # face/shoulder ratio grows 15%
     tilt_deg: float = 8.0          # shoulder line tilts 8 degrees more than baseline
-    lateral_shift: float = 0.20    # nose moves sideways by 20% of shoulder width
+    lateral_shift: float = 0.30    # head offset changes by 30% of shoulder width
     too_close_ratio: float = 1.25  # face 25% bigger than at baseline
+    # "You've moved": shoulder midpoint shifted by more than this many baseline shoulder widths,
+    # or shoulder width changed by more than this fraction (unless the face grew to match:
+    # that's sitting too close, which *is* judged).
+    moved_shift_widths: float = 1.0
+    moved_width_change: float = 0.25
     timeline_bucket_s: float = 10.0
 
 
@@ -62,9 +82,12 @@ class Measurement:
     shoulder_width: float
     head_ratio: float              # (shoulder line y - nose y) / shoulder width
     tilt_deg: float                # shoulder line angle from horizontal (signed)
-    lateral: float                 # (nose x - shoulder midpoint x) / shoulder width
+    lateral: float | None          # (ear midpoint, else eye midpoint, x - shoulder midpoint x) / shoulder width
     face_size: float | None        # eye span in px
     face_ratio: float | None       # eye span / shoulder width
+    mid_x: float | None = None     # shoulder midpoint in the frame (px): only for "you've moved"
+    mid_y: float | None = None
+    head_ref: str | None = None    # "ears" | "eyes": what the head offset was measured from
 
 
 @dataclass
@@ -72,18 +95,29 @@ class Baseline:
     shoulder_width: float
     head_ratio: float
     tilt_deg: float
-    lateral: float
+    lateral: float | None
     face_size: float | None
     face_ratio: float | None
     recorded_at: float = 0.0
     frames: int = 0
+    mid_x: float | None = None
+    mid_y: float | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Baseline:
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+
+def _visible(kp: np.ndarray, *idx: int, conf: float) -> bool:
+    return all(kp[i, 2] >= conf for i in idx)
 
 
 def measure(keypoints: np.ndarray, min_conf: float = 0.4) -> Measurement | None:
     """Posture measurements from 17 COCO keypoints (x, y, conf), or None if the shoulders and
     nose aren't all visible."""
     kp = np.asarray(keypoints, float)
-    if kp.shape[0] < 7 or min(kp[NOSE, 2], kp[L_SH, 2], kp[R_SH, 2]) < min_conf:
+    if kp.shape[0] < 7 or not _visible(kp, NOSE, L_SH, R_SH, conf=min_conf):
         return None
     ls, rs, nose = kp[L_SH, :2], kp[R_SH, :2], kp[NOSE, :2]
     width = float(np.hypot(*(ls - rs)))
@@ -94,37 +128,90 @@ def measure(keypoints: np.ndarray, min_conf: float = 0.4) -> Measurement | None:
     a, b = (ls, rs) if ls[0] <= rs[0] else (rs, ls)
     tilt = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
     face = None
-    if min(kp[L_EYE, 2], kp[R_EYE, 2]) >= min_conf:
+    if _visible(kp, L_EYE, R_EYE, conf=min_conf):
         face = float(np.hypot(*(kp[L_EYE, :2] - kp[R_EYE, :2])))
+    # Head offset from the ear midpoint (barely moves when you turn your head), else the eye
+    # midpoint. Never the nose.
+    head_x, head_ref = None, None
+    if _visible(kp, L_EAR, R_EAR, conf=min_conf):
+        head_x, head_ref = float((kp[L_EAR, 0] + kp[R_EAR, 0]) / 2), "ears"
+    elif _visible(kp, L_EYE, R_EYE, conf=min_conf):
+        head_x, head_ref = float((kp[L_EYE, 0] + kp[R_EYE, 0]) / 2), "eyes"
     return Measurement(
         shoulder_width=width,
         head_ratio=float(mid[1] - nose[1]) / width,
         tilt_deg=tilt,
-        lateral=float(nose[0] - mid[0]) / width,
+        lateral=(head_x - float(mid[0])) / width if head_x is not None else None,
         face_size=face,
         face_ratio=face / width if face else None,
+        mid_x=float(mid[0]),
+        mid_y=float(mid[1]),
+        head_ref=head_ref,
     )
+
+
+def _ratio(a, b):
+    return a / b if a is not None and b else None
+
+
+def explain(m: Measurement, base: Baseline, cfg: PostureConfig) -> list[dict]:
+    """Every measurement next to its baseline and limit (the debug panel and ``classify``)."""
+    rows = []
+
+    def row(key, label, now, baseline, change, limit, triggered, status):
+        rows.append({"key": key, "label": label, "now": now, "baseline": baseline, "change": change,
+                     "limit": limit, "triggered": bool(triggered), "status": status})
+
+    face_change = _ratio(m.face_size, base.face_size)
+    width_change = _ratio(m.shoulder_width, base.shoulder_width)
+    head_change = _ratio(m.head_ratio, base.head_ratio)
+    hunch_change = _ratio(m.face_ratio, base.face_ratio)
+    tilt_change = m.tilt_deg - base.tilt_deg
+    offset_change = m.lateral - base.lateral if m.lateral is not None and base.lateral is not None else None
+    shift = None
+    if None not in (m.mid_x, m.mid_y, base.mid_x, base.mid_y):
+        shift = math.hypot(m.mid_x - base.mid_x, m.mid_y - base.mid_y) / base.shoulder_width
+
+    too_close = (face_change is not None and face_change > cfg.too_close_ratio) or (
+        face_change is None and width_change is not None and width_change > cfg.too_close_ratio)
+    row("face_size", "Face size vs baseline", m.face_size, base.face_size, face_change,
+        f"> {cfg.too_close_ratio:.2f}x", too_close, TOO_CLOSE)
+    row("head_ratio", "Head height (/ shoulder width)", m.head_ratio, base.head_ratio, head_change,
+        f"< {cfg.head_drop_ratio:.2f}x", head_change is not None and head_change < cfg.head_drop_ratio, SLOUCHING)
+    row("face_ratio", "Face / shoulder width", m.face_ratio, base.face_ratio, hunch_change,
+        f"> {cfg.hunch_ratio:.2f}x", hunch_change is not None and hunch_change > cfg.hunch_ratio, SLOUCHING)
+    row("tilt_deg", "Shoulder tilt (deg)", m.tilt_deg, base.tilt_deg, tilt_change,
+        f"> {cfg.tilt_deg:g} deg", abs(tilt_change) > cfg.tilt_deg, LEANING)
+    row("lateral", f"Head offset ({m.head_ref or 'n/a'}, / shoulder width)", m.lateral, base.lateral,
+        offset_change, f"> {cfg.lateral_shift:.2f}",
+        offset_change is not None and abs(offset_change) > cfg.lateral_shift, LEANING)
+    moved_width = width_change is not None and abs(width_change - 1) > cfg.moved_width_change and not too_close
+    moved = (shift is not None and shift > cfg.moved_shift_widths) or moved_width
+    row("moved", "Body moved (shoulder shift / width change)", shift, None, width_change,
+        f"> {cfg.moved_shift_widths:g} widths or {cfg.moved_width_change:.0%}", moved, MOVED)
+    return rows
 
 
 def classify(m: Measurement, base: Baseline, cfg: PostureConfig) -> tuple[str, list[str]]:
     """Status and the reasons for it, from (smoothed) measurements vs the baseline."""
+    rows = {r["key"]: r for r in explain(m, base, cfg)}
+    if rows["moved"]["triggered"]:
+        return MOVED, ["You've moved since your baseline. Reset baseline?"]
     reasons: dict[str, list[str]] = {TOO_CLOSE: [], SLOUCHING: [], LEANING: []}
-    if m.face_size and base.face_size and m.face_size / base.face_size > cfg.too_close_ratio:
-        bigger = m.face_size / base.face_size
-        reasons[TOO_CLOSE].append(f"Face {bigger:.0%} of baseline size: move back from the screen")
-    elif not m.face_size and m.shoulder_width / base.shoulder_width > cfg.too_close_ratio:
-        reasons[TOO_CLOSE].append("Shoulders much wider than baseline: move back from the screen")
-    if base.head_ratio > 0 and m.head_ratio / base.head_ratio < cfg.head_drop_ratio:
+    if rows["face_size"]["triggered"]:
+        change = rows["face_size"]["change"]
+        reasons[TOO_CLOSE].append(f"Face {change:.0%} of its baseline size: move back from the screen"
+                                  if change else "Much closer than at baseline: move back from the screen")
+    if rows["head_ratio"]["triggered"]:
         reasons[SLOUCHING].append("Head has dropped toward the shoulders: sit tall, chin back")
-    if m.face_ratio and base.face_ratio and m.face_ratio / base.face_ratio > cfg.hunch_ratio:
+    if rows["face_ratio"]["triggered"]:
         reasons[SLOUCHING].append("Shoulders are hunched forward: roll them back and down")
-    tilt = m.tilt_deg - base.tilt_deg
-    if abs(tilt) > cfg.tilt_deg:
-        reasons[LEANING].append(f"Shoulders tilted {abs(tilt):.0f}°: level your shoulders")
-    shift = m.lateral - base.lateral
-    if abs(shift) > cfg.lateral_shift:
-        side = "right" if shift > 0 else "left"  # image side
-        reasons[LEANING].append(f"Head shifted to the {side} of the screen: centre yourself")
+    if rows["tilt_deg"]["triggered"]:
+        reasons[LEANING].append(f"Shoulders tilted {abs(rows['tilt_deg']['change']):.0f}° more than at baseline: "
+                                "level your shoulders")
+    if rows["lateral"]["triggered"]:
+        side = "right" if rows["lateral"]["change"] > 0 else "left"  # image side
+        reasons[LEANING].append(f"Head leaning to the {side} of your shoulders: bring it back over them")
     for status in (TOO_CLOSE, SLOUCHING, LEANING):
         if reasons[status]:
             return status, reasons[status]
@@ -134,7 +221,8 @@ def classify(m: Measurement, base: Baseline, cfg: PostureConfig) -> tuple[str, l
 @dataclass
 class Session:
     started_at: float = field(default_factory=time.time)
-    seconds: dict = field(default_factory=lambda: {s: 0.0 for s in (GOOD, SLOUCHING, LEANING, TOO_CLOSE, AWAY)})
+    seconds: dict = field(default_factory=lambda: {s: 0.0 for s in (GOOD, SLOUCHING, LEANING, TOO_CLOSE, AWAY,
+                                                                     MOVED)})
     timeline: list = field(default_factory=list)  # [{"t": offset_s, "status": ...}] one per bucket
     reminders: int = 0
 
@@ -149,6 +237,7 @@ class PostureCoach:
         self.session = Session(started_at=clock())
         self._window: deque[tuple[float, Measurement]] = deque()
         self._calib: list[Measurement] | None = None
+        self._calib_start = 0.0
         self._calib_until = 0.0
         self._calib_error: str | None = None
         self.status = NO_BASELINE if self.baseline is None else AWAY
@@ -163,21 +252,46 @@ class PostureCoach:
         self._bucket_start: float | None = None
         self._origin: float | None = None  # first frame time of the session (timeline offsets)
         self.last: Measurement | None = None
+        self.smoothed: Measurement | None = None  # what the last classification used
 
     # --- baseline -------------------------------------------------------------------------
 
-    def start_baseline(self, now: float | None = None) -> None:
+    def start_baseline(self, now: float | None = None, delay: float | None = None) -> None:
+        """Count down ``baseline_delay_s`` (time to sit back after clicking), then record for
+        ``baseline_seconds``."""
         now = self.clock() if now is None else now
+        delay = self.cfg.baseline_delay_s if delay is None else delay
         self._calib = []
-        self._calib_until = now + self.cfg.baseline_seconds
+        self._calib_start = now + delay
+        self._calib_until = self._calib_start + self.cfg.baseline_seconds
         self._calib_error = None
+
+    def baseline_problem(self, samples: list[Measurement]) -> str | None:
+        """Why these samples don't make a usable upright baseline, or None if they do."""
+        cfg = self.cfg
+        if len(samples) < cfg.baseline_min_frames:
+            return ("Couldn't see your face and shoulders clearly enough. Sit facing the camera with both "
+                    "shoulders in view, then try again.")
+        head = np.array([s.head_ratio for s in samples])
+        lateral = np.array([s.lateral for s in samples if s.lateral is not None] or [0.0])
+        tilt = np.array([s.tilt_deg for s in samples])
+        if (head.std() > cfg.baseline_max_std_head or lateral.std() > cfg.baseline_max_std_lateral
+                or tilt.std() > cfg.baseline_max_std_tilt):
+            return "You moved while the baseline was recording. Sit upright, keep still, and try again."
+        if abs(float(np.median(tilt))) > cfg.baseline_max_abs_tilt:
+            return ("Your shoulders looked tilted, so this doesn't look like an upright baseline. Sit level "
+                    "and try again.")
+        if float(np.median(head)) < cfg.baseline_min_head_ratio:
+            return ("Your head looked very low (slouched or looking down). Sit tall, look at the screen, "
+                    "and try again.")
+        return None
 
     def _finish_baseline(self) -> None:
         samples, self._calib = self._calib or [], None
-        if len(samples) < self.cfg.baseline_min_frames:
-            self._calib_error = ("Couldn't see your face and shoulders clearly enough. Sit facing the camera "
-                                 "with both shoulders in view, then try again.")
-            logger.info("posture baseline failed: %d usable frames", len(samples))
+        problem = self.baseline_problem(samples)
+        if problem:
+            self._calib_error = problem
+            logger.info("posture baseline rejected (%d frames): %s", len(samples), problem)
             return
 
         def med(values):
@@ -193,6 +307,8 @@ class PostureCoach:
             face_ratio=med([s.face_ratio for s in samples]),
             recorded_at=self.clock(),
             frames=len(samples),
+            mid_x=med([s.mid_x for s in samples]),
+            mid_y=med([s.mid_y for s in samples]),
         )
         self._save()
         self._window.clear()
@@ -217,7 +333,7 @@ class PostureCoach:
             self.last = m
 
         if self._calib is not None:
-            if m is not None:
+            if m is not None and ts >= self._calib_start:  # not during the get-ready countdown
                 self._calib.append(m)
             if ts >= self._calib_until:
                 self._finish_baseline()
@@ -233,7 +349,8 @@ class PostureCoach:
             self._window.append((ts, m))
             while self._window and ts - self._window[0][0] > self.cfg.smooth_s:
                 self._window.popleft()
-            status, reasons = classify(self._smoothed(), self.baseline, self.cfg)
+            self.smoothed = self._smoothed()
+            status, reasons = classify(self.smoothed, self.baseline, self.cfg)
             self._propose(status, reasons, ts)
         self._account(dt, ts)
 
@@ -244,8 +361,10 @@ class PostureCoach:
             values = [getattr(m, attr) for m in ms if getattr(m, attr) is not None]
             return float(np.median(values)) if values else None
 
+        refs = [m.head_ref for m in ms if m.head_ref]
         return Measurement(med("shoulder_width"), med("head_ratio"), med("tilt_deg"), med("lateral"),
-                           med("face_size"), med("face_ratio"))
+                           med("face_size"), med("face_ratio"), med("mid_x"), med("mid_y"),
+                           max(set(refs), key=refs.count) if refs else None)
 
     def _propose(self, status: str, reasons: list[str], ts: float) -> None:
         if status == self.status:
@@ -298,19 +417,29 @@ class PostureCoach:
     def snapshot(self) -> dict:
         ts = self._last_ts or 0.0
         calibrating = self._calib is not None
+        getting_ready = calibrating and ts < self._calib_start
         status = CALIBRATING if calibrating else self.status
         held = ts - self._status_since if self.status in BAD and not calibrating else 0.0
         good = self.session.seconds[GOOD]
         poor = sum(self.session.seconds[s] for s in BAD)
+        if getting_ready:
+            label, reasons = "Get ready", ["Sit upright, shoulders relaxed and level, and look at the screen"]
+            left = self._calib_start - ts
+        elif calibrating:
+            label, reasons = LABELS[CALIBRATING], ["Recording your baseline: keep still"]
+            left = self._calib_until - ts
+        else:
+            label, reasons, left = LABELS.get(status, status), self.reasons, 0.0
         return {
             "status": status,
-            "label": LABELS.get(status, status),
-            "reasons": self.reasons if not calibrating else ["Sit upright and look at the screen"],
+            "label": label,
+            "reasons": reasons,
             "held_s": round(held, 1),
             "episode": self.episode,
             "has_baseline": self.baseline is not None,
             "calibrating": calibrating,
-            "calibration_left_s": round(max(0.0, self._calib_until - ts), 1) if calibrating else 0.0,
+            "calibration_phase": ("get_ready" if getting_ready else "recording") if calibrating else None,
+            "calibration_left_s": round(max(0.0, left), 1),
             "calibration_error": self._calib_error,
             "baseline_recorded_at": self.baseline.recorded_at if self.baseline else None,
             "session": {
@@ -322,6 +451,9 @@ class PostureCoach:
                 "reminders": self.session.reminders,
             },
             "measurements": asdict(self.last) if self.last else None,
+            # Every value behind the status (smoothed, vs baseline, with its limit): the debug panel.
+            "debug": explain(self.smoothed, self.baseline, self.cfg)
+            if self.smoothed is not None and self.baseline is not None and not calibrating else None,
         }
 
     def timeline(self) -> list[dict]:
@@ -334,7 +466,7 @@ class PostureCoach:
             return None
         try:
             with open(self.baseline_path, encoding="utf-8") as f:
-                return Baseline(**json.load(f))
+                return Baseline.from_dict(json.load(f))
         except (OSError, ValueError, TypeError):
             logger.warning("ignoring unreadable posture baseline %s", self.baseline_path)
             return None

@@ -5,6 +5,7 @@ from posture.coach import (
     GOOD,
     LABELS,
     LEANING,
+    MOVED,
     SLOUCHING,
     TOO_CLOSE,
     Baseline,
@@ -12,8 +13,9 @@ from posture.coach import (
     PostureCoach,
     PostureConfig,
     classify,
+    explain,
     measure,
 )
 
-__all__ = ["BAD", "GOOD", "LABELS", "LEANING", "SLOUCHING", "TOO_CLOSE", "Baseline", "Measurement", "PostureCoach",
-           "PostureConfig", "classify", "measure"]
+__all__ = ["BAD", "GOOD", "LABELS", "LEANING", "MOVED", "SLOUCHING", "TOO_CLOSE", "Baseline", "Measurement",
+           "PostureCoach", "PostureConfig", "classify", "explain", "measure"]
