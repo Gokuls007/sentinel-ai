@@ -35,17 +35,30 @@ from dataclasses import asdict, dataclass, field, fields
 
 import numpy as np
 
+from posture.classifier import (
+    POSTURE_LABELS,
+    POSTURES,
+    RAW_FEATURES,
+    PostureModel,
+    StableStatus,
+    evaluate,
+    raw_features,
+    train,
+)
+
 logger = logging.getLogger("sentinel.posture")
 
 NOSE, L_EYE, R_EYE, L_EAR, R_EAR, L_SH, R_SH = 0, 1, 2, 3, 4, 5, 6
 
 GOOD, SLOUCHING, LEANING, TOO_CLOSE = "good", "slouching", "leaning", "too_close"
 AWAY, NO_BASELINE, CALIBRATING, MOVED = "away", "no_baseline", "calibrating", "moved"
-UNCLEAR, SLUMPED = "unclear", "slumped"
+UNCLEAR, SLUMPED, LOOKING_DOWN, CHECKING = "unclear", "slumped", "looking_down", "checking"
 BAD = (SLOUCHING, LEANING, TOO_CLOSE, SLUMPED)
+NEUTRAL = (LOOKING_DOWN,)  # not poor posture, but reminded about if held a long time
 LABELS = {GOOD: "Good", SLOUCHING: "Slouching", LEANING: "Leaning", TOO_CLOSE: "Too close", SLUMPED: "Slumped",
+          LOOKING_DOWN: "Looking down",
           AWAY: "Away", NO_BASELINE: "Press Set baseline to start", CALIBRATING: "Hold still...",
-          MOVED: "You've moved", UNCLEAR: "Can't see your shoulders"}
+          MOVED: "You've moved", UNCLEAR: "Can't see your shoulders", CHECKING: "Checking your posture..."}
 
 
 @dataclass
@@ -85,6 +98,10 @@ class PostureConfig:
     shoulder_min_conf: float = 0.5
     shoulder_width_eyes: tuple = (3.0, 9.5)
     unclear_fraction: float = 0.5   # this share of recent frames unclear: show the lighting hint
+    # Guided calibration / test: countdown, recording length and minimum usable frames per posture.
+    calibration_get_ready_s: float = 3.0
+    calibration_record_s: float = 20.0
+    calibration_min_frames: int = 30
     timeline_bucket_s: float = 10.0
 
 
@@ -319,7 +336,7 @@ def classify(m: Measurement, base: Baseline, cfg: PostureConfig) -> tuple[str, l
 class Session:
     started_at: float = field(default_factory=time.time)
     seconds: dict = field(default_factory=lambda: {s: 0.0 for s in (GOOD, SLOUCHING, LEANING, TOO_CLOSE, SLUMPED,
-                                                                     AWAY, MOVED, UNCLEAR)})
+                                                                     LOOKING_DOWN, AWAY, MOVED, UNCLEAR)})
     timeline: list = field(default_factory=list)  # [{"t": offset_s, "status": ...}] one per bucket
     reminders: int = 0
 
@@ -354,6 +371,152 @@ class PostureCoach:
         self.hint: str | None = None  # shown next to the status, e.g. "you've moved, reset baseline?"
         self._quality: deque[tuple[float, bool]] = deque()  # (ts, shoulders unclear) recent frames
         self._calib_unclear = 0
+        # Personal classifier (trained from the guided calibration); thresholds are the fallback.
+        stem = os.path.splitext(baseline_path)[0].replace("posture_baseline", "posture_{}") if baseline_path else None
+        self.model_path = stem.format("model") + ".pkl" if stem else None
+        self.calibration_path = stem.format("calibration") + ".json" if stem else None
+        self.model: PostureModel | None = PostureModel.load(self.model_path) if self.model_path else None
+        self.stable = StableStatus()
+        self.probs: dict = {}
+        self.rec: dict | None = None  # an active calibration step or test run
+        self.last_test: dict | None = None
+        self.rec_error: str | None = None
+        self.last_raw: dict | None = None  # the classifier's inputs for the last usable frame
+        self.calibration_counts = {p: len(v) for p, v in self.recordings().items()}
+        if self.model is not None and self.status == NO_BASELINE:
+            self.status = AWAY
+
+    # --- calibration and test recordings ----------------------------------------------------
+
+    def recordings(self) -> dict:
+        if not self.calibration_path or not os.path.isfile(self.calibration_path):
+            return {}
+        try:
+            with open(self.calibration_path, encoding="utf-8") as f:
+                return json.load(f).get("postures", {})
+        except (OSError, ValueError):
+            return {}
+
+    def _save_recordings(self, data: dict) -> None:
+        if not self.calibration_path:
+            return
+        os.makedirs(os.path.dirname(self.calibration_path) or ".", exist_ok=True)
+        with open(self.calibration_path, "w", encoding="utf-8") as f:
+            json.dump({"postures": data, "features": list(RAW_FEATURES)}, f)
+        self.calibration_counts = {p: len(v) for p, v in data.items()}
+
+    def start_recording(self, kind: str, postures: list[str], now: float | None = None,
+                        get_ready_s: float | None = None, record_s: float | None = None) -> None:
+        """Record ``postures`` in order. kind "calibrate" saves each one as calibration data;
+        kind "test" scores the saved model on them at the end."""
+        unknown = [p for p in postures if p not in POSTURES]
+        if unknown:
+            raise ValueError(f"unknown posture(s): {unknown}")
+        if kind == "test" and self.model is None:
+            raise ValueError("train the model first")
+        if now is None:
+            now = self._last_ts if self._last_ts is not None else self.clock()
+        self.rec = {
+            "kind": kind, "postures": list(postures), "step": 0, "frames": [], "labelled": [],
+            "get_ready_s": self.cfg.calibration_get_ready_s if get_ready_s is None else get_ready_s,
+            "record_s": self.cfg.calibration_record_s if record_s is None else record_s,
+        }
+        self.rec_error = None
+        self._begin_step(now)
+
+    def cancel_recording(self) -> None:
+        self.rec = None
+
+    def _begin_step(self, now: float) -> None:
+        r = self.rec
+        r["record_from"] = now + r["get_ready_s"]
+        r["record_until"] = r["record_from"] + r["record_s"]
+        r["frames"] = []
+        r["skipped"] = 0
+
+    def _record(self, kp, problem, ts: float) -> None:
+        r = self.rec
+        posture = r["postures"][r["step"]]
+        if ts >= r["record_from"]:
+            raw = raw_features(kp, self.cfg.min_kp_conf) if kp is not None and problem is None else None
+            if raw is not None:
+                r["frames"].append({"t": round(ts, 3), "features": raw})
+            else:
+                r["skipped"] += 1
+        if ts < r["record_until"]:
+            return
+        # Step finished.
+        if r["kind"] == "calibrate":
+            if len(r["frames"]) < self.cfg.calibration_min_frames:
+                self.rec_error = (f"Only {len(r['frames'])} usable frames for {POSTURE_LABELS[posture]}: keep "
+                                  "your face and both shoulders in view (better light helps), then redo it.")
+            else:
+                data = self.recordings()
+                data[posture] = r["frames"]
+                self._save_recordings(data)
+        else:
+            r["labelled"] += [(posture, f["features"]) for f in r["frames"]]
+        r["step"] += 1
+        if r["step"] < len(r["postures"]):
+            self._begin_step(ts)
+            return
+        if r["kind"] == "test":
+            if r["labelled"]:
+                self.last_test = {**evaluate(self.model, r["labelled"]), "postures": r["postures"],
+                                  "tested_at": self.clock()}
+                self.model.test_report = self.last_test
+                if self.model_path:
+                    self.model.save(self.model_path)
+            else:
+                self.rec_error = "No usable frames in the test: keep your face and shoulders in view."
+        self.rec = None
+
+    def train_model(self) -> dict:
+        """Train the personal classifier on the saved calibration and start using it."""
+        data = self.recordings()
+        self.calibration_counts = {p: len(v) for p, v in data.items()}
+        model = train(data, min_frames=self.cfg.calibration_min_frames)
+        self.rec_error = None
+        if self.model_path:
+            os.makedirs(os.path.dirname(self.model_path) or ".", exist_ok=True)
+            model.save(self.model_path)
+        self.model = model
+        self.last_test = None
+        self.stable.reset()
+        return model.report
+
+    def delete_model(self) -> None:
+        self.model = None
+        self.stable.reset()
+        if self.model_path and os.path.isfile(self.model_path):
+            os.remove(self.model_path)
+
+    def clear_calibration(self) -> None:
+        """Delete the recorded calibration (the trained model, if any, is kept)."""
+        if self.calibration_path and os.path.isfile(self.calibration_path):
+            os.remove(self.calibration_path)
+        self.calibration_counts = {}
+
+    def _classify_with_model(self, kp, ts: float) -> None:
+        raw = raw_features(kp, self.cfg.min_kp_conf) if kp is not None else None
+        if raw is None:
+            return
+        self.last_raw = raw
+        current = self.stable.update(self.model.predict_proba(raw), ts)
+        self.probs = dict(self.stable.mean)
+        if current is None:  # not confident in anything yet
+            self._set_status(CHECKING, ["Learning how you're sitting right now (a few seconds)"], ts)
+            return
+        status = {"leaning_left": LEANING, "leaning_right": LEANING}.get(current, current)
+        reasons = {
+            "slouching": ["Sitting the way you slouched in calibration: sit tall, chin back"],
+            "leaning_left": ["Leaning to your left: centre yourself over your hips"],
+            "leaning_right": ["Leaning to your right: centre yourself over your hips"],
+            "too_close": ["Closer to the screen than your good posture: move back"],
+            "looking_down": ["Looking down (keyboard or phone): fine for a while, look up now and then"],
+        }.get(current, [])
+        self.hint = None
+        self._set_status(status, reasons, ts)
 
     # --- baseline -------------------------------------------------------------------------
 
@@ -457,9 +620,22 @@ class PostureCoach:
             self._account(dt, ts, count=False)
             return
 
+        if self.rec is not None:  # a calibration step or test run: record, don't coach
+            self._record(kp if face_seen else None, problem, ts)
+            self._account(dt, ts, count=False)
+            return
+
         unclear = (bool(self._quality) and
                    sum(bad for _t, bad in self._quality) / len(self._quality) >= self.cfg.unclear_fraction)
-        if self.baseline is None:
+        if self.model is not None and ts - self._last_seen <= self.cfg.away_after_s and not unclear:
+            self._classify_with_model(kp if face_seen else None, ts)
+        elif self.model is not None and ts - self._last_seen > self.cfg.away_after_s:
+            self.stable.reset()
+            self._set_status(AWAY, ["Nobody in front of the camera"], ts)
+        elif self.model is not None:
+            self.stable.reset()
+            self._propose(UNCLEAR, [UNCLEAR_MESSAGE], ts)
+        elif self.baseline is None:
             self._set_status(NO_BASELINE, [], ts)
         elif ts - self._last_seen > self.cfg.away_after_s:
             self._set_status(AWAY, ["Nobody in front of the camera"], ts)
@@ -543,7 +719,7 @@ class PostureCoach:
         calibrating = self._calib is not None
         getting_ready = calibrating and ts < self._calib_start
         status = CALIBRATING if calibrating else self.status
-        held = ts - self._status_since if self.status in BAD and not calibrating else 0.0
+        held = ts - self._status_since if self.status in BAD + NEUTRAL and not calibrating else 0.0
         good = self.session.seconds[GOOD]
         poor = sum(self.session.seconds[s] for s in BAD)
         if getting_ready:
@@ -579,7 +755,38 @@ class PostureCoach:
             "hint": self.hint if self.status in BAD and not calibrating else None,
             # Every value behind the status (smoothed, vs baseline, with its limit): the debug panel.
             "debug": explain(self.smoothed, self.baseline, self.cfg)
-            if self.smoothed is not None and self.baseline is not None and not calibrating else None,
+            if self.smoothed is not None and self.baseline is not None and not calibrating and self.model is None
+            else None,
+            "method": "classifier" if self.model is not None else "thresholds",
+            "probabilities": dict(self.probs) if self.model is not None else None,
+            "features": self.last_raw if self.model is not None else None,
+            "recording": self._recording_snapshot(ts),
+            "recording_error": self.rec_error,
+            "model": self.model_summary(),
+            "calibration_counts": dict(self.calibration_counts),
+        }
+
+    def model_summary(self) -> dict | None:
+        if self.model is None:
+            return None
+        r, t = self.model.report, self.model.test_report
+        return {"name": self.model.name, "trained_at": self.model.trained_at, "accuracy": r.get("accuracy"),
+                "balanced_accuracy": r.get("balanced_accuracy"),
+                "test_accuracy": t.get("accuracy") if t else None,
+                "test_balanced_accuracy": t.get("balanced_accuracy") if t else None}
+
+    def _recording_snapshot(self, ts: float) -> dict | None:
+        r = self.rec
+        if r is None:
+            return None
+        posture = r["postures"][r["step"]]
+        ready = ts < r["record_from"]
+        return {
+            "kind": r["kind"], "posture": posture, "label": POSTURE_LABELS[posture],
+            "step": r["step"] + 1, "steps": len(r["postures"]),
+            "phase": "get_ready" if ready else "recording",
+            "left_s": round(max(0.0, (r["record_from"] if ready else r["record_until"]) - ts), 1),
+            "record_s": r["record_s"], "frames": len(r["frames"]), "skipped": r["skipped"],
         }
 
     def timeline(self) -> list[dict]:

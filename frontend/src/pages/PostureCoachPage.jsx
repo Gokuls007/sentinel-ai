@@ -3,9 +3,10 @@ import { ArrowDown, Bell, BellOff, Crosshair, RotateCcw, Volume2, VolumeX, Webca
 import DashboardPanel from '../components/DashboardPanel';
 import VideoFeed from '../components/VideoFeed';
 import { useAppMode } from '../context/appMode';
-import { describeError, fetchJson, formatDuration, loadStored, postJson, saveStored } from '../lib/api';
+import { deleteJson, describeError, fetchJson, formatDuration, loadStored, postJson, saveStored } from '../lib/api';
 import { useCameraControl, useLaptopCamera, useLaptopFrames } from '../lib/laptopCamera';
 import { chipClass } from '../lib/ui';
+import { CalibrationPanel, ProbabilityBars, RecordingPrompt } from './PostureCalibration';
 
 const BAD = new Set(['slouching', 'leaning', 'too_close', 'slumped']);
 const SETTINGS_KEY = 'sentinel.posture.reminders';
@@ -14,6 +15,12 @@ const INTERVALS = [
   [60, '1 min'],
   [300, '5 min'],
   [600, '10 min'],
+];
+const LOOK_DOWN_INTERVALS = [
+  [300, '5 min'],
+  [600, '10 min'],
+  [1200, '20 min'],
+  [1800, '30 min'],
 ];
 
 // Static class names so Tailwind generates them.
@@ -28,16 +35,42 @@ const STATUS_STYLE = {
   moved: { text: 'text-sky-300', ring: 'border-sky-400/50 bg-sky-950/30', bar: 'bg-sky-500/60' },
   unclear: { text: 'text-violet-300', ring: 'border-violet-400/50 bg-violet-950/30', bar: 'bg-violet-500/60' },
   slumped: { text: 'text-rose-300', ring: 'border-rose-400/60 bg-rose-950/30', bar: 'bg-rose-500' },
+  looking_down: { text: 'text-teal-300', ring: 'border-teal-400/50 bg-teal-950/30', bar: 'bg-teal-500/70' },
+  checking: { text: 'text-cyan-200/80', ring: 'border-cyan-400/30 bg-cyan-950/20', bar: 'bg-cyan-700/50' },
 };
 const style = (s) => STATUS_STYLE[s] || STATUS_STYLE.away;
 const STATUS_LABELS = {
   good: 'Good', slouching: 'Slouching', leaning: 'Leaning', too_close: 'Too close', away: 'Away', moved: 'Moved',
-  unclear: 'Unclear', slumped: 'Slumped',
+  unclear: 'Unclear', slumped: 'Slumped', looking_down: 'Looking down', checking: 'Checking',
 };
-const SUMMARY_KEYS = ['good', 'slouching', 'leaning', 'slumped', 'too_close', 'moved', 'unclear', 'away'];
+const SUMMARY_KEYS = ['good', 'slouching', 'leaning', 'slumped', 'too_close', 'looking_down', 'moved', 'unclear', 'away'];
 const DEBUG_KEY = 'sentinel.posture.debug';
 
 const fmtNum = (v, digits = 2) => (v == null || Number.isNaN(v) ? '--' : Number(v).toFixed(digits));
+
+const FEATURE_LABELS = [
+  ['head_ratio', 'Head height (/ shoulder width)', 2], ['face_ratio', 'Face / shoulder width', 2],
+  ['tilt_deg', 'Shoulder tilt (deg)', 1], ['lateral', 'Head offset (/ shoulder width)', 2],
+  ['pitch', 'Head pitch (nose vs ears, eye spans)', 2], ['yaw', 'Head yaw (nose vs eyes, eye spans)', 2],
+  ['roll_deg', 'Head roll (deg)', 1], ['eye_span', 'Eye span (px)', 1], ['shoulder_width', 'Shoulder width (px)', 0],
+];
+
+/** Classifier mode: the model's probabilities plus the inputs it saw on the last usable frame. */
+const ModelPanel = ({ probs, features }) => (
+  <div className="border border-white/10 bg-black/40 p-2 space-y-2">
+    <ProbabilityBars probs={probs} />
+    {features && (
+      <dl className="grid grid-cols-2 gap-x-4 text-[10px] mono">
+        {FEATURE_LABELS.map(([k, label, d]) => (
+          <div key={k} className="contents">
+            <dt className="text-white/50">{label}</dt>
+            <dd className="text-right text-white/75">{fmtNum(features[k], d)}</dd>
+          </div>
+        ))}
+      </dl>
+    )}
+  </div>
+);
 
 /** The raw values behind each status: now vs baseline, the change, and the limit. */
 const DebugPanel = ({ rows }) => (
@@ -106,7 +139,7 @@ function chime() {
 
 function useReminderSettings() {
   const [settings, setSettings] = useState(() => ({
-    notify: true, sound: true, interval: 300, ...loadStored(SETTINGS_KEY, {}),
+    notify: true, sound: true, interval: 300, lookDownInterval: 600, ...loadStored(SETTINGS_KEY, {}),
   }));
   const update = (patch) => setSettings((s) => {
     const next = { ...s, ...patch };
@@ -117,7 +150,8 @@ function useReminderSettings() {
 }
 
 /** A gentle reminder once a poor posture has been held for `interval` seconds, then again every
- * `interval` while it continues. Returns [banner, dismiss, onFrame]; pass onFrame to the frame
+ * `interval` while it continues. Looking down is neutral: reminded only after `lookDownInterval`.
+ * Returns [banner, dismiss, onFrame]; pass onFrame to the frame
  * socket so the check runs on every frame. */
 function useReminders(settings) {
   const [banner, setBanner] = useState(null);
@@ -130,12 +164,17 @@ function useReminders(settings) {
   const onFrame = useCallback((frameData) => {
     const posture = frameData?.posture;
     const s = settingsRef.current;
-    if (!posture || !BAD.has(posture.status) || posture.held_s < s.interval) return;
+    if (!posture) return;
+    const lookingDown = posture.status === 'looking_down';
+    const interval = lookingDown ? s.lookDownInterval : s.interval;
+    if (!(BAD.has(posture.status) || lookingDown) || posture.held_s < interval) return;
     const now = Date.now();
     const sameEpisode = last.current.episode === posture.episode;
-    if (sameEpisode && now - last.current.at < s.interval * 1000) return;
+    if (sameEpisode && now - last.current.at < interval * 1000) return;
     last.current = { episode: posture.episode, at: now };
-    const body = posture.reasons?.[0] || 'Take a moment to sit tall.';
+    const body = lookingDown
+      ? 'Look up for a moment: rest your eyes on something far away and roll your shoulders back.'
+      : posture.reasons?.[0] || 'Take a moment to sit tall.';
     const title = `${posture.label} for ${formatDuration(posture.held_s).slice(3)}`;
     setBanner({ title, body, at: now });
     if (s.sound) chime();
@@ -175,7 +214,7 @@ const StartCamera = ({ control, cam }) => (
   </DashboardPanel>
 );
 
-const StatusCard = ({ posture, connected, onBaseline, busy, mode }) => {
+const StatusCard = ({ posture, connected, onBaseline, onCancel, busy, mode }) => {
   const [debug, setDebug] = useState(() => Boolean(loadStored(DEBUG_KEY, false)));
   const toggleDebug = () => setDebug((d) => {
     saveStored(DEBUG_KEY, !d);
@@ -188,8 +227,10 @@ const StatusCard = ({ posture, connected, onBaseline, busy, mode }) => {
       </div>
     );
   }
+  if (posture.recording) return <RecordingPrompt rec={posture.recording} onCancel={onCancel} />;
   const s = style(posture.status);
-  const bad = BAD.has(posture.status);
+  const bad = BAD.has(posture.status) || posture.status === 'looking_down';
+  const classifier = posture.method === 'classifier';
   return (
     <div className={`border-2 ${s.ring} p-5 space-y-4`} role="status" aria-live="polite">
       <div className="text-[10px] mono uppercase tracking-[0.3em] text-white/40">Posture</div>
@@ -213,6 +254,7 @@ const StatusCard = ({ posture, connected, onBaseline, busy, mode }) => {
         <div className="space-y-2">
           <p className="text-sm text-white/75 outfit">
             Sit upright, facing the screen with both shoulders in view. The coach compares you with that posture.
+            For better accuracy, use Personal calibration below.
           </p>
           <div className="flex items-center justify-center gap-2 text-cyan-300 animate-bounce" aria-hidden="true">
             <ArrowDown className="w-5 h-5" />
@@ -235,6 +277,9 @@ const StatusCard = ({ posture, connected, onBaseline, busy, mode }) => {
         </ul>
       )}
       {posture.calibration_error && <p className="text-[11px] text-red-300">{posture.calibration_error}</p>}
+      {classifier ? (
+        <p className="text-[10px] mono text-white/40 uppercase">Using your personal model ({posture.model?.name})</p>
+      ) : (
       <button
         type="button"
         onClick={onBaseline}
@@ -246,7 +291,8 @@ const StatusCard = ({ posture, connected, onBaseline, busy, mode }) => {
         <Crosshair className="w-4 h-4" aria-hidden="true" />
         {posture.has_baseline ? 'Reset baseline' : 'Set baseline'}
       </button>
-      {posture.has_baseline && posture.baseline_recorded_at && (
+      )}
+      {!classifier && posture.has_baseline && posture.baseline_recorded_at && (
         <p className="text-[9px] mono text-white/30 uppercase">
           Baseline from {new Date(posture.baseline_recorded_at * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
         </p>
@@ -254,7 +300,9 @@ const StatusCard = ({ posture, connected, onBaseline, busy, mode }) => {
       <button type="button" onClick={toggleDebug} aria-pressed={debug} className={chipClass(debug)}>
         {debug ? 'Hide measurements' : 'Show measurements'}
       </button>
-      {debug && <DebugPanel rows={posture.debug} />}
+      {debug && (classifier
+        ? <ModelPanel probs={posture.probabilities} features={posture.features} />
+        : <DebugPanel rows={posture.debug} />)}
     </div>
   );
 };
@@ -282,6 +330,17 @@ const ReminderSettings = ({ settings, update }) => {
           {INTERVALS.map(([s, label]) => (
             <button key={s} type="button" role="radio" aria-checked={settings.interval === s}
               onClick={() => update({ interval: s })} className={chipClass(settings.interval === s)}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <p className="text-[11px] text-white/60 outfit">
+          Looking down (keyboard or phone) isn&apos;t poor posture, but remind me after:
+        </p>
+        <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Remind about looking down after">
+          {LOOK_DOWN_INTERVALS.map(([s, label]) => (
+            <button key={s} type="button" role="radio" aria-checked={settings.lookDownInterval === s}
+              onClick={() => update({ lookDownInterval: s })} className={chipClass(settings.lookDownInterval === s)}>
               {label}
             </button>
           ))}
@@ -388,11 +447,11 @@ const PostureCoachPage = () => {
     return () => { cancelled = true; clearInterval(id); };
   }, [running]);
 
-  const call = async (path, after) => {
+  const call = async (path, after, body = {}, send = postJson) => {
     setBusy(true);
     setError(null);
     try {
-      const data = await postJson(path, {});
+      const data = await send(path, body);
       after?.(data);
     } catch (err) {
       setError(err.detail || describeError(err));
@@ -432,7 +491,11 @@ const PostureCoachPage = () => {
             </div>
             <div className="col-span-12 lg:col-span-5 space-y-4">
               <StatusCard posture={posture} connected={feedStatus === 'live'} busy={busy} mode={mode}
-                onBaseline={() => call('/api/posture/baseline?camera=laptop')} />
+                onBaseline={() => call('/api/posture/baseline?camera=laptop')}
+                onCancel={() => call('/api/posture/recording/cancel?camera=laptop')} />
+              <CalibrationPanel posture={posture} busy={busy}
+                call={(path, body) => call(path, null, body)}
+                remove={(path) => call(path, null, {}, deleteJson)} />
               <ReminderSettings settings={settings} update={update} />
             </div>
           </div>

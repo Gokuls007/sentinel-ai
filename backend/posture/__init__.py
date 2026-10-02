@@ -1,11 +1,14 @@
 """Desk posture coach (front-facing laptop webcam, compared with your own upright baseline)."""
 
+from posture.classifier import POSTURE_LABELS, POSTURES, PostureModel, StableStatus, raw_features, train
 from posture.coach import (
     BAD,
     GOOD,
     LABELS,
     LEANING,
+    LOOKING_DOWN,
     MOVED,
+    NEUTRAL,
     SLOUCHING,
     SLUMPED,
     TOO_CLOSE,
@@ -22,7 +25,30 @@ from posture.coach import (
 )
 
 __all__ = [
-    "BAD", "GOOD", "LABELS", "LEANING", "MOVED", "SLOUCHING", "SLUMPED", "TOO_CLOSE", "Baseline", "Measurement",
-    "PostureCoach", "PostureConfig", "assess", "classify", "explain", "measure", "select_main_person",
+    "BAD",
+    "GOOD",
+    "LABELS",
+    "LEANING",
+    "LOOKING_DOWN",
+    "MOVED",
+    "NEUTRAL",
+    "POSTURES",
+    "POSTURE_LABELS",
+    "SLOUCHING",
+    "SLUMPED",
+    "TOO_CLOSE",
+    "Baseline",
+    "Measurement",
+    "PostureCoach",
+    "PostureConfig",
+    "PostureModel",
+    "StableStatus",
+    "assess",
+    "classify",
+    "explain",
+    "measure",
+    "raw_features",
+    "select_main_person",
     "shoulder_problem",
+    "train",
 ]

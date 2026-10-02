@@ -38,6 +38,11 @@ export function putJson(path, body = {}) {
   return sendJson('PUT', path, body);
 }
 
+/** DELETE with a JSON body (same error shape as postJson). */
+export function deleteJson(path, body = {}) {
+  return sendJson('DELETE', path, body);
+}
+
 async function sendJson(method, path, body) {
   let res;
   try {

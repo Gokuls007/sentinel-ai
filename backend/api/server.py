@@ -12,6 +12,7 @@ import contextlib
 import copy
 import json
 import logging
+import random
 import threading
 import time
 from collections import deque
@@ -29,6 +30,7 @@ from core.pipeline import FrameResult, SentinelPipeline
 from core.recorder import Recorder
 from core.utils import to_serializable
 from events import EVENT_TYPES, GROUP_BY_KEYS, SEVERITIES, Event, EventStore
+from posture.classifier import POSTURES
 
 logger = logging.getLogger("sentinel.api")
 
@@ -610,6 +612,90 @@ def note_posture_reminder(request: Request, camera: str | None = None):
     p = _posture_pipeline(camera)
     p.posture.note_reminder()
     return {"reminders": p.posture.session.reminders}
+
+
+# Personal classifier: guided calibration, training, and "test my calibration".
+
+POSTURE_TEST_STEP_S = 15.0  # 6 postures x (3 s get ready + 15 s) = about 2 minutes
+
+
+class PostureRecordRequest(BaseModel):
+    posture: str = Field(..., max_length=32)
+
+
+@app.post("/api/posture/calibration/record")
+def record_posture(body: PostureRecordRequest, request: Request, camera: str | None = None):
+    """Record one posture for the calibration (a 3 s countdown, then about 20 s). Recording a
+    posture again replaces its earlier recording."""
+    _check_camera_control(request)
+    p = _posture_pipeline(camera)
+    try:
+        p.posture.start_recording("calibrate", [body.posture])
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return to_serializable(p.posture.snapshot())
+
+
+@app.post("/api/posture/calibration/train")
+def train_posture_model(request: Request, camera: str | None = None):
+    """Train the personal classifier on the recorded postures; returns the hold-out report."""
+    _check_camera_control(request)
+    p = _posture_pipeline(camera)
+    try:
+        report = p.posture.train_model()
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return to_serializable({"report": report, **p.posture.snapshot()})
+
+
+@app.delete("/api/posture/calibration")
+def clear_posture_calibration(request: Request, camera: str | None = None):
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "posture control")
+    p = _posture_pipeline(camera)
+    p.posture.clear_calibration()
+    return to_serializable(p.posture.snapshot())
+
+
+@app.post("/api/posture/test")
+def start_posture_test(request: Request, camera: str | None = None):
+    """"Test my calibration": prompt every posture once in random order, then score the saved
+    model on that new data."""
+    _check_camera_control(request)
+    p = _posture_pipeline(camera)
+    order = list(POSTURES)
+    random.shuffle(order)
+    try:
+        p.posture.start_recording("test", order, record_s=POSTURE_TEST_STEP_S)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return to_serializable(p.posture.snapshot())
+
+
+@app.post("/api/posture/recording/cancel")
+def cancel_posture_recording(request: Request, camera: str | None = None):
+    _check_camera_control(request)
+    p = _posture_pipeline(camera)
+    p.posture.cancel_recording()
+    return to_serializable(p.posture.snapshot())
+
+
+@app.get("/api/posture/model")
+def get_posture_model(camera: str | None = None):
+    """The trained model's hold-out report and its latest "test my calibration" report."""
+    p = _posture_pipeline(camera)
+    m = p.posture.model
+    if m is None:
+        return {"model": None}
+    return to_serializable({"model": p.posture.model_summary(), "report": m.report, "test_report": m.test_report})
+
+
+@app.delete("/api/posture/model")
+def delete_posture_model(request: Request, camera: str | None = None):
+    """Stop using the personal classifier (back to the baseline thresholds)."""
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "posture control")
+    p = _posture_pipeline(camera)
+    p.posture.delete_model()
+    return to_serializable(p.posture.snapshot())
 
 
 @app.get("/api/meta")
