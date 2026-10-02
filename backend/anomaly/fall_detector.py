@@ -71,10 +71,11 @@ class FallDetector:
                  cooldown_seconds: float = 30.0, lost_hold_seconds: float = 0.0,
                  upright_hold_seconds: float = 0.0, ground_mode: str = "torso",
                  box_calibration: bool = False):
-        # ground_mode: how "on the ground" is judged. "torso" (default): torso near horizontal
-        #   and head dropped. "combined": also direction-independent signals (hips near the
-        #   floor, the skeleton collapsing), with a veto when the hips are still high (bending
-        #   to pick something up).
+        # ground_mode: how "on the ground" is judged. "torso": torso near horizontal and head
+        #   dropped (this class's default, kept so older replays reproduce). "combined": also
+        #   direction-independent signals (hips near the floor, the skeleton collapsing), with a
+        #   veto when the hips are still high (bending to pick something up). The app uses
+        #   "combined" by default via FallDetectorConfig.ground_mode.
         # box_calibration: without a measurable skeleton, estimate standing height from an
         #   upright bounding box so fall detection can start.
         self.ground_mode = ground_mode

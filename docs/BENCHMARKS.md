@@ -52,7 +52,7 @@ _Measured 2026-09-30 23:49 with `python scripts/benchmark.py`_ on the `corridor`
 ## False alarms on other non-fall footage
 
 <!-- benchmark:false-alarms:start -->
-_Measured 2026-10-01 with `python training/eval_false_alarms.py` on cuda._ These videos are separate from URFD and contain no falls, so every fall alert in them is a false alarm. Same production path and thresholds.
+_Measured 2026-10-02 with `python training/eval_false_alarms.py` on cuda._ These videos are separate from URFD and contain no falls, so every fall alert in them is a false alarm. Same production path and thresholds.
 
 | Video | Source | Activities | Length | Fall alerts | Alerts/hour |
 |---|---|---|---|---|---|
@@ -143,7 +143,7 @@ Most misses are visibility problems (the person isn't tracked during the fall, o
 ## Fall confirmation time sweep
 
 <!-- benchmark:fall-sweep:start -->
-_Measured 2026-10-02 with `python training/sweep_fall_confirm.py` on cuda._ The confirmation time is how long a person must lie still on the ground before the alert. The current default is **1 s**. Detection and pose ran once per video, and only the fall state machine was replayed at each setting. The "gave up" timeout is at least confirmation + 2 s.
+_Measured 2026-10-02 with `python training/sweep_fall_confirm.py` on cuda._ The confirmation time is how long a person must lie still on the ground before the alert. The current default is **1 s**. Detection and pose ran once per video, and only the fall state machine was replayed at each setting. The "gave up" timeout is at least confirmation + 2 s. These rows use the earlier torso-only ground rule (`ground_mode="torso"`, the default before 2026-10-02). The current default is compared in "Fall detection: rules vs learned model (unseen subjects)" above.
 
 No-fall footage: **8.1 min** (URFD ADL 5.0 min, sample clips 3.2 min).
 
@@ -210,16 +210,16 @@ Any further tuning will split CAUCAFall by video into a tuning half and a test h
 ## Fall detection accuracy (UR Fall Detection dataset)
 
 <!-- benchmark:falls:start -->
-_Measured 2026-10-01 with `python training/eval_fall.py` on cuda._ URFD camera 0 (RGB 640x480, 30 fps); production thresholds; onset tolerance 2.0 s.
+_Measured 2026-10-02 with `python training/eval_fall.py` on cuda._ URFD camera 0 (RGB 640x480, 30 fps); production thresholds; onset tolerance 2.0 s.
 
 | Metric | Value |
 |---|---|
 | Fall sequences / detected (recall) | 30 / 0 (0.0%) |
-| Precision | 0.0% |
+| Precision | n/a |
 | F1 | n/a |
 | False positives in fall sequences (early or repeated alerts) | 0 |
-| False positives in ADL sequences | 1 over 40 sequences |
-| **False alarms per hour of non-fall video** | **12.08**, based on **0.083 h (5.0 min, 8941 frames)** of ADL video |
+| False positives in ADL sequences | 0 over 40 sequences |
+| **False alarms per hour of non-fall video** | **0.00**, based on **0.083 h (5.0 min, 8941 frames)** of ADL video |
 | Alert latency after fall onset (median / max) | n/a s / n/a s |
 
 The false-alarm rate rests on only 5.0 minutes of non-fall video (all that URFD provides), so treat it as a rough indicator, not a measured field rate. A reliable figure needs hours of normal-activity footage from the target site.
@@ -228,12 +228,12 @@ The false-alarm rate rests on only 5.0 minutes of non-fall video (all that URFD 
 
 | Stage | Value |
 |---|---|
-| Fall sequences that reached FALLEN (on the ground, before confirmation) | 25 / 30 (83.3%) |
+| Fall sequences that reached FALLEN (on the ground, before confirmation) | 23 / 30 (76.7%) |
 | Video left after fall onset (median) | 1.70 s |
-| Video left after reaching FALLEN (median) | 1.03 s |
-| ADL sequences that reached FALLEN (not confirmed) | 11 / 40 |
+| Video left after reaching FALLEN (median) | 0.97 s |
+| ADL sequences that reached FALLEN (not confirmed) | 6 / 40 |
 
-URFD trims each fall clip shortly after the fall. Where the detector reaches FALLEN, the median video left after that (1.03 s) is barely longer than the 1.0 s of stillness the detector waits for, so many clips end before an alert could fire. The confirmation-time sweep above breaks down the clips that had enough video but still got no alert (mostly the person is lost from view once on the floor). These numbers describe how the detector behaves on short, trimmed clips. They are not the recall you would see on continuous video, which needs longer fall recordings to measure.
+URFD trims each fall clip shortly after the fall. Where the detector reaches FALLEN, the median video left after that (0.97 s) is shorter than the 1.0 s of stillness the detector waits for, so many clips end before an alert could fire. The confirmation-time sweep above breaks down the clips that had enough video but still got no alert (mostly the person is lost from view once on the floor). These numbers describe how the detector behaves on short, trimmed clips. They are not the recall you would see on continuous video, which needs longer fall recordings to measure.
 <!-- benchmark:falls:end -->
 
 ## Search accuracy

@@ -65,7 +65,8 @@ like `config/demo/corridor_demo.json`. All settings can be set in `.env` (see
 
 | Alert | How it's decided | Severity |
 |---|---|---|
-| `fall` | A per-person state machine. It needs a rapid hip descent (faster than 1.2 body heights per second, calibrated to each person's standing height), then a lying posture with the head dropped, then 1 s of stillness. One alert per fall. | critical |
+| `possible_fall` | A rapid hip descent (faster than 1.2 body heights per second, calibrated to each person's height), then the person is on the ground. "On the ground" uses the torso angle plus direction-independent signals (hips near the floor, the skeleton collapsing), and it doesn't count while the hips are still high, as when bending to pick something up. Shown on the dashboard only, never notified. | medium |
+| `fall` | The confirmed fall: still on the ground after 1 s of stillness. One alert per fall; notified (Telegram/email/webhook). | critical |
 | `zone_intrusion` | The hip point enters a `restricted` polygon. | high |
 | `time_exceeded` | Dwell in a `time_limited` zone passes its limit. | medium |
 | `wrong_direction` | Sustained movement against a `one_way` zone's direction. | medium |
@@ -75,12 +76,42 @@ Every alert type has a per-person cooldown, so one event never becomes a burst o
 [ARCHITECTURE.md](ARCHITECTURE.md) covers the threading model, the WebSocket protocol, and
 each detector in detail.
 
+### Fall detection on people it has never seen
+These results come from CAUCAFall **subjects 6–10 only**: 25 falls and 25 daily activities
+(walk, hop, pick up an object, sit down, kneel). Those five people were never used to design,
+tune or train anything. Tuning and training used URFD and CAUCAFall subjects 1–5. The split
+is **by subject**, so nobody appears on both sides. CAUCAFall was filmed in a home with
+**occlusions, varied lighting and night-time infrared footage**, which makes it harder than
+staged lab datasets.
+
+| Method | Confirmed falls caught | Confirmed false alarms | Possible falls caught | Possible false alarms |
+|---|---|---|---|---|
+| Rules, original (torso angle only) | 2 / 25 (8%) | 4 | 7 / 25 (28%) | 6 |
+| **Rules + direction-independent signals (default)** | **4 / 25 (16%)** | **0** | **10 / 25 (40%)** | **0** |
+| Learned model: gradient boosting on 12 pose features (experiment, offline) | 14 / 25 (56%) | 3 | 18 / 25 (72%) | 7 |
+
+The false alarms are counted over 4.5 min of no-fall video, so one false alarm is about 13 per
+hour and one fall is 4 points of recall.
+
+- **The default is the rules version with zero false alarms.** The "hips still high" veto
+  removed every picking-up and sitting-down false alarm. Confirmed falls are sent as
+  notifications, so a false alarm costs the most.
+- **The learned model catches many more falls** but raises false alarms when people sit down
+  or pick things up. It is kept as a documented experiment
+  (`python training/fall_round3.py final`) and is not in the live pipeline.
+- **Most missed falls are visibility problems**: the person is not detected during the fall, or
+  never gets measured standing, in occluded or infrared footage. Fall direction is a smaller
+  factor. Details, the confirmation-time sweep and the URFD numbers are in
+  [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
 ### Honest limitations
-- **Falls are not in the bundled demos.** The sample videos have no falls, and freely
-  licensed fall footage is rare. The fall logic is covered by unit tests on synthetic pose
-  sequences (`tests/test_fall_detector.py`): a real fall, sitting down, crouching, getting up
-  quickly, no visible face, and the cooldown. To see it live, run it on your own clip with
-  `--source`.
+- **Falls are not in the bundled demos.** The sample videos have no falls. The fall datasets
+  are downloaded by `training/eval_fall.py --download` (URFD) and
+  `training/fetch_caucafall.py` (CAUCAFall), never committed. Unit tests cover synthetic pose
+  sequences: falls, sitting down, crouching, bending, a webcam with no ankles in view, and
+  people lost from view on the floor.
+- **Fall recall is modest** (see above). Treat a missing alert as possible; the possible-fall
+  level gives earlier, softer warnings on the dashboard.
 - **The action LSTM is off by default.** `training/` can train a pose-sequence classifier. Until
   a trained `models/action_lstm.pt` exists, the classifier stays disabled rather than guessing
   with random weights.
@@ -170,7 +201,25 @@ training/    pose-sequence LSTM data prep / training / evaluation
 tests/       pytest suite
 ```
 
+## Future work
+- **Learned model for the "possible fall" level.** Gradient boosting on pose features catches
+  far more falls on unseen subjects (56% vs 16% confirmed). Next step: add the same "hips still
+  high" veto to cut its sitting and bending false alarms, tuned on CAUCAFall subjects 1–5 only,
+  and use it for the dashboard-only possible-fall level. The rules stay in charge of the
+  confirmed fall that sends notifications.
+- **Keeping lying people detected.** Most missed falls happen because YOLOv8n stops detecting
+  the person once they are on the floor. Re-finding them around their last box, including
+  with the image rotated 90°, is implemented (`anomaly/fall_recovery.py`) but off by default:
+  on unseen subjects it added false alarms.
+- **Plain-English rules and presets** (exam hall, desk posture coach): see
+  [docs/plans/phase-3-rules.md](docs/plans/phase-3-rules.md).
+
 ## Credits
+Fall datasets (downloaded by the evaluation scripts, not redistributed):
+[UR Fall Detection](https://fenix.ur.edu.pl/~mkepski/ds/uf.html) (Kwolek & Kepski, 2014;
+CC BY-NC-SA 4.0) and [CAUCAFall](https://data.mendeley.com/datasets/7w7fccy7ky/4) (Eraso et al.,
+Mendeley Data, doi:10.17632/7w7fccy7ky.4; CC BY 4.0).
+
 The sample videos are by Intel Corporation
 ([intel-iot-devkit/sample-videos](https://github.com/intel-iot-devkit/sample-videos)) under
 CC BY 4.0; see [demo_videos/ATTRIBUTION.md](demo_videos/ATTRIBUTION.md). Detection and pose

@@ -154,6 +154,8 @@ class Models:
             head_drop_ratio=f.head_drop_ratio, stillness_seconds=f.stillness_seconds,
             stillness_speed_threshold=f.stillness_speed_threshold,
             fallen_timeout_seconds=f.fallen_timeout_seconds, cooldown_seconds=f.cooldown_seconds,
+            lost_hold_seconds=f.lost_hold_seconds, upright_hold_seconds=f.upright_hold_seconds,
+            ground_mode=f.ground_mode, box_calibration=f.box_calibration,
         )
 
 

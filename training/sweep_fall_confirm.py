@@ -453,7 +453,9 @@ def markdown(rows: list[dict], default_s: float, device: str, fix_rows: list[tup
         f"The confirmation time is how long a person must lie still on the ground before the alert. "
         f"The current default is **{default_s:g} s**. Detection and pose ran once per video, and only the "
         "fall state machine was replayed at each setting. The \"gave up\" timeout is at least "
-        "confirmation + 2 s.",
+        "confirmation + 2 s. These rows use the earlier torso-only ground rule (`ground_mode=\"torso\"`, the "
+        "default before 2026-10-02). The current default is compared in \"Fall detection: rules vs learned "
+        "model (unseen subjects)\" above.",
         "",
         f"No-fall footage: **{r0['clean_hours'] * 60:.1f} min** ({basis}).",
         "",

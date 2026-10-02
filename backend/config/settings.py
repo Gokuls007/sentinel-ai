@@ -48,8 +48,10 @@ class FallDetectorConfig:
     recovery_window_seconds: float = 3.0   # retries only this long after the fall started
     recovery_mode: str = "pose"            # re-found person: "pose" (normal check) or "presence"
     upright_hold_seconds: float = 0.0      # "looks upright" must last this long to leave the ground
-    ground_mode: str = "torso"             # "combined": also hips-near-floor / skeleton collapse,
-                                           #   vetoed while the hips are high (bending over)
+    # "combined" (default since 2026-10-02): torso rule plus direction-independent signals
+    # (hips near the floor, skeleton collapse), vetoed while the hips are still high (bending
+    # over). "torso": the earlier torso-angle-only rule. See docs/BENCHMARKS.md, unseen subjects.
+    ground_mode: str = "combined"
     box_calibration: bool = False          # standing height from upright boxes when no skeleton
 
 @dataclass

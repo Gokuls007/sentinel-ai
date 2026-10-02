@@ -140,3 +140,14 @@ def test_score_model_counts_both_levels():
     assert s["tp"] == 1 and s["possible_tp"] == 1
     assert s["false_alarms_clean"] == 1 and s["possible_false_alarms"] == 1
     assert s["false_alarms_by_activity"] == {"Walk": [1, 1]}
+
+
+def test_app_default_is_combined_signals_without_box_calibration(tmp_config):
+    from anomaly.engine import AnomalyEngine
+    from config.settings import FallDetectorConfig
+
+    cfg = FallDetectorConfig()
+    assert (cfg.ground_mode, cfg.box_calibration, cfg.lost_hold_seconds, cfg.recovery_rotated) == \
+        ("combined", False, 0.0, False)
+    det = AnomalyEngine(tmp_config).fall_detector
+    assert det.ground_mode == "combined" and det.box_calibration is False
