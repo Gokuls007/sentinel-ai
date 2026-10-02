@@ -211,7 +211,9 @@ export const CalibrationPanel = ({ posture, busy, call, remove }) => {
           <div className="space-y-3">
             {shown.test_report ? (
               <Report title="Test my calibration (realistic)" report={shown.test_report}
-                note={`Scored on new recordings made after training, in random order (${new Date(shown.test_report.tested_at * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}). This is the number to trust.`} />
+                note={`Scored on new recordings made after training, in random order (${new Date(shown.test_report.tested_at * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}). This is the number to trust.${
+                  shown.test_report.unfamiliar_fraction != null
+                    ? ` ${pct(shown.test_report.unfamiliar_fraction)} of these frames would have shown Not sure.` : ''}`} />
             ) : (
               <p className="text-[11px] text-amber-200/90 outfit">
                 Run &quot;Test my calibration&quot; for the realistic accuracy: the number below is measured on the
@@ -221,7 +223,8 @@ export const CalibrationPanel = ({ posture, busy, call, remove }) => {
             <Report title={`Calibration hold-out (${shown.report.model})`} report={shown.report}
               note={`Trained on the first 75% of each recording, scored on the last 25% (held out by time). Compared: ${
                 Object.entries(shown.report.compared).map(([n, r]) => `${n} ${pct(r.balanced_accuracy)}`).join(', ')
-              } balanced accuracy; the better one was kept and refitted on everything.`} />
+              } balanced accuracy; the better one was kept and refitted on everything.${
+                shown.report.ood ? ` Not sure beyond distance ${shown.report.ood.threshold.toFixed(2)} (99th percentile of held-out frames).` : ''}`} />
           </div>
         )}
       </div>

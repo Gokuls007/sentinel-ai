@@ -17,6 +17,12 @@ Features (all from the pose keypoints; no extra model):
 The model (logistic regression vs gradient boosting, whichever scores better) is judged on the
 **last 25% of each posture's recording**, held out by time so neighbouring frames can't leak
 into the score. A separate "test my calibration" run scores it on brand-new data.
+
+The model can only choose between the postures it was shown, so two checks run first:
+- ``head_turn``: a head turned well away from the screen (profile view) is "looking away",
+  not a posture;
+- out-of-distribution: a frame further from the calibration data than nearly all held-out
+  calibration frames were (99th percentile of k-nearest-neighbour distance) is "not sure".
 """
 
 from __future__ import annotations
@@ -39,6 +45,12 @@ RAW_FEATURES = ("head_ratio", "face_ratio", "tilt_deg", "lateral", "pitch", "yaw
 # Distances are divided by the Good recording's median; everything else has it subtracted.
 RELATIVE_BY_RATIO = ("eye_span", "shoulder_width")
 HOLDOUT_FRACTION = 0.25
+# Smallest spread used to standardise each relative feature for the distance check, so a feature
+# that barely varied during calibration (e.g. yaw) doesn't make every tiny change look unfamiliar.
+MIN_SCALE = {"head_ratio": 0.02, "face_ratio": 0.01, "tilt_deg": 1.0, "lateral": 0.02, "pitch": 0.05,
+             "yaw": 0.03, "roll_deg": 1.0, "eye_span": 0.02, "shoulder_width": 0.02}
+OOD_NEIGHBOURS = 5
+OOD_PERCENTILE = 99.0
 
 NOSE, L_EYE, R_EYE, L_EAR, R_EAR, L_SH, R_SH = 0, 1, 2, 3, 4, 5, 6
 
@@ -72,6 +84,31 @@ def raw_features(keypoints: np.ndarray, min_conf: float = 0.4) -> dict | None:
         "eye_span": eye_span,
         "shoulder_width": width,
     }
+
+
+def head_turn(keypoints: np.ndarray, min_conf: float = 0.4, yaw_limit: float = 0.5,
+              ref_yaw: float = 0.0) -> tuple[bool, float | None, str | None]:
+    """(turned away, yaw, why) from the face keypoints; yaw is the nose's sideways offset from
+    the eye midpoint in eye spans, relative to ``ref_yaw`` (your Good recording). Turned away
+    when one eye is hidden, when the nose is outside the ear span, or when |yaw| > ``yaw_limit``
+    (0.5 = the nose has passed one eye)."""
+    kp = np.asarray(keypoints, float)
+    if kp.shape[0] < 5 or kp[NOSE, 2] < min_conf:
+        return False, None, None
+    le_ok, re_ok = kp[L_EYE, 2] >= min_conf, kp[R_EYE, 2] >= min_conf
+    if not (le_ok and re_ok):
+        return True, None, "one eye hidden" if (le_ok or re_ok) else "eyes hidden"
+    eye_span = float(np.hypot(*(kp[L_EYE, :2] - kp[R_EYE, :2])))
+    yaw = None
+    if eye_span >= 1.0:
+        yaw = float(kp[NOSE, 0] - (kp[L_EYE, 0] + kp[R_EYE, 0]) / 2) / eye_span - ref_yaw
+    if min(kp[L_EAR, 2], kp[R_EAR, 2]) >= min_conf:
+        lo, hi = sorted((kp[L_EAR, 0], kp[R_EAR, 0]))
+        if not lo <= kp[NOSE, 0] <= hi:
+            return True, yaw, "nose outside the ears"
+    if yaw is None or abs(yaw) > yaw_limit:
+        return True, yaw, "head turned"
+    return False, yaw, None
 
 
 def reference(good_frames: list[dict]) -> dict:
@@ -152,6 +189,22 @@ class PostureModel:
     report: dict
     trained_at: float = field(default_factory=time.time)
     test_report: dict | None = None  # from "Test my calibration" (new data)
+    # Out-of-distribution check (None on models trained before it existed).
+    ood_center: np.ndarray | None = None
+    ood_scale: np.ndarray | None = None
+    ood_index: object = None  # NearestNeighbors over every calibration frame (standardised)
+    ood_threshold: float | None = None
+
+    def ood_distance(self, raw: dict) -> float | None:
+        """Mean distance to the nearest calibration frames (standardised units)."""
+        if self.ood_index is None:
+            return None
+        x = (vector(raw, self.ref) - self.ood_center) / self.ood_scale
+        return float(self.ood_index.kneighbors(x.reshape(1, -1))[0].mean())
+
+    def is_unfamiliar(self, raw: dict) -> bool:
+        d = self.ood_distance(raw)
+        return d is not None and d > self.ood_threshold
 
     def predict_proba(self, raw: dict) -> dict:
         p = self.model.predict_proba(vector(raw, self.ref).reshape(1, -1))[0]
@@ -196,19 +249,37 @@ def train(recordings: dict[str, list], min_frames: int = 20, seed: int = 0) -> P
     all_rows = train_rows + test_rows
     final = _candidates(seed)[best]().fit(np.array([vector(r, ref) for _p, r in all_rows]),
                                           np.array([p for p, _r in all_rows]))
+    from sklearn.neighbors import NearestNeighbors
+
+    # Out-of-distribution threshold: how far held-out frames sit from the training frames, at the
+    # 99th percentile. That mirrors new data meeting the calibration (neighbouring frames of the
+    # same recording would make it far too strict).
+    X_all = np.vstack([Xtr, Xte])
+    center = X_all.mean(axis=0)
+    scale = np.maximum(X_all.std(axis=0), np.array([MIN_SCALE[k] for k in RAW_FEATURES]))
+    k = min(OOD_NEIGHBOURS, len(Xtr))
+    held_out = NearestNeighbors(n_neighbors=k).fit((Xtr - center) / scale).kneighbors((Xte - center) / scale)[0]
+    threshold = float(np.percentile(held_out.mean(axis=1), OOD_PERCENTILE))
+    index = NearestNeighbors(n_neighbors=min(OOD_NEIGHBOURS, len(X_all))).fit((X_all - center) / scale)
     report = {**results[best], "model": best,
               "compared": {n: {"accuracy": r["accuracy"], "balanced_accuracy": r["balanced_accuracy"]}
                            for n, r in results.items()},
               "holdout": f"last {HOLDOUT_FRACTION:.0%} of each posture's recording (by time)",
-              "train_frames": len(train_rows)}
-    return PostureModel(model=final, classes=POSTURES, ref=ref, name=best, report=report)
+              "train_frames": len(train_rows),
+              "ood": {"threshold": threshold, "neighbours": k, "percentile": OOD_PERCENTILE}}
+    return PostureModel(model=final, classes=POSTURES, ref=ref, name=best, report=report,
+                        ood_center=center, ood_scale=scale, ood_index=index, ood_threshold=threshold)
 
 
 def evaluate(model: PostureModel, labelled: list[tuple[str, dict]]) -> dict:
     """Score a saved model on new labelled frames (the "Test my calibration" run)."""
     y_true = [p for p, _r in labelled]
     y_pred = [max(probs, key=probs.get) for probs in (model.predict_proba(r) for _p, r in labelled)]
-    return score_report(model.classes, y_true, y_pred)
+    report = score_report(model.classes, y_true, y_pred)
+    # Frames the live coach would have shown as "not sure" (scored above as the model's best guess).
+    report["unfamiliar_fraction"] = (sum(model.is_unfamiliar(r) for _p, r in labelled) / len(labelled)
+                                     if labelled and model.ood_index is not None else None)
+    return report
 
 
 class StableStatus:

@@ -42,6 +42,7 @@ from posture.classifier import (
     PostureModel,
     StableStatus,
     evaluate,
+    head_turn,
     raw_features,
     train,
 )
@@ -53,12 +54,15 @@ NOSE, L_EYE, R_EYE, L_EAR, R_EAR, L_SH, R_SH = 0, 1, 2, 3, 4, 5, 6
 GOOD, SLOUCHING, LEANING, TOO_CLOSE = "good", "slouching", "leaning", "too_close"
 AWAY, NO_BASELINE, CALIBRATING, MOVED = "away", "no_baseline", "calibrating", "moved"
 UNCLEAR, SLUMPED, LOOKING_DOWN, CHECKING = "unclear", "slumped", "looking_down", "checking"
+LOOKING_AWAY, NOT_SURE = "looking_away", "not_sure"
 BAD = (SLOUCHING, LEANING, TOO_CLOSE, SLUMPED)
-NEUTRAL = (LOOKING_DOWN,)  # not poor posture, but reminded about if held a long time
+# Counted as neither good nor poor posture. Looking down is reminded about if held a long time.
+NEUTRAL = (LOOKING_DOWN, LOOKING_AWAY, NOT_SURE)
 LABELS = {GOOD: "Good", SLOUCHING: "Slouching", LEANING: "Leaning", TOO_CLOSE: "Too close", SLUMPED: "Slumped",
           LOOKING_DOWN: "Looking down",
           AWAY: "Away", NO_BASELINE: "Press Set baseline to start", CALIBRATING: "Hold still...",
-          MOVED: "You've moved", UNCLEAR: "Can't see your shoulders", CHECKING: "Checking your posture..."}
+          MOVED: "You've moved", UNCLEAR: "Can't see your shoulders", CHECKING: "Checking your posture...",
+          LOOKING_AWAY: "Looking away", NOT_SURE: "Not sure"}
 
 
 @dataclass
@@ -102,6 +106,12 @@ class PostureConfig:
     calibration_get_ready_s: float = 3.0
     calibration_record_s: float = 20.0
     calibration_min_frames: int = 30
+    # Personal classifier: checks before it. Head yaw beyond this (eye spans, vs your Good
+    # recording; 0.5 = nose past one eye) is "looking away"; held this long it counts as away.
+    looking_away_yaw: float = 0.5
+    looking_away_to_away_s: float = 120.0
+    # Frames unlike any calibration frame (out of distribution) for this long: "not sure".
+    not_sure_after_s: float = 3.0
     timeline_bucket_s: float = 10.0
 
 
@@ -336,7 +346,8 @@ def classify(m: Measurement, base: Baseline, cfg: PostureConfig) -> tuple[str, l
 class Session:
     started_at: float = field(default_factory=time.time)
     seconds: dict = field(default_factory=lambda: {s: 0.0 for s in (GOOD, SLOUCHING, LEANING, TOO_CLOSE, SLUMPED,
-                                                                     LOOKING_DOWN, AWAY, MOVED, UNCLEAR)})
+                                                                     LOOKING_DOWN, LOOKING_AWAY, NOT_SURE, AWAY, MOVED,
+                                                                     UNCLEAR)})
     timeline: list = field(default_factory=list)  # [{"t": offset_s, "status": ...}] one per bucket
     reminders: int = 0
 
@@ -382,6 +393,11 @@ class PostureCoach:
         self.last_test: dict | None = None
         self.rec_error: str | None = None
         self.last_raw: dict | None = None  # the classifier's inputs for the last usable frame
+        self.yaw: float | None = None  # head yaw vs the Good recording (classifier mode)
+        self.turn_reason: str | None = None
+        self.ood: float | None = None  # distance to the calibration data (classifier mode)
+        self._away_look_since: float | None = None  # start of the current looking-away stretch
+        self._ood_since: float | None = None  # start of the current run of unfamiliar frames
         self.calibration_counts = {p: len(v) for p, v in self.recordings().items()}
         if self.model is not None and self.status == NO_BASELINE:
             self.status = AWAY
@@ -483,6 +499,8 @@ class PostureCoach:
         self.model = model
         self.last_test = None
         self.stable.reset()
+        self._set_status(CHECKING, ["Learning how you're sitting right now (a few seconds)"],
+                         self._last_ts if self._last_ts is not None else self.clock())
         return model.report
 
     def delete_model(self) -> None:
@@ -502,6 +520,18 @@ class PostureCoach:
         if raw is None:
             return
         self.last_raw = raw
+        self.ood = self.model.ood_distance(raw)
+        if self.ood is not None and self.ood > self.model.ood_threshold:
+            # Unlike anything recorded in calibration: don't let the model guess. Short runs are
+            # ignored (the previous status holds); a sustained one shows "not sure".
+            if self._ood_since is None:
+                self._ood_since = ts
+            if ts - self._ood_since >= self.cfg.not_sure_after_s:
+                self.hint = None
+                self._set_status(NOT_SURE, ["This doesn't look like any posture you calibrated. If it's how you "
+                                            "often sit, record it again (closest posture) and retrain."], ts)
+            return
+        self._ood_since = None
         current = self.stable.update(self.model.predict_proba(raw), ts)
         self.probs = dict(self.stable.mean)
         if current is None:  # not confident in anything yet
@@ -627,14 +657,8 @@ class PostureCoach:
 
         unclear = (bool(self._quality) and
                    sum(bad for _t, bad in self._quality) / len(self._quality) >= self.cfg.unclear_fraction)
-        if self.model is not None and ts - self._last_seen <= self.cfg.away_after_s and not unclear:
-            self._classify_with_model(kp if face_seen else None, ts)
-        elif self.model is not None and ts - self._last_seen > self.cfg.away_after_s:
-            self.stable.reset()
-            self._set_status(AWAY, ["Nobody in front of the camera"], ts)
-        elif self.model is not None:
-            self.stable.reset()
-            self._propose(UNCLEAR, [UNCLEAR_MESSAGE], ts)
+        if self.model is not None:
+            self._update_with_model(kp if face_seen else None, unclear, ts)
         elif self.baseline is None:
             self._set_status(NO_BASELINE, [], ts)
         elif ts - self._last_seen > self.cfg.away_after_s:
@@ -653,6 +677,31 @@ class PostureCoach:
             self.hint = a["hint"]
             self._propose(a["status"], a["reasons"], ts)
         self._account(dt, ts)
+
+    def _update_with_model(self, kp, unclear: bool, ts: float) -> None:
+        if ts - self._last_seen > self.cfg.away_after_s:
+            self.stable.reset()
+            self._away_look_since = None
+            self._set_status(AWAY, ["Nobody in front of the camera"], ts)
+            return
+        turned, self.yaw, self.turn_reason = (head_turn(kp, self.cfg.min_kp_conf, self.cfg.looking_away_yaw,
+                                                        self.model.ref.get("yaw", 0.0))
+                                              if kp is not None else (False, None, None))
+        if turned:  # before the classifier: it only knows the postures it was shown
+            if self._away_look_since is None:
+                self._away_look_since = ts
+            if ts - self._away_look_since >= self.cfg.looking_away_to_away_s:
+                self._set_status(AWAY, ["Looking away from the screen for over "
+                                        f"{self.cfg.looking_away_to_away_s / 60:g} min"], ts)
+            else:
+                self._propose(LOOKING_AWAY, ["Head turned away from the screen"], ts)
+            return
+        self._away_look_since = None
+        if unclear:
+            self.stable.reset()
+            self._propose(UNCLEAR, [UNCLEAR_MESSAGE], ts)
+            return
+        self._classify_with_model(kp, ts)
 
     def _smoothed(self) -> Measurement:
         ms = [m for _t, m in self._window]
@@ -760,6 +809,10 @@ class PostureCoach:
             "method": "classifier" if self.model is not None else "thresholds",
             "probabilities": dict(self.probs) if self.model is not None else None,
             "features": self.last_raw if self.model is not None else None,
+            "yaw": self.yaw if self.model is not None else None,
+            "turn_reason": self.turn_reason if self.model is not None else None,
+            "ood": {"distance": self.ood, "threshold": self.model.ood_threshold}
+            if self.model is not None and self.model.ood_threshold is not None else None,
             "recording": self._recording_snapshot(ts),
             "recording_error": self.rec_error,
             "model": self.model_summary(),

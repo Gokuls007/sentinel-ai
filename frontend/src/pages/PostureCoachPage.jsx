@@ -37,13 +37,19 @@ const STATUS_STYLE = {
   slumped: { text: 'text-rose-300', ring: 'border-rose-400/60 bg-rose-950/30', bar: 'bg-rose-500' },
   looking_down: { text: 'text-teal-300', ring: 'border-teal-400/50 bg-teal-950/30', bar: 'bg-teal-500/70' },
   checking: { text: 'text-cyan-200/80', ring: 'border-cyan-400/30 bg-cyan-950/20', bar: 'bg-cyan-700/50' },
+  looking_away: { text: 'text-sky-200', ring: 'border-sky-300/40 bg-sky-950/20', bar: 'bg-sky-300/50' },
+  not_sure: { text: 'text-fuchsia-300', ring: 'border-fuchsia-400/40 bg-fuchsia-950/20', bar: 'bg-fuchsia-500/50' },
 };
 const style = (s) => STATUS_STYLE[s] || STATUS_STYLE.away;
 const STATUS_LABELS = {
   good: 'Good', slouching: 'Slouching', leaning: 'Leaning', too_close: 'Too close', away: 'Away', moved: 'Moved',
   unclear: 'Unclear', slumped: 'Slumped', looking_down: 'Looking down', checking: 'Checking',
+  looking_away: 'Looking away', not_sure: 'Not sure',
 };
-const SUMMARY_KEYS = ['good', 'slouching', 'leaning', 'slumped', 'too_close', 'looking_down', 'moved', 'unclear', 'away'];
+const SUMMARY_KEYS = [
+  'good', 'slouching', 'leaning', 'slumped', 'too_close', 'looking_down', 'looking_away', 'not_sure', 'moved', 'unclear',
+  'away',
+];
 const DEBUG_KEY = 'sentinel.posture.debug';
 
 const fmtNum = (v, digits = 2) => (v == null || Number.isNaN(v) ? '--' : Number(v).toFixed(digits));
@@ -56,8 +62,22 @@ const FEATURE_LABELS = [
 ];
 
 /** Classifier mode: the model's probabilities plus the inputs it saw on the last usable frame. */
-const ModelPanel = ({ probs, features }) => (
+const ModelPanel = ({ posture }) => {
+  const { probabilities: probs, features, yaw, ood, turn_reason: turn } = posture;
+  const unfamiliar = ood?.distance != null && ood.distance > ood.threshold;
+  const turned = turn != null;
+  return (
   <div className="border border-white/10 bg-black/40 p-2 space-y-2">
+    <dl className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[10px] mono">
+      <dt className={turned ? 'text-sky-300' : 'text-white/50'}>Head yaw (vs your Good, limit ±0.50){turned ? ' ●' : ''}</dt>
+      <dd className={`text-right ${turned ? 'text-sky-300' : 'text-white/75'}`}>
+        {yaw == null ? '--' : `${yaw >= 0 ? '+' : ''}${fmtNum(yaw, 2)}`}{turned ? ` · ${turn}` : ''}
+      </dd>
+      <dt className={unfamiliar ? 'text-fuchsia-300' : 'text-white/50'}>
+        Distance to calibration (limit {fmtNum(ood?.threshold, 2)}){unfamiliar ? ' ●' : ''}
+      </dt>
+      <dd className={`text-right ${unfamiliar ? 'text-fuchsia-300' : 'text-white/75'}`}>{fmtNum(ood?.distance, 2)}</dd>
+    </dl>
     <ProbabilityBars probs={probs} />
     {features && (
       <dl className="grid grid-cols-2 gap-x-4 text-[10px] mono">
@@ -69,8 +89,13 @@ const ModelPanel = ({ probs, features }) => (
         ))}
       </dl>
     )}
+    <p className="text-[9px] mono text-white/30">
+      Checked before the model: a turned head is Looking away; a pose further from your calibration than
+      99% of held-out calibration frames is Not sure (after 3 s). ● = over its limit.
+    </p>
   </div>
-);
+  );
+};
 
 /** The raw values behind each status: now vs baseline, the change, and the limit. */
 const DebugPanel = ({ rows }) => (
@@ -301,7 +326,7 @@ const StatusCard = ({ posture, connected, onBaseline, onCancel, busy, mode }) =>
         {debug ? 'Hide measurements' : 'Show measurements'}
       </button>
       {debug && (classifier
-        ? <ModelPanel probs={posture.probabilities} features={posture.features} />
+        ? <ModelPanel posture={posture} />
         : <DebugPanel rows={posture.debug} />)}
     </div>
   );

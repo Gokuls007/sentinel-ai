@@ -13,7 +13,18 @@ from posture.classifier import (
     split_by_time,
     train,
 )
-from posture.coach import CHECKING, GOOD, LEANING, LOOKING_DOWN, SLOUCHING, PostureCoach, PostureConfig
+from posture.coach import (
+    AWAY,
+    CHECKING,
+    GOOD,
+    LEANING,
+    LOOKING_AWAY,
+    LOOKING_DOWN,
+    NOT_SURE,
+    SLOUCHING,
+    PostureCoach,
+    PostureConfig,
+)
 
 
 def pose(posture, rng, jitter=2.0):
@@ -253,3 +264,102 @@ def test_classifier_endpoints(classifier_api):
     assert api.post("/api/posture/recording/cancel", json={}).json()["recording"] is None
     assert api.request("DELETE", "/api/posture/model", json={}).json()["method"] == "thresholds"
     assert api.request("DELETE", "/api/posture/calibration", json={}).json()["calibration_counts"] == {}
+
+
+# --- looking away and unfamiliar poses (the classifier only knows the six calibrated postures) ----
+
+def profile(rng, jitter=1.5):
+    """Head turned fully sideways: eyes bunched together, nose well past them, one ear hidden."""
+    k = np.zeros((17, 3), np.float32)
+    pts = {0: (282, 205), 1: (300, 192), 2: (311, 192), 4: (334, 196), 5: (262, 300), 6: (378, 300)}
+    for i, p in pts.items():
+        k[i] = (*(np.array(p, float) + rng.normal(0, jitter, 2)), 0.9)
+    return k
+
+
+def odd(rng, jitter=2.0):
+    """Face the screen normally, but shoulders tilted ~37 degrees: nothing like any calibration."""
+    k = pose("good", rng, jitter)
+    k[5, :2] = (260 + rng.normal(0, jitter), 255 + rng.normal(0, jitter))
+    k[6, :2] = (380 + rng.normal(0, jitter), 345 + rng.normal(0, jitter))
+    return k
+
+
+def feed_fn(c, make, t, seconds, rng, fps=10):
+    seen = []
+    for _ in range(int(seconds * fps)):
+        t += 1 / fps
+        c.update(make(rng), t)
+        seen.append(c.status)
+    return t, seen
+
+
+def test_head_turn_rules():
+    from posture.classifier import head_turn
+
+    rng = np.random.default_rng(10)
+    assert head_turn(pose("good", rng, jitter=0))[0] is False
+    assert head_turn(pose("leaning_left", rng, jitter=0))[0] is False  # head moves with the body
+    turned, yaw, why = head_turn(profile(rng, jitter=0))
+    assert turned and yaw < -1 and why
+    one_eye = pose("good", rng, jitter=0)
+    one_eye[2, 2] = 0.1
+    assert head_turn(one_eye) == (True, None, "one eye hidden")
+    outside = pose("good", rng, jitter=0)
+    outside[0, 0] = 360  # nose beyond the ear
+    assert head_turn(outside)[0] is True
+
+
+def test_profile_view_is_looking_away_not_good(tmp_path):
+    rng = np.random.default_rng(11)
+    c, t = calibrated_coach(tmp_path, rng)
+    c.train_model()
+    t = feed(c, "good", t, 10, rng)
+    assert c.status == GOOD
+    t, seen = feed_fn(c, profile, t, 5, rng)
+    assert c.status == LOOKING_AWAY and seen[-1] == LOOKING_AWAY
+    snap = c.snapshot()
+    assert snap["yaw"] < -1 and snap["turn_reason"]
+    good_before = snap["session"]["seconds"][GOOD]
+    t, _ = feed_fn(c, profile, t, 30, rng)
+    snap = c.snapshot()
+    assert snap["session"]["seconds"][LOOKING_AWAY] > 25 and snap["session"]["seconds"][GOOD] == good_before
+    assert snap["session"]["poor_s"] == 0  # neither good nor poor
+    # Held over 2 minutes: treated as away.
+    t, _ = feed_fn(c, profile, t, 90, rng)
+    assert c.status == AWAY
+    # Facing the screen again: back to the posture.
+    t = feed(c, "good", t, 8, rng)
+    assert c.status == GOOD
+
+
+def test_unfamiliar_pose_is_not_sure_never_good(tmp_path):
+    rng = np.random.default_rng(12)
+    c, t = calibrated_coach(tmp_path, rng)
+    c.train_model()
+    assert c.model.ood_threshold > 0
+    # A fresh start in an unfamiliar pose never becomes Good (or any posture).
+    t, seen = feed_fn(c, odd, t, 15, rng)
+    assert GOOD not in seen and set(seen) <= {CHECKING, NOT_SURE, AWAY} and c.status == NOT_SURE
+    snap = c.snapshot()
+    assert snap["ood"]["distance"] > snap["ood"]["threshold"]
+    # From Good: a short unfamiliar moment holds Good; a sustained one becomes Not sure.
+    t = feed(c, "good", t, 10, rng)
+    assert c.status == GOOD
+    t, _ = feed_fn(c, odd, t, 2, rng)
+    assert c.status == GOOD
+    t, seen = feed_fn(c, odd, t, 4, rng)
+    assert c.status == NOT_SURE and set(seen) <= {GOOD, NOT_SURE}
+    assert c.snapshot()["session"]["seconds"][NOT_SURE] > 0
+
+
+def test_familiar_postures_are_rarely_flagged(tmp_path):
+    rng = np.random.default_rng(13)
+    c, _t = calibrated_coach(tmp_path, rng)
+    c.train_model()
+    labelled = [(p, raw_features(pose(p, rng))) for p in POSTURES for _ in range(50)]
+    from posture.classifier import evaluate
+
+    rep = evaluate(c.model, labelled)
+    assert rep["unfamiliar_fraction"] < 0.05
+    assert evaluate(c.model, [("good", raw_features(odd(rng))) for _ in range(20)])["unfamiliar_fraction"] > 0.9
