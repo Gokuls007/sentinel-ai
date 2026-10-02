@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Webcam, Users, Crosshair, Gauge } from 'lucide-react';
 import DashboardPanel from '../components/DashboardPanel';
@@ -8,78 +8,14 @@ import ZoneEditor from '../components/ZoneEditor';
 import ErgonomicsPanel from '../components/ErgonomicsPanel';
 import { useFeed } from '../context/liveFeed';
 import {
-  BACKEND_START_HINT, describeError, fetchJson, formatDuration, isOfflineError, loadStored, postJson, saveStored, useNow, wsUrl,
+  BACKEND_START_HINT, describeError, formatDuration, isOfflineError, postJson, saveStored, useNow,
 } from '../lib/api';
-import { connectFeed } from '../lib/feedSocket';
+import {
+  INDEX_KEY, LAPTOP, storedCameraIndex, useCameraControl, useLaptopCamera, useLaptopFrames,
+} from '../lib/laptopCamera';
 import { inputClass, labelClass } from '../lib/ui';
 
-const LAPTOP = 'laptop';
-const INDEX_KEY = 'sentinel.camera.index';
 const INDEX_OPTIONS = [0, 1, 2, 3];
-const TRANSITIONAL = new Set(['starting', 'stopping']);
-
-/**
- * Poll /api/cameras for the laptop entry: every 1 s while starting/stopping,
- * every 3 s otherwise. `apply(info)` shows a POST result immediately and
- * restarts the loop (aborting any in-flight, now stale, request).
- */
-function useLaptopCamera() {
-  const [state, setState] = useState({ cam: null, error: null, loaded: false });
-  const [restart, setRestart] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer = null;
-    let controller = null;
-    const tick = async () => {
-      controller = new AbortController();
-      let delay = 3000;
-      try {
-        const cams = await fetchJson('/api/cameras', { signal: controller.signal });
-        const cam = Array.isArray(cams) ? cams.find((c) => c.id === LAPTOP) || null : null;
-        if (cancelled) return;
-        setState({ cam, error: null, loaded: true });
-        if (cam && TRANSITIONAL.has(cam.status)) delay = 1000;
-      } catch (err) {
-        if (cancelled || err.name === 'AbortError') return;
-        setState({ cam: null, error: err, loaded: true });
-      }
-      if (!cancelled) timer = setTimeout(tick, delay);
-    };
-    tick();
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      controller?.abort();
-    };
-  }, [restart]);
-
-  const apply = (info) => {
-    if (info && info.id === LAPTOP) setState((prev) => ({ ...prev, cam: { ...prev.cam, ...info }, error: null }));
-    setRestart((n) => n + 1);
-  };
-  return { ...state, apply };
-}
-
-/** Frames from `/ws/feed?camera=laptop`, local to the component that renders them. */
-function useLaptopFrames() {
-  const [state, setState] = useState({ status: 'connecting', frame: null, frameData: null });
-  useEffect(
-    () =>
-      connectFeed(wsUrl(LAPTOP), {
-        onStatus: (status) => setState((prev) => ({ ...prev, status })),
-        onClose: () => setState((prev) => ({ ...prev, frame: null, frameData: null })),
-        onMessage: (msg) => {
-          // Alerts arrive through the shared provider already; only frames matter here.
-          if (msg.type === 'frame') {
-            setState((prev) => ({ ...prev, frame: msg.image || prev.frame, frameData: msg.data || null }));
-          }
-        },
-      }),
-    [],
-  );
-  return state;
-}
 
 // --- Pieces ------------------------------------------------------------------------------
 
@@ -228,13 +164,11 @@ const CameraFeed = ({ cam }) => {
 const CameraPage = () => {
   const id = useId();
   const { alerts, connected } = useFeed();
-  const { cam, error: pollError, loaded, apply } = useLaptopCamera();
-  const [index, setIndex] = useState(() => {
-    const v = Number(loadStored(INDEX_KEY, 0));
-    return INDEX_OPTIONS.includes(v) ? v : 0;
-  });
-  const [busy, setBusy] = useState(null); // 'start' | 'stop' | null
-  const [actionError, setActionError] = useState(null);
+  const camState = useLaptopCamera();
+  const { cam, error: pollError, loaded, apply } = camState;
+  const [index, setIndex] = useState(storedCameraIndex);
+  const control = useCameraControl(camState); // also auto-starts after the first manual start
+  const { busy, error: actionError } = control;
 
   const laptopAlerts = useMemo(() => alerts.filter((a) => a.camera_id === LAPTOP), [alerts]);
   const status = cam?.status || 'stopped';
@@ -244,21 +178,7 @@ const CameraPage = () => {
     saveStored(INDEX_KEY, v);
   };
 
-  const run = async (kind) => {
-    setBusy(kind);
-    setActionError(null);
-    try {
-      const info = kind === 'start'
-        ? await postJson(`/api/cameras/${LAPTOP}/start`, { index })
-        : await postJson(`/api/cameras/${LAPTOP}/stop`, {});
-      apply(info);
-    } catch (err) {
-      setActionError(err);
-      apply(null);
-    } finally {
-      setBusy(null);
-    }
-  };
+  const run = (kind) => (kind === 'start' ? control.start(index) : control.stop());
 
   const actionMessage = (() => {
     if (!actionError) return null;

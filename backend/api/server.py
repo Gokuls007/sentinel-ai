@@ -84,6 +84,7 @@ def start_pipeline(cfg: SentinelConfig) -> SentinelPipeline:
     _configure_cors(cfg.cors_origins)
     pipeline = SentinelPipeline(cfg)
     _attach(pipeline, primary=True)
+    _apply_app_settings(pipeline, _load_app_settings())
     thread = threading.Thread(target=pipeline.run, daemon=True, name="sentinel-pipeline")
     thread.start()
     logger.info("Sentinel Pipeline started in background thread.")
@@ -278,6 +279,7 @@ def _run_camera(camera_id: str, cfg: SentinelConfig) -> None:
     try:
         p = SentinelPipeline(cfg)  # loads the models: a few seconds
         _attach(p, primary=False)
+        p.mode = _load_app_settings()["mode"]
         with _cameras_lock:
             stopped_meanwhile = _camera_state.get(camera_id, {}).get("status") != "starting"
             if not stopped_meanwhile:
@@ -494,6 +496,120 @@ def get_event(event_id: int):
     if event is None:
         raise HTTPException(status_code=404, detail="Event not found")
     return _event_json(event)
+
+
+# --- App settings: mode and demo footage ------------------------------------------------------
+
+APP_MODES = ("posture", "warehouse", "exam")
+APP_DEFAULTS = {"mode": "warehouse", "demo_footage": False}
+
+
+def _app_settings_path() -> Path:
+    db_path = config.output.db_path if config else "data/events.db"
+    return Path(db_path).resolve().parent / "app_settings.json"
+
+
+def _load_app_settings() -> dict:
+    try:
+        data = json.loads(_app_settings_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    out = {**APP_DEFAULTS, **{k: v for k, v in data.items() if k in APP_DEFAULTS}}
+    if out["mode"] not in APP_MODES:
+        out["mode"] = APP_DEFAULTS["mode"]
+    out["demo_footage"] = bool(out["demo_footage"])
+    return out
+
+
+def _apply_app_settings(primary, settings: dict) -> None:
+    """Mode on every running pipeline; the demo (primary) pipeline paused unless demo footage is on."""
+    with _cameras_lock:
+        pipelines = [p for p in (primary, *_cameras.values()) if p is not None]
+    for p in pipelines:
+        p.mode = settings["mode"]
+    if primary is not None and hasattr(primary, "paused"):
+        primary.paused = not settings["demo_footage"]
+
+
+class AppSettingsIn(BaseModel):
+    mode: str | None = Field(None, pattern=r"^(posture|warehouse|exam)$")
+    demo_footage: bool | None = None
+
+
+@app.get("/api/app")
+def get_app_settings():
+    """The app mode (posture | warehouse | exam) and whether the demo footage runs."""
+    return _load_app_settings()
+
+
+@app.put("/api/app")
+def put_app_settings(body: AppSettingsIn, request: Request):
+    """Switch mode and/or demo footage. Takes effect on the next frame and is remembered."""
+    _check_camera_control(request)  # this computer only, JSON body
+    settings = _load_app_settings()
+    if body.mode is not None:
+        settings["mode"] = body.mode
+    if body.demo_footage is not None:
+        settings["demo_footage"] = body.demo_footage
+    path = _app_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    _apply_app_settings(pipeline, settings)
+    logger.info("app settings: %s", settings)
+    return settings
+
+
+# --- Desk posture coach -----------------------------------------------------------------------
+
+def _posture_pipeline(camera: str | None):
+    """The laptop camera when it runs (the coach is for the person at this computer), else the
+    primary pipeline."""
+    if camera:
+        return _pipeline_for(camera)
+    with _cameras_lock:
+        p = _cameras.get(LAPTOP_CAMERA)
+    return p or _require_pipeline()
+
+
+@app.get("/api/posture")
+def get_posture(camera: str | None = None):
+    """The coach's current status, session totals and the session timeline (10 s buckets)."""
+    p = _posture_pipeline(camera)
+    return to_serializable({**p.posture.snapshot(), "timeline": p.posture.timeline(), "mode": p.mode})
+
+
+@app.post("/api/posture/baseline")
+def start_posture_baseline(request: Request, camera: str | None = None):
+    """Start recording the upright baseline (about 3 s; sit upright facing the camera)."""
+    _check_camera_control(request)
+    p = _posture_pipeline(camera)
+    p.posture.start_baseline(now=p.posture._last_ts)
+    return to_serializable(p.posture.snapshot())
+
+
+@app.delete("/api/posture/baseline")
+def clear_posture_baseline(request: Request, camera: str | None = None):
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "posture control")
+    p = _posture_pipeline(camera)
+    p.posture.clear_baseline()
+    return to_serializable(p.posture.snapshot())
+
+
+@app.post("/api/posture/session/reset")
+def reset_posture_session(request: Request, camera: str | None = None):
+    _check_camera_control(request)
+    p = _posture_pipeline(camera)
+    p.posture.reset_session()
+    return to_serializable({**p.posture.snapshot(), "timeline": []})
+
+
+@app.post("/api/posture/reminder")
+def note_posture_reminder(request: Request, camera: str | None = None):
+    """The dashboard showed a reminder (counted in the session summary)."""
+    _check_camera_control(request)
+    p = _posture_pipeline(camera)
+    p.posture.note_reminder()
+    return {"reminders": p.posture.session.reminders}
 
 
 @app.get("/api/meta")

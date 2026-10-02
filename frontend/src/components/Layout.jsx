@@ -1,21 +1,71 @@
 import { Suspense, useEffect, useState } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { Shield, Video, Webcam, ListVideo, Search, ScrollText, ChartColumn, Settings } from 'lucide-react';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import {
+  Shield, Video, ListVideo, Search, ScrollText, ChartColumn, Settings, PersonStanding, GraduationCap,
+} from 'lucide-react';
+import { MODES, useAppMode } from '../context/appMode';
 import StatusBadge from './StatusBadge';
 import EmptyState from './EmptyState';
 import PageErrorBoundary from './PageErrorBoundary';
 import { useFeed } from '../context/liveFeed';
 import { loadStored, saveStored, usePoll } from '../lib/api';
 
-const NAV = [
-  { to: '/', label: 'Live', title: 'Live Observation', icon: Video, end: true },
-  { to: '/camera', label: 'My Camera', title: 'My Camera', icon: Webcam, cameraDot: true },
-  { to: '/events', label: 'Events', title: 'Event Log', icon: ListVideo, badge: true },
-  { to: '/search', label: 'Search', title: 'Search', icon: Search },
-  { to: '/rules', label: 'Rules', title: 'Safety Rules', icon: ScrollText },
-  { to: '/analytics', label: 'Analytics', title: 'Analytics', icon: ChartColumn },
-  { to: '/settings', label: 'Settings', title: 'Settings', icon: Settings },
+const SETTINGS = { to: '/settings', label: 'Settings', title: 'Settings', icon: Settings };
+// Each mode shows only its own pages.
+const NAV_BY_MODE = {
+  posture: [
+    { to: '/coach', label: 'Posture Coach', title: 'Desk Posture Coach', icon: PersonStanding, cameraDot: true },
+    SETTINGS,
+  ],
+  warehouse: [
+    { to: '/', label: 'Live', title: 'Live', icon: Video, end: true, cameraDot: true },
+    { to: '/events', label: 'Events', title: 'Event Log', icon: ListVideo, badge: true },
+    { to: '/search', label: 'Search', title: 'Search', icon: Search },
+    { to: '/rules', label: 'Rules', title: 'Safety Rules', icon: ScrollText },
+    { to: '/analytics', label: 'Analytics', title: 'Analytics', icon: ChartColumn },
+    SETTINGS,
+  ],
+  exam: [
+    { to: '/exam', label: 'Exam Hall', title: 'Exam Hall', icon: GraduationCap },
+    SETTINGS,
+  ],
+};
+// Pages reachable by URL but not in the current mode's sidebar still get a title.
+const EXTRA_TITLES = [
+  { to: '/camera', label: 'My Camera', title: 'My Camera' },
+  { to: '/demo', label: 'Demo footage', title: 'Demo footage' },
+  ...Object.values(NAV_BY_MODE).flat(),
 ];
+
+const ModeSwitcher = () => {
+  const { mode, setMode } = useAppMode();
+  const navigate = useNavigate();
+  const choose = (id) => {
+    if (id === mode) return;
+    setMode(id);
+    navigate('/');
+  };
+  return (
+    <div role="radiogroup" aria-label="Mode" className="flex border border-cyan-500/30 bg-black/40">
+      {MODES.map((m) => (
+        <button
+          key={m.id}
+          type="button"
+          role="radio"
+          aria-checked={mode === m.id}
+          onClick={() => choose(m.id)}
+          title={m.label}
+          className={`px-2.5 sm:px-3 py-1.5 text-[10px] mono uppercase font-bold tracking-wider outline-none focus-visible:ring-1 focus-visible:ring-cyan-400 transition-colors ${
+            mode === m.id ? 'bg-cyan-400 text-black' : 'text-white/50 hover:text-cyan-300'
+          }`}
+        >
+          <span className="hidden md:inline">{m.label}</span>
+          <span className="md:hidden">{m.short}</span>
+        </button>
+      ))}
+    </div>
+  );
+};
 
 const LAST_SEEN_KEY = 'sentinel.events.lastSeen';
 
@@ -42,7 +92,7 @@ function useUnseenAlerts(onEvents) {
   return n;
 }
 
-const Sidebar = ({ unseen, cameraOn }) => (
+const Sidebar = ({ nav, unseen, cameraOn }) => (
   <nav aria-label="Main" className="flex-none w-14 lg:w-52 flex flex-col border-r border-cyan-500/10 bg-black/40 backdrop-blur-md">
     <div className="flex items-center gap-3 px-3 lg:px-4 py-4 border-b border-cyan-500/10">
       <div className="relative group flex-none">
@@ -57,7 +107,7 @@ const Sidebar = ({ unseen, cameraOn }) => (
       </div>
     </div>
     <ul className="flex-1 py-3 space-y-1">
-      {NAV.map(({ to, label, icon, end, badge, cameraDot }) => {
+      {nav.map(({ to, label, icon, end, badge, cameraDot }) => {
         const Icon = icon;
         return (
           <li key={to}>
@@ -105,21 +155,31 @@ const Layout = () => {
   // "Camera on" dot for My Camera: the webcam keeps running when you leave that page.
   const { data: cams } = usePoll('/api/cameras', 5000, connected);
   const cameraOn = Array.isArray(cams) && cams.some((c) => c.id === 'laptop' && c.status === 'running');
-  const current = NAV.find((n) => (n.end ? pathname === n.to : pathname.startsWith(n.to))) || null;
+  const { mode, demoFootage } = useAppMode();
+  const nav = NAV_BY_MODE[mode] || NAV_BY_MODE.warehouse;
+  const match = (n) => (n.end || n.to === '/' ? pathname === n.to : pathname.startsWith(n.to));
+  const found = nav.find(match) || EXTRA_TITLES.find(match) || null;
+  const current = found && found.to === '/' && mode === 'warehouse'
+    ? { ...found, title: demoFootage ? 'Live: demo footage' : 'Live: your webcam' }
+    : found;
 
+  const pageLabel = current?.label;
   useEffect(() => {
-    document.title = current ? `Sentinel AI - ${current.label}` : 'Sentinel AI';
-  }, [current]);
+    document.title = pageLabel ? `Sentinel AI - ${pageLabel}` : 'Sentinel AI';
+  }, [pageLabel]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#0A0A0F] text-white selection:bg-cyan-500/30 font-outfit">
-      <Sidebar unseen={unseen} cameraOn={cameraOn} />
+      <Sidebar nav={nav} unseen={unseen} cameraOn={cameraOn} />
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="flex-none flex items-center justify-between px-4 py-3 border-b border-cyan-500/10">
+        <header className="flex-none flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-cyan-500/10">
           <h1 className="text-base font-bold tracking-[0.35em] text-cyan-400 uppercase leading-none small-caps">
             {current?.title || 'Not found'}
           </h1>
-          <StatusBadge />
+          <div className="flex items-center gap-3">
+            <ModeSwitcher />
+            <StatusBadge />
+          </div>
         </header>
         <main className="flex-1 min-h-0 overflow-y-auto p-4">
           <PageErrorBoundary key={pathname}>

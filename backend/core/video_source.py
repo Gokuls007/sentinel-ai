@@ -45,6 +45,7 @@ class VideoSource:
         self.capture_thread: threading.Thread | None = None
         self.cap: cv2.VideoCapture | None = None
         self.recorder = None  # optional core.recorder.Recorder fed every captured frame
+        self.paused = False  # set by the pipeline when demo footage is switched off
 
         # Stats
         self.frames_read = 0
@@ -140,6 +141,9 @@ class VideoSource:
         frame_index = 0
 
         while not self.stop_event.is_set():
+            if self.paused:  # don't decode frames nobody will process
+                self.stop_event.wait(0.1)
+                continue
             if self.cap is None or not self.cap.isOpened():
                 logger.info("Reconnecting to source in %.0fs...", self.reconnect_delay)
                 if self.stop_event.wait(self.reconnect_delay):

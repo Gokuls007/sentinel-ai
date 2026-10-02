@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from config.settings import SentinelConfig
 from events import Event, EventBus, EventStore
 from notifications import NotificationDispatcher, build_notifiers
 from output.clip_recorder import ClipRecorder
+from posture import PostureCoach
 
 from .detector import Detector, FrameDetections
 from .pose_estimator import PoseEstimator, PoseResult
@@ -38,6 +40,8 @@ class FrameResult:
     timings_ms: dict[str, float] = field(default_factory=dict)
     events: list = field(default_factory=list)  # the Event published for each alert
     ergonomics: dict = field(default_factory=dict)  # track_id -> current REBA (TrackErgo.as_dict)
+    posture: dict | None = None  # desk posture coach snapshot (posture mode)
+    mode: str = "warehouse"
 
     def to_dict(self) -> dict:
         data = {
@@ -54,6 +58,8 @@ class FrameResult:
             },
             "timings_ms": self.timings_ms,
             "ergonomics": {str(k): v for k, v in self.ergonomics.items()},
+            "posture": self.posture,
+            "mode": self.mode,
         }
         # The JPEG is sent once, as the top-level "image" field of the WebSocket message.
         return to_serializable(data)
@@ -115,6 +121,12 @@ class SentinelPipeline:
         )
         self.event_bus.subscribe("notifications", self.notifier.handle)
 
+        # App mode (warehouse | posture | exam), switched live by the server.
+        self.mode = getattr(config, "mode", "warehouse")
+        data_dir = os.path.dirname(os.path.abspath(config.output.db_path))
+        self.posture = PostureCoach(baseline_path=os.path.join(data_dir, f"posture_baseline_{config.camera_id}.json"))
+        self.paused = False  # demo footage off: the loop idles without reading frames
+
         logger.info("Pipeline initialized successfully")
 
     def on_frame(self, callback: Callable):
@@ -143,18 +155,33 @@ class SentinelPipeline:
         poses = self.pose_estimator.estimate(frame, track_ids, bboxes, timestamp)
         lap("pose")
 
-        # 3. Analytics (fall, zones, loitering)
+        # 3. Analytics. The mode decides what runs: warehouse = falls, zones, loitering,
+        #    ergonomics; posture = the desk posture coach only (no alerts); exam = nothing yet.
         all_features = self.pose_estimator.get_all_features()
-        recovered = self._recover_fallen(frame, poses, all_features, timestamp)
-        alerts = self.anomaly_engine.process(poses, all_features, timestamp, recovered=recovered)
+        posture = None
+        if self.mode == "warehouse":
+            recovered = self._recover_fallen(frame, poses, all_features, timestamp)
+            alerts = self.anomaly_engine.process(poses, all_features, timestamp, recovered=recovered)
+            timings["ergonomics"] = self.anomaly_engine.last_ergo_ms  # included in "analytics"
+            ergonomics = self.anomaly_engine.ergonomics_snapshot
+            self._persist_ergo_time(timestamp)
+        else:
+            alerts, ergonomics = [], {}
+            if self.mode == "posture":
+                main = max(poses.values(), key=lambda p: float((p.bbox[2] - p.bbox[0]) * (p.bbox[3] - p.bbox[1])),
+                           default=None)
+                self.posture.update(main.keypoints if main is not None else None, timestamp)
+                posture = self.posture.snapshot()
         lap("analytics")
-        timings["ergonomics"] = self.anomaly_engine.last_ergo_ms  # included in "analytics"
-        ergonomics = self.anomaly_engine.ergonomics_snapshot
-        self._persist_ergo_time(timestamp)
 
         # 4. Annotation (clips and snapshots use the annotated frame)
-        annotated_frame = self._annotate_frame(frame.copy(), detections, poses, alerts)
-        self._draw_ergo_badges(annotated_frame, detections, ergonomics)
+        if self.mode == "warehouse":
+            annotated_frame = self._annotate_frame(frame.copy(), detections, poses, alerts)
+            self._draw_ergo_badges(annotated_frame, detections, ergonomics)
+        else:
+            annotated_frame = frame.copy()
+            for pose in poses.values():
+                self._draw_skeleton(annotated_frame, pose)
         lap("annotate")
 
         # 5. Events: clip + snapshot, then publish (store -> notifications -> WebSocket)
@@ -191,6 +218,8 @@ class SentinelPipeline:
             timings_ms=timings,
             events=events,
             ergonomics=ergonomics,
+            posture=posture,
+            mode=self.mode,
         )
 
         # 6. Streaming (JPEG encode + serialise for the dashboard), timed separately
@@ -336,6 +365,11 @@ class SentinelPipeline:
         clip_fps_set = False
         try:
             while self.video_source.is_running:
+                if self.paused:
+                    self.video_source.paused = True
+                    time.sleep(0.1)
+                    continue
+                self.video_source.paused = False
                 result = self.video_source.read()
                 if result is None:
                     time.sleep(0.005)
