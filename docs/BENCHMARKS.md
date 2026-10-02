@@ -69,36 +69,38 @@ This footage totals 3.2 minutes. That is far too little for a real field false-a
 ## Fall confirmation time sweep
 
 <!-- benchmark:fall-sweep:start -->
-_Measured 2026-10-01 with `python training/sweep_fall_confirm.py` on cuda._ The confirmation time is how long a person must lie still on the ground before the alert. The current default is **1 s**. Detection and pose ran once per video, and only the fall state machine was replayed at each setting. The "gave up" timeout is at least confirmation + 2 s.
+_Measured 2026-10-02 with `python training/sweep_fall_confirm.py` on cuda._ The confirmation time is how long a person must lie still on the ground before the alert. The current default is **1 s**. Detection and pose ran once per video, and only the fall state machine was replayed at each setting. The "gave up" timeout is at least confirmation + 2 s.
 
 No-fall footage: **8.1 min** (URFD ADL 5.0 min, sample clips 3.2 min).
 
-| Confirmation time | URFD recall (confirmed alerts) | Confirmable on URFD | Confirmable but missed (why) | False alarms / hour (no-fall footage) | False alarms (count) |
-|---|---|---|---|---|---|
-| 0.5 s | 3 / 30 (10%) | 23 / 30 | 15 lost from view, 3 left the ground state, 2 not still long enough | 14.8 | 2 |
-| 1 s (default) | 0 / 30 (0%) | 14 / 30 | 7 lost from view, 4 not still long enough, 3 left the ground state | 7.4 | 1 |
-| 2 s | 0 / 30 (0%) | 2 / 30 | 1 lost from view, 1 not still long enough | 0.0 | 0 |
-| 3 s | 0 / 30 (0%) | 0 / 30 | none | 0.0 | 0 |
-| 5 s | 0 / 30 (0%) | 0 / 30 | none | 0.0 | 0 |
+Two alert levels: a **possible fall** (yellow, dashboard only) when the person reaches the ground, and a **confirmed fall** (red, notifies) after the stillness check.
+
+| Confirmation time | Confirmed recall | Confirmed false alarms / h (count) | Possible recall | Possible false alarms / h (count) | Confirmable on URFD | Confirmable but missed (why) |
+|---|---|---|---|---|---|---|
+| 0.5 s | 3 / 30 (10%) | 14.8 (2) | 25 / 30 (83%) | 81.3 (11) | 23 / 30 | 15 lost from view, 3 left the ground state, 2 not still long enough |
+| 1 s (default) | 0 / 30 (0%) | 7.4 (1) | 25 / 30 (83%) | 81.3 (11) | 14 / 30 | 7 lost from view, 4 not still long enough, 3 left the ground state |
+| 2 s | 0 / 30 (0%) | 0.0 (0) | 25 / 30 (83%) | 81.3 (11) | 2 / 30 | 1 lost from view, 1 not still long enough |
+| 3 s | 0 / 30 (0%) | 0.0 (0) | 25 / 30 (83%) | 81.3 (11) | 0 / 30 | none |
+| 5 s | 0 / 30 (0%) | 0.0 (0) | 25 / 30 (83%) | 81.3 (11) | 0 / 30 | none |
 
 **"On the ground" stage recall** (reached FALLEN, the step before confirmation; it is the same at every setting): **25 / 30 (83%)** of URFD falls. 11 of 42 no-fall videos also reached that stage without confirming.
 
 **Fixes for losing the person on the floor**, each alone, at the default 1 s confirmation. These are replayed from the same pose cache. The region-local and rotated retries were run once per missing person and are used only where production would use them (falling or on the ground, within 3 s of the fall). The retry threshold is 0.15; normal is the pose model's threshold.
 
-| Fix | URFD catches | Lost from view (of falls reaching the ground) | Reached the ground | False alarms (no-fall footage) | False alarms / hour |
+| Fix | Confirmed catches | Confirmed false alarms (/ h) | Possible catches | Possible false alarms (/ h) | Lost from view (of falls reaching the ground) |
 |---|---|---|---|---|---|
-| Baseline (no fixes) | 0 / 30 | 16 / 25 | 25 / 30 | 1 | 7.4 |
-| 1. Hold lost track 5 s (last seen lying) | 6 / 30 | 17 / 26 | 26 / 30 | 4 (+3) | 29.6 |
-| 2. Region-local low threshold, as pose | 0 / 30 | 13 / 27 | 27 / 30 | 1 | 7.4 |
-| 2. Region-local low threshold, as presence | 0 / 30 | 10 / 26 | 26 / 30 | 1 | 7.4 |
-| 3. Rotated fallback, as pose | 0 / 30 | 7 / 27 | 27 / 30 | 1 | 7.4 |
-| 3. Rotated fallback, as presence | 5 / 30 | 5 / 26 | 26 / 30 | 1 | 7.4 |
-| 4. Ground-state hysteresis 0.5 s | 0 / 30 | 16 / 25 | 25 / 30 | 1 | 7.4 |
-| 2 + 3 + 4, as pose (no hold) | 0 / 30 | 0 / 27 | 27 / 30 | 1 | 7.4 |
-| 3 + 4, as presence (no hold) | 5 / 30 | 3 / 26 | 26 / 30 | 1 | 7.4 |
-| 2 + 3 + 4, as presence (no hold) | 3 / 30 | 0 / 26 | 26 / 30 | 2 (+1) | 14.8 |
-| All four, as pose | 0 / 30 | 0 / 27 | 27 / 30 | 8 (+7) | 59.1 |
-| All four, as presence | 3 / 30 | 0 / 26 | 26 / 30 | 4 (+3) | 29.6 |
+| Baseline (no fixes) | 0 / 30 | 1 (7.4) | 25 / 30 | 11 (81.3) | 16 / 25 |
+| 1. Hold lost track 5 s (last seen lying) | 6 / 30 | 4 +3 (29.6) | 26 / 30 | 11 (81.3) | 17 / 26 |
+| 2. Region-local low threshold, as pose | 0 / 30 | 1 (7.4) | 27 / 30 | 14 (103.5) | 13 / 27 |
+| 2. Region-local low threshold, as presence | 0 / 30 | 1 (7.4) | 26 / 30 | 12 (88.7) | 10 / 26 |
+| 3. Rotated fallback, as pose | 0 / 30 | 1 (7.4) | 27 / 30 | 19 (140.4) | 7 / 27 |
+| 3. Rotated fallback, as presence | 5 / 30 | 1 (7.4) | 26 / 30 | 12 (88.7) | 5 / 26 |
+| 4. Ground-state hysteresis 0.5 s | 0 / 30 | 1 (7.4) | 25 / 30 | 11 (81.3) | 16 / 25 |
+| 2 + 3 + 4, as pose (no hold) | 0 / 30 | 1 (7.4) | 27 / 30 | 15 (110.9) | 0 / 27 |
+| 3 + 4, as presence (no hold) | 5 / 30 | 1 (7.4) | 26 / 30 | 12 (88.7) | 3 / 26 |
+| 2 + 3 + 4, as presence (no hold) | 3 / 30 | 2 +1 (14.8) | 26 / 30 | 12 (88.7) | 0 / 26 |
+| All four, as pose | 0 / 30 | 8 +7 (59.1) | 27 / 30 | 15 (110.9) | 0 / 27 |
+| All four, as presence | 3 / 30 | 4 +3 (29.6) | 26 / 30 | 12 (88.7) | 0 / 26 |
 
 *Lost from view*: the person's pose (tracked or recovered) was missing in most frames after reaching the ground. Fix 1 doesn't find the person; it keeps the fall alive while they are missing, so it raises catches without lowering this count.
 
@@ -111,6 +113,24 @@ How to read it:
 - "Confirmable but missed": the clip had enough video after reaching the ground, but no alert. *Lost from view*: the person's pose was missing in most later frames. *Left the ground state*: the pose looked upright again, or the wait timed out. *Not still long enough*: the person kept moving on the ground.
 - The false-alarm rate rests on only a few minutes of no-fall video. Treat the rows as a comparison between settings, not a field rate.
 - Your own recordings (`data/recordings/`) are added automatically when this is re-run.
+
+### Held-out test: CAUCAFall
+
+CAUCAFall (CC BY 4.0) has 50 falls (5 types x 10 subjects) and 50 daily activities, including sitting down and kneeling: 8.6 min of no-fall video. Fall onset is the first frame labelled "fall". It was **not used** to design or tune any rule. Only the baseline and the candidate frozen beforehand are reported, at the default 1 s, run once.
+
+| Setting | Confirmed recall | Confirmed false alarms / h (count) | Possible recall | Possible false alarms / h (count) | Lost from view |
+|---|---|---|---|---|---|
+| Baseline (no fixes) | 7 / 50 (14%) | 28.0 (4) | 21 / 50 (42%) | 63.0 (9) | 5 / 21 |
+| Candidate: rotated retry + hysteresis 0.5 s, as presence | 12 / 50 (24%) | 35.0 (5) | 22 / 50 (44%) | 70.0 (10) | 5 / 22 |
+
+False alarms by daily activity (confirmed / possible):
+
+| Setting | Hop | Kneel | Pick up object | Sit down | Walk |
+|---|---|---|---|---|---|
+| Baseline (no fixes) | 0 / 0 | 0 / 1 | 3 / 5 | 1 / 2 | 0 / 1 |
+| Candidate: rotated retry + hysteresis 0.5 s, as presence | 0 / 0 | 0 / 1 | 4 / 5 | 1 / 3 | 0 / 1 |
+
+Any further tuning will split CAUCAFall by video into a tuning half and a test half, and report test-half numbers only.
 <!-- benchmark:fall-sweep:end -->
 
 ## Fall detection accuracy (UR Fall Detection dataset)
