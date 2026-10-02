@@ -42,6 +42,7 @@ class AnomalyAlert:
 class AnomalyEngine:
     SEVERITY_MAP: ClassVar[dict[str, str]] = {
         "fall": "critical",
+        "possible_fall": "medium",
         "zone_intrusion": "high",
         "time_exceeded": "medium",
         "wrong_direction": "medium",
@@ -184,6 +185,16 @@ class AnomalyEngine:
                     ))
                     
         self.last_ergo_ms = ergo_ms
+        # Two-level fall alerts: the early "possible fall" (reached the ground) for the dashboard.
+        for event in self.fall_detector.drain_possible():
+            alerts.append(self._create_alert(
+                alert_type="possible_fall",
+                track_id=event.track_id,
+                timestamp=event.timestamp,
+                confidence=event.confidence,
+                message="Possible fall: person went down, checking whether they stay down",
+                details={**event.signals, "peak_descent_speed": event.velocity},
+            ))
         return alerts
 
     @property

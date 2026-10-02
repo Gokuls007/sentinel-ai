@@ -1,7 +1,7 @@
 """Rule-based fall detection: a per-person state machine over pose signals.
 
-    UPRIGHT --rapid descent--> FALLING --lying / head low--> FALLEN
-    FALLEN --still for stillness_seconds--> CONFIRMED  (one alert is raised here)
+    UPRIGHT --rapid descent--> FALLING --lying / head low--> FALLEN  ("possible fall" here)
+    FALLEN --still for stillness_seconds--> CONFIRMED  ("confirmed fall" alert here)
     FALLING/FALLEN --stands up or times out--> UPRIGHT
     CONFIRMED --stands up--> UPRIGHT
 
@@ -22,7 +22,7 @@ class FallEvent:
     track_id: int
     timestamp: float
     confidence: float
-    stage: str  # "confirmed"
+    stage: str  # "possible" (reached the ground) | "confirmed" (stayed down, still)
     signals: dict[str, float]
     head_y: float
     hip_y: float
@@ -41,6 +41,7 @@ class _TrackState:
     still_since: float | None = None
     peak_descent: float = 0.0
     last_alert_time: float = field(default=-1e18)
+    last_possible_time: float = field(default=-1e18)
     hip_history: deque = field(default_factory=deque)  # (timestamp, hip_y) for stillness
     last_seen: float | None = None  # when check() last had a pose for this track
     last_pose: PoseResult | None = None
@@ -59,6 +60,7 @@ class FallDetector:
     LYING_TORSO_DEG = 60.0  # torso this far from vertical = lying
     TILTED_TORSO_DEG = 35.0  # a wide box counts as lying only with the torso at least this tilted
     STILLNESS_WINDOW_S = 0.5
+    POSSIBLE_COOLDOWN_S = 10.0  # at most one "possible fall" per person per 10 s
 
     def __init__(self, descent_speed_threshold: float = 1.2, aspect_ratio_threshold: float = 1.2,
                  head_drop_ratio: float = 0.5, stillness_seconds: float = 1.0,
@@ -79,6 +81,7 @@ class FallDetector:
         self.fallen_timeout_seconds = fallen_timeout_seconds
         self.cooldown_seconds = cooldown_seconds
         self.tracks: dict[int, _TrackState] = {}
+        self.possible_events: list[FallEvent] = []  # drained by drain_possible()
 
     # -- public API ---------------------------------------------------------------------
 
@@ -114,9 +117,7 @@ class FallDetector:
             on_ground = signals["horizontal_pose"] and (
                 signals["head_dropped"] or not signals["head_known"])
             if on_ground:
-                st.state = self.FALLEN
-                st.fallen_since = timestamp
-                st.still_since = None
+                self._enter_fallen(st, track_id, timestamp, signals, pose)
             elif timestamp - st.falling_since > self.FALLING_WINDOW_S:
                 st.state = self.UPRIGHT  # e.g. sat down or crouched quickly
 
@@ -166,9 +167,7 @@ class FallDetector:
         if st.state == self.FALLING:
             if not (st.last_signals or {}).get("head_dropped"):
                 return None  # vanished mid-descent but not near the floor (e.g. left the frame)
-            st.state = self.FALLEN
-            st.fallen_since = timestamp
-            st.still_since = None
+            self._enter_fallen(st, track_id, timestamp, st.last_signals or {}, st.last_pose)
         if st.state != self.FALLEN:
             return None
         st.upright_since = None
@@ -182,6 +181,24 @@ class FallDetector:
             event.confidence = round(max(0.5, event.confidence - 0.1), 2)  # not seen at the moment
             return event
         return None
+
+    def drain_possible(self) -> list[FallEvent]:
+        """"Possible fall" events raised since the last call (stage "possible")."""
+        events, self.possible_events = self.possible_events, []
+        return events
+
+    def _enter_fallen(self, st: _TrackState, track_id: int, timestamp: float, signals, pose) -> None:
+        """FALLING -> FALLEN (the on-the-ground stage). Raises one "possible fall" event per
+        fall (at most one per ``POSSIBLE_COOLDOWN_S`` per person); confirmation comes later."""
+        st.state = self.FALLEN
+        st.fallen_since = timestamp
+        st.still_since = None
+        if pose is not None and timestamp - st.last_possible_time >= self.POSSIBLE_COOLDOWN_S:
+            st.last_possible_time = timestamp
+            event = self._make_event(track_id, timestamp, st, signals, pose)
+            event.stage = "possible"
+            event.confidence = round(min(event.confidence, 0.7), 2)
+            self.possible_events.append(event)
 
     def reset_track(self, track_id: int):
         self.tracks.pop(track_id, None)
@@ -282,9 +299,7 @@ class FallDetector:
         moved = float(np.hypot(*(centre - st.anchor))) / body_h > 0.5
         st.last_seen = timestamp
         if st.state == self.FALLING:
-            st.state = self.FALLEN
-            st.fallen_since = timestamp
-            st.still_since = None
+            self._enter_fallen(st, track_id, timestamp, st.last_signals or {}, st.last_pose or pose)
         if moved:
             st.anchor = centre
             st.still_since = None

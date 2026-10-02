@@ -279,3 +279,56 @@ def test_pose_mode_is_the_normal_check():
     events = [det.check_recovered(1, upper_body(shoulder_y=400, angle_deg=85, jitter=12.0, rng=rng), feat,
                                   t + i / FPS, mode="pose") for i in range(45)]
     assert not any(events)  # the same jitter: never still enough as a pose
+
+
+# --- two-level fall alerts ----------------------------------------------------------------------
+
+def test_reaching_the_ground_raises_one_possible_fall_then_the_confirmed_fall():
+    det = FallDetector()
+    rng = np.random.default_rng(12)
+    standing, falling, on_floor = fall_frames(rng, lying=60)
+    feat = calibrate(standing)
+    confirmed, _ = drive(det, feat, standing + falling + on_floor)
+    possible = det.drain_possible()
+    assert len(possible) == 1 and possible[0].stage == "possible"
+    assert len(confirmed) == 1 and confirmed[0].stage == "confirmed"
+    assert possible[0].timestamp < confirmed[0].timestamp
+    assert det.drain_possible() == []  # drained
+
+
+def test_possible_fall_without_confirmation_when_the_person_gets_up():
+    det = FallDetector()
+    rng = np.random.default_rng(13)
+    standing, falling, on_floor = fall_frames(rng, lying=6)
+    feat = calibrate(standing)
+    confirmed, _ = drive(det, feat, standing + falling + on_floor + [upper_body(jitter=1.0, rng=rng)] * 20)
+    assert confirmed == [] and len(det.drain_possible()) == 1
+
+
+def test_engine_emits_possible_fall_alert_and_dispatcher_keeps_it_off_telegram(tmp_config):
+    from anomaly.engine import AnomalyEngine
+    from events.schema import Event
+    from notifications.dispatcher import NotificationDispatcher
+
+    engine = AnomalyEngine(tmp_config)
+    rng = np.random.default_rng(14)
+    standing, falling, on_floor = fall_frames(rng, lying=60)
+    feat = calibrate(standing)
+    alerts, t = [], 0.0
+    for p in standing + falling + on_floor:
+        alerts += engine.process({1: p}, {1: feat}, t)
+        t += 1 / FPS
+    kinds = [(a.alert_type, a.severity) for a in alerts if "fall" in a.alert_type]
+    assert kinds == [("possible_fall", "medium"), ("fall", "critical")]
+
+    sent = []
+    notifier = SimpleNamespace(name="fake", send=lambda n: sent.append(n), close=lambda: None)
+    dispatcher = NotificationDispatcher([notifier], debounce_s=0, min_severity="low")
+    try:
+        possible = Event(type="possible_fall", severity="medium", start_ts=1.0, end_ts=1.0, track_id=1)
+        confirmed = Event(type="fall", severity="critical", start_ts=2.0, end_ts=2.0, track_id=1)
+        assert dispatcher.should_notify(possible) is False
+        assert dispatcher.should_notify(confirmed) is True
+        assert dispatcher.stats["dashboard_only"] == 1
+    finally:
+        dispatcher.close()

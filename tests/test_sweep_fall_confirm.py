@@ -90,3 +90,37 @@ def test_markdown_table_marks_the_default():
     md = sw.markdown(rows, 1.0, "cpu")
     assert md.startswith(sw.SECTION_START) and md.endswith(sw.SECTION_END)
     assert "| 1 s (default) |" in md and "| 0.5 s |" in md and "On the ground" in md
+
+
+def test_possible_level_counts_reaching_the_ground():
+    videos = [fall_clip(lying_frames=150), standing_clip()]
+    r = sw.score_setting(videos, FallDetectorConfig(), 1.0)
+    assert r["possible_tp"] == 1 and r["possible_recall"] == 1.0 and r["possible_false_alarms"] == 0
+    short = sw.score_setting([fall_clip(lying_frames=10)], FallDetectorConfig(), 1.0)
+    assert short["possible_tp"] == 1 and short["tp"] == 0  # warned, not (yet) confirmed
+
+
+def test_caucafall_labels_and_discovery(tmp_path, monkeypatch):
+    base = tmp_path / "caucafall" / "CAUCAFall"
+    for subject, activity, labels in (("Subject.1", "Fall forward", [0, 0, 1, 1, 0]),
+                                      ("Subject.1", "Kneel", [0, 0, 0])):
+        d = base / subject / activity
+        d.mkdir(parents=True)
+        (d / "clip.avi").write_bytes(b"")
+        (d / "labels.csv").write_text("frame,label\n" + "\n".join(f"{i},{v}" for i, v in enumerate(labels, 1)) + "\n",
+                                      encoding="utf-8")
+    monkeypatch.setattr(sw, "CAUCAFALL_DIR", str(tmp_path / "caucafall"))
+    found = sw.caucafall_videos()
+    assert [rel for _v, _l, rel in found] == ["Subject.1/Fall forward", "Subject.1/Kneel"]
+    assert sw.caucafall_onset(found[0][1]) == 3 and sw.caucafall_onset(found[1][1]) is None
+
+
+def test_heldout_table_reports_activity_breakdown():
+    adl = standing_clip(kind="caucafall_adl")
+    adl.name = "Subject.1/Kneel"
+    videos = [fall_clip(lying_frames=150), adl]
+    rows = [(label, sw.score_setting(videos, FallDetectorConfig(), 1.0, fixes=fx))
+            for label, fx in (("Baseline", sw.BASELINE), sw.CANDIDATE)]
+    lines = "\n".join(sw.markdown_heldout(rows, 1.0))
+    assert "Held-out test: CAUCAFall" in lines and "| Kneel |" in lines and "not used" in lines
+    assert sw.CANDIDATE[1] == sw.Fixes(0.0, False, True, 0.5, "presence")  # frozen

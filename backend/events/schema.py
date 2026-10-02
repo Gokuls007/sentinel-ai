@@ -16,6 +16,7 @@ SEVERITIES = ("low", "medium", "high", "critical")
 # are kept so existing dashboards and filters keep working; rule events are "rule:<rule_id>".
 EVENT_TYPES = (
     "fall",
+    "possible_fall",  # reached the ground, not yet confirmed: dashboard only, no notification
     "zone_intrusion",
     "time_exceeded",
     "wrong_direction",

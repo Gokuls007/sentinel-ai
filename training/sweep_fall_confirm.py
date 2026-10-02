@@ -98,6 +98,9 @@ FIX_VARIANTS = (
     ("All four, as pose", Fixes(5.0, True, True, 0.5)),
     ("All four, as presence", Fixes(5.0, True, True, 0.5, "presence")),
 )
+# Frozen 2026-10-02 after the URFD fix table, before CAUCAFall was opened.
+CANDIDATE = ("Candidate: rotated retry + hysteresis 0.5 s, as presence",
+             Fixes(0.0, False, True, 0.5, "presence"))
 RECOVERY_LOW_CONF = 0.15
 RECOVERY_WINDOW_S = 3.0
 CACHE_RECOVERY_S = 5.0  # cached retries cover this long after a track's last sighting
@@ -164,6 +167,30 @@ def cache_frames(models, frames_iter, name, kind, fps, onset_frame=None, resize=
     return out
 
 
+CAUCAFALL_DIR = os.path.join(ROOT, "data", "datasets", "caucafall")
+
+
+def caucafall_videos() -> list[tuple[str, str, str]]:
+    """(video path, labels.csv path, 'Subject.N/Activity') for every CAUCAFall video present."""
+    out = []
+    for dirpath, _dirs, files in os.walk(CAUCAFALL_DIR):
+        avis = [f for f in files if f.lower().endswith(".avi")]
+        if avis and "labels.csv" in files:
+            rel = "/".join(os.path.relpath(dirpath, CAUCAFALL_DIR).replace("\\", "/").split("/")[-2:])
+            out.append((os.path.join(dirpath, avis[0]), os.path.join(dirpath, "labels.csv"), rel))
+    return sorted(out, key=lambda x: x[2])
+
+
+def caucafall_onset(labels_csv: str) -> int | None:
+    """First frame (1-based) labelled 1 = fall."""
+    with open(labels_csv, encoding="utf-8") as f:
+        for line in f.read().splitlines()[1:]:
+            frame, label = line.split(",")
+            if label.strip() == "1":
+                return int(frame)
+    return None
+
+
 def video_frames(path):
     cap = cv2.VideoCapture(path)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -206,6 +233,7 @@ def replay(video: Cached, detector, fixes: Fixes = BASELINE) -> dict:
     is on and the pipeline would have retried, else held), then the tracked poses. It also
     follows the first track that reached the ground, to explain a missing alert."""
     alerts: list[float] = []
+    possible: list[float] = []
     fallen_s = fallen_tid = None
     frames_after = seen_after = 0
     left_ground = False
@@ -243,6 +271,7 @@ def replay(video: Cached, detector, fixes: Fixes = BASELINE) -> dict:
             elif tid == fallen_tid:
                 seen = True
                 left_ground = left_ground or not on_ground
+        possible += [round(e.timestamp, 3) for e in detector.drain_possible()]
         if fallen_s is None:
             for tid in active:  # a held/recovered track can reach the ground without a pose row
                 if tid not in posed and detector.state_of(tid) in (detector.FALLEN, detector.CONFIRMED) \
@@ -252,7 +281,7 @@ def replay(video: Cached, detector, fixes: Fixes = BASELINE) -> dict:
         if fallen_s is not None and ts > fallen_s:
             frames_after += 1
             seen_after += seen
-    return {"alerts": alerts, "fallen_s": fallen_s, "onset_s": onset_s,
+    return {"alerts": alerts, "possible": possible, "fallen_s": fallen_s, "onset_s": onset_s,
             "end_s": (len(video.frames) - 1) / video.fps if video.frames else 0.0,
             "pose_after_ground": seen_after / frames_after if frames_after else None,
             "left_ground": left_ground}
@@ -267,17 +296,23 @@ def why_unconfirmed(r: dict) -> str:
     return "not still long enough"
 
 
+def activity_of(v: Cached) -> str:
+    """'Subject.3/Kneel' -> 'Kneel'; other footage is grouped by kind."""
+    return v.name.split("/")[-1] if "/" in v.name else v.kind
+
+
 def score_setting(videos: list[Cached], fall_cfg, confirm_s: float, tolerance_s: float = 2.0,
                   fixes: Fixes = BASELINE) -> dict:
     falls = [v for v in videos if v.kind == "fall"]
     clean = [v for v in videos if v.kind != "fall"]
-    tp = reached = confirmable = lost = 0
+    tp = reached = confirmable = lost = possible_tp = 0
     false_alarms: dict[str, int] = {}
     missed: dict[str, int] = {}
     for v in falls:
         r = replay(v, make_detector(fall_cfg, confirm_s, fixes), fixes)
         hit = any(t >= r["onset_s"] - tolerance_s for t in r["alerts"])
         tp += hit
+        possible_tp += any(t >= r["onset_s"] - tolerance_s for t in r["possible"])
         if r["fallen_s"] is not None:
             reached += 1
             lost += r["pose_after_ground"] is not None and r["pose_after_ground"] < 0.5
@@ -290,15 +325,24 @@ def score_setting(videos: list[Cached], fall_cfg, confirm_s: float, tolerance_s:
         false_alarms["fall clips (early/extra)"] = false_alarms.get("fall clips (early/extra)", 0) + \
             len(r["alerts"]) - int(hit)
     hours: dict[str, float] = {}
-    clean_reached = 0
+    clean_reached = possible_fa = 0
+    by_activity: dict[str, list[int]] = {}  # activity -> [confirmed, possible] false alarms
     for v in clean:
         r = replay(v, make_detector(fall_cfg, confirm_s, fixes), fixes)
         false_alarms[v.kind] = false_alarms.get(v.kind, 0) + len(r["alerts"])
         hours[v.kind] = hours.get(v.kind, 0.0) + v.seconds / 3600
         clean_reached += r["fallen_s"] is not None
+        possible_fa += len(r["possible"])
+        act = by_activity.setdefault(activity_of(v), [0, 0])
+        act[0] += len(r["alerts"])
+        act[1] += len(r["possible"])
     clean_hours = sum(hours.values())
     clean_fa = sum(n for k, n in false_alarms.items() if k in hours)
     return {
+        "possible_tp": possible_tp, "possible_recall": possible_tp / len(falls) if falls else None,
+        "possible_false_alarms": possible_fa,
+        "possible_false_alarms_per_hour": possible_fa / clean_hours if clean_hours else None,
+        "false_alarms_by_activity": by_activity,
         "confirm_s": confirm_s, "falls": len(falls), "tp": tp, "recall": tp / len(falls) if falls else None,
         "confirmable": confirmable, "on_ground": reached, "on_ground_recall": reached / len(falls) if falls else None,
         "false_alarms": false_alarms, "clean_hours": clean_hours, "hours_by_kind": hours,
@@ -310,7 +354,49 @@ def score_setting(videos: list[Cached], fall_cfg, confirm_s: float, tolerance_s:
 
 # --- report -------------------------------------------------------------------------------------
 
-KIND_LABEL = {"adl": "URFD ADL", "sample": "sample clips", "recording": "your recordings"}
+KIND_LABEL = {"adl": "URFD ADL", "sample": "sample clips", "recording": "your recordings",
+              "caucafall_adl": "CAUCAFall daily activities"}
+
+
+def _rate(x) -> str:
+    return "n/a" if x is None else f"{x:.1f}"
+
+
+def markdown_heldout(rows: list[tuple[str, dict]], confirm_s: float) -> list[str]:
+    """CAUCAFall, held out: never used to design or tune anything. Baseline and the frozen
+    candidate only, at the default confirmation time (a table of settings here would turn it
+    into tuning data)."""
+    r0 = rows[0][1]
+    acts = sorted({a for _l, r in rows for a in r["false_alarms_by_activity"]})
+    lines = [
+        "",
+        "### Held-out test: CAUCAFall",
+        "",
+        f"CAUCAFall (CC BY 4.0) has {r0['falls']} falls (5 types x 10 subjects) and {r0['clean_videos']} daily "
+        f"activities, including sitting down and kneeling: {r0['clean_hours'] * 60:.1f} min of no-fall video. "
+        "Fall onset is the first frame labelled \"fall\". It was **not used** to design or tune any rule. "
+        f"Only the baseline and the candidate frozen beforehand are reported, at the default {confirm_s:g} s, "
+        "run once.",
+        "",
+        "| Setting | Confirmed recall | Confirmed false alarms / h (count) | Possible recall "
+        "| Possible false alarms / h (count) | Lost from view |",
+        "|---|---|---|---|---|---|",
+    ]
+    for label, r in rows:
+        lines.append(f"| {label} | {r['tp']} / {r['falls']} ({r['recall']:.0%}) | "
+                     f"{_rate(r['false_alarms_per_hour'])} ({r['false_alarms_clean']}) | "
+                     f"{r['possible_tp']} / {r['falls']} ({r['possible_recall']:.0%}) | "
+                     f"{_rate(r['possible_false_alarms_per_hour'])} ({r['possible_false_alarms']}) | "
+                     f"{r['lost_from_view']} / {r['on_ground']} |")
+    lines += ["", "False alarms by daily activity (confirmed / possible):", "",
+              "| Setting | " + " | ".join(acts) + " |", "|---|" + "---|" * len(acts)]
+    for label, r in rows:
+        counts = [r["false_alarms_by_activity"].get(a, [0, 0]) for a in acts]
+        cells = [f"{c} / {p}" for c, p in counts]
+        lines.append(f"| {label} | " + " | ".join(cells) + " |")
+    lines += ["", "Any further tuning will split CAUCAFall by video into a tuning half and a test half, and "
+              "report test-half numbers only."]
+    return lines
 
 
 def markdown_fixes(fix_rows: list[tuple[str, dict]], confirm_s: float) -> list[str]:
@@ -324,17 +410,17 @@ def markdown_fixes(fix_rows: list[tuple[str, dict]], confirm_s: float) -> list[s
         f"{RECOVERY_WINDOW_S:g} s of the fall). The retry threshold is {RECOVERY_LOW_CONF:g}; normal is the "
         "pose model's threshold.",
         "",
-        "| Fix | URFD catches | Lost from view (of falls reaching the ground) | Reached the ground "
-        "| False alarms (no-fall footage) | False alarms / hour |",
+        "| Fix | Confirmed catches | Confirmed false alarms (/ h) | Possible catches | Possible false alarms (/ h) "
+        "| Lost from view (of falls reaching the ground) |",
         "|---|---|---|---|---|---|",
     ]
     for label, r in fix_rows:
-        fa = r["false_alarms_per_hour"]
         delta = r["false_alarms_clean"] - base["false_alarms_clean"]
-        flag = f" ({delta:+d})" if delta else ""
-        lines.append(f"| {label} | {r['tp']} / {r['falls']} | {r['lost_from_view']} / {r['on_ground']} | "
-                     f"{r['on_ground']} / {r['falls']} | {r['false_alarms_clean']}{flag} | "
-                     f"{'n/a' if fa is None else f'{fa:.1f}'} |")
+        flag = f" {delta:+d}" if delta else ""
+        lines.append(f"| {label} | {r['tp']} / {r['falls']} | {r['false_alarms_clean']}{flag} "
+                     f"({_rate(r['false_alarms_per_hour'])}) | {r['possible_tp']} / {r['falls']} | "
+                     f"{r['possible_false_alarms']} ({_rate(r['possible_false_alarms_per_hour'])}) | "
+                     f"{r['lost_from_view']} / {r['on_ground']} |")
     lines += [
         "",
         "*Lost from view*: the person's pose (tracked or recovered) was missing in most frames after reaching "
@@ -353,7 +439,8 @@ def markdown_fixes(fix_rows: list[tuple[str, dict]], confirm_s: float) -> list[s
     return lines
 
 
-def markdown(rows: list[dict], default_s: float, device: str, fix_rows: list[tuple[str, dict]] | None = None) -> str:
+def markdown(rows: list[dict], default_s: float, device: str, fix_rows: list[tuple[str, dict]] | None = None,
+             heldout_rows: list[tuple[str, dict]] | None = None) -> str:
     r0 = rows[0]
     basis = ", ".join(f"{KIND_LABEL.get(k, k)} {h * 60:.1f} min" for k, h in r0["hours_by_kind"].items())
     lines = [
@@ -366,18 +453,22 @@ def markdown(rows: list[dict], default_s: float, device: str, fix_rows: list[tup
         "",
         f"No-fall footage: **{r0['clean_hours'] * 60:.1f} min** ({basis}).",
         "",
-        "| Confirmation time | URFD recall (confirmed alerts) | Confirmable on URFD | Confirmable but missed (why) "
-        "| False alarms / hour (no-fall footage) | False alarms (count) |",
-        "|---|---|---|---|---|---|",
+        "Two alert levels: a **possible fall** (yellow, dashboard only) when the person reaches the ground, "
+        "and a **confirmed fall** (red, notifies) after the stillness check.",
+        "",
+        "| Confirmation time | Confirmed recall | Confirmed false alarms / h (count) | Possible recall "
+        "| Possible false alarms / h (count) | Confirmable on URFD | Confirmable but missed (why) |",
+        "|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         mark = " (default)" if abs(r["confirm_s"] - default_s) < 1e-9 else ""
-        fa = r["false_alarms_per_hour"]
         why = ", ".join(f"{n} {k}" for k, n in sorted(r["confirmable_but_missed"].items(), key=lambda x: -x[1]))
         lines.append(
             f"| {r['confirm_s']:g} s{mark} | {r['tp']} / {r['falls']} ({r['recall']:.0%}) | "
-            f"{r['confirmable']} / {r['falls']} | {why or 'none'} | {'n/a' if fa is None else f'{fa:.1f}'} | "
-            f"{r['false_alarms_clean']} |")
+            f"{_rate(r['false_alarms_per_hour'])} ({r['false_alarms_clean']}) | "
+            f"{r['possible_tp']} / {r['falls']} ({r['possible_recall']:.0%}) | "
+            f"{_rate(r['possible_false_alarms_per_hour'])} ({r['possible_false_alarms']}) | "
+            f"{r['confirmable']} / {r['falls']} | {why or 'none'} |")
     lines += [
         "",
         f"**\"On the ground\" stage recall** (reached FALLEN, the step before confirmation; it is the same at "
@@ -396,6 +487,7 @@ def markdown(rows: list[dict], default_s: float, device: str, fix_rows: list[tup
         "- The false-alarm rate rests on only a few minutes of no-fall video. Treat the rows as a comparison "
         "between settings, not a field rate.",
         "- Your own recordings (`data/recordings/`) are added automatically when this is re-run.",
+        *(markdown_heldout(heldout_rows, default_s) if heldout_rows else []),
         SECTION_END,
     ]
     return "\n".join(lines)
@@ -482,6 +574,21 @@ def main() -> int:
             return cache_frames(models, frames, os.path.basename(p), k, fps, resize=size)
 
         videos.append(get(path, make))
+
+    # CAUCAFall: the held-out set (training/fetch_caucafall.py). Kept apart from everything above.
+    heldout: list[Cached] = []
+    for video, labels, rel in caucafall_videos():
+        onset = caucafall_onset(labels)
+        kind = "fall" if os.path.basename(os.path.dirname(video)).lower().startswith("fall") else "caucafall_adl"
+        if kind == "fall" and onset is None:
+            print(f"skip {rel}: no frame labelled fall")
+            continue
+
+        def make(p=video, k=kind, n=rel, o=onset):
+            frames, fps = video_frames(p)
+            return cache_frames(models, frames, n, k, fps, onset_frame=o if k == "fall" else None, resize=size)
+
+        heldout.append(get(video, make))
     os.makedirs(os.path.dirname(args.cache), exist_ok=True)
     with open(args.cache, "wb") as f:
         pickle.dump({"stamp": stamp, "videos": cache}, f)
@@ -503,8 +610,20 @@ def main() -> int:
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump({"confirmation": rows, "fixes": [{"label": lb, **r} for lb, r in fix_rows]}, f, indent=2)
+    heldout_rows = None
+    if heldout:
+        heldout_rows = [(label, score_setting(heldout, models.cfg.fall, default_s, fixes=fx))
+                        for label, fx in (("Baseline (no fixes)", BASELINE), CANDIDATE)]
+        print("\nheld-out CAUCAFall:")
+        for label, r in heldout_rows:
+            print(f"  {label:<58} confirmed {r['tp']}/{r['falls']}  FA {r['false_alarms_clean']}  "
+                  f"possible {r['possible_tp']}/{r['falls']}  possible FA {r['possible_false_alarms']}  "
+                  f"over {r['clean_hours'] * 60:.1f} min  by activity {r['false_alarms_by_activity']}", flush=True)
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump({"confirmation": rows, "fixes": [{"label": lb, **r} for lb, r in fix_rows],
+                       "heldout_caucafall": [{"label": lb, **r} for lb, r in heldout_rows]}, f, indent=2)
     device = models.detector.device if hasattr(models.detector, "device") else args.device
-    section = markdown(rows, default_s, str(device), fix_rows)
+    section = markdown(rows, default_s, str(device), fix_rows, heldout_rows)
     print("\n" + section)
     if args.write:
         write_section(args.write, section)

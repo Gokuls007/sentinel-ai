@@ -19,6 +19,10 @@ from notifications.base import Notification, Notifier, NotifierError, summarize
 
 logger = logging.getLogger("sentinel.notifications")
 
+# Shown on the dashboard, never sent: a "possible fall" is the early warning (person reached the
+# ground); only the confirmed fall (still on the ground after the stillness check) notifies.
+DASHBOARD_ONLY_TYPES = ("possible_fall",)
+
 
 class NotificationDispatcher:
     def __init__(
@@ -29,10 +33,12 @@ class NotificationDispatcher:
         min_severity: str = "medium",
         max_pending: int = 100,
         clock: Callable[[], float] = time.monotonic,
+        dashboard_only: tuple[str, ...] = DASHBOARD_ONLY_TYPES,
     ):
         if min_severity not in SEVERITIES:
             raise ValueError(f"min_severity must be one of {SEVERITIES}")
         self.notifiers = notifiers
+        self.dashboard_only = set(dashboard_only)
         self.debounce_s = debounce_s
         self._min_rank = SEVERITIES.index(min_severity)
         self._clock = clock
@@ -46,6 +52,9 @@ class NotificationDispatcher:
 
     def should_notify(self, event: Event) -> bool:
         """Severity filter plus debounce; records the send time when it says yes."""
+        if event.type in self.dashboard_only:
+            self.stats["dashboard_only"] = self.stats.get("dashboard_only", 0) + 1
+            return False
         if SEVERITIES.index(event.severity) < self._min_rank:
             self.stats["below_severity"] += 1
             return False
