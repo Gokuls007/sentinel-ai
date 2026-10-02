@@ -41,9 +41,9 @@ NOSE, L_EYE, R_EYE, L_EAR, R_EAR, L_SH, R_SH = 0, 1, 2, 3, 4, 5, 6
 
 GOOD, SLOUCHING, LEANING, TOO_CLOSE = "good", "slouching", "leaning", "too_close"
 AWAY, NO_BASELINE, CALIBRATING, MOVED = "away", "no_baseline", "calibrating", "moved"
-UNCLEAR = "unclear"
-BAD = (SLOUCHING, LEANING, TOO_CLOSE)
-LABELS = {GOOD: "Good", SLOUCHING: "Slouching", LEANING: "Leaning", TOO_CLOSE: "Too close",
+UNCLEAR, SLUMPED = "unclear", "slumped"
+BAD = (SLOUCHING, LEANING, TOO_CLOSE, SLUMPED)
+LABELS = {GOOD: "Good", SLOUCHING: "Slouching", LEANING: "Leaning", TOO_CLOSE: "Too close", SLUMPED: "Slumped",
           AWAY: "Away", NO_BASELINE: "Press Set baseline to start", CALIBRATING: "Hold still...",
           MOVED: "You've moved", UNCLEAR: "Can't see your shoulders"}
 
@@ -75,6 +75,9 @@ class PostureConfig:
     # that's sitting too close, which *is* judged).
     moved_shift_widths: float = 1.0
     moved_width_change: float = 0.25
+    # Body turned: shoulders this much narrower relative to the face than at baseline
+    # (face/shoulder ratio up 40%). Then hunch is ignored and the head-offset limit doubles.
+    rotation_face_ratio: float = 1.4
     # Shoulder quality. Frames with a shoulder keypoint below this confidence, or a shoulder
     # width outside this range of eye spans (inter-eye distance; ~6 for adults, 6.4-7.1 on the
     # first real webcam session), are not used. Not checked per side: leaning moves the head
@@ -210,12 +213,22 @@ def _ratio(a, b):
 
 
 def explain(m: Measurement, base: Baseline, cfg: PostureConfig) -> list[dict]:
-    """Every measurement next to its baseline and limit (the debug panel and ``classify``)."""
+    """Every measurement next to its baseline and limit (the debug panel and ``assess``).
+
+    Shoulder tilt (an angle) and head offset / head height / face-to-shoulder (ratios of
+    shoulder width) don't depend on how far you sit, so moving never switches them off. Only
+    "too close" depends on distance, and it is not judged while the body has moved.
+
+    Turning your body narrows the shoulders on screen, which inflates head offset and
+    face-to-shoulder. When the shoulders look much narrower relative to the face than at
+    baseline (``rotation_face_ratio``), the hunch check is ignored and the head-offset limit is
+    doubled; shoulder tilt is still fully trusted.
+    """
     rows = []
 
-    def row(key, label, now, baseline, change, limit, triggered, status):
+    def row(key, label, now, baseline, change, limit, triggered, status, note=""):
         rows.append({"key": key, "label": label, "now": now, "baseline": baseline, "change": change,
-                     "limit": limit, "triggered": bool(triggered), "status": status})
+                     "limit": limit, "triggered": bool(triggered), "status": status, "note": note})
 
     face_change = _ratio(m.face_size, base.face_size)
     width_change = _ratio(m.shoulder_width, base.shoulder_width)
@@ -227,57 +240,86 @@ def explain(m: Measurement, base: Baseline, cfg: PostureConfig) -> list[dict]:
     if None not in (m.mid_x, m.mid_y, base.mid_x, base.mid_y):
         shift = math.hypot(m.mid_x - base.mid_x, m.mid_y - base.mid_y) / base.shoulder_width
 
-    too_close = (face_change is not None and face_change > cfg.too_close_ratio) or (
+    rotated = hunch_change is not None and hunch_change >= cfg.rotation_face_ratio
+    offset_limit = cfg.lateral_shift * (2.0 if rotated else 1.0)
+    grew = (face_change is not None and face_change > cfg.too_close_ratio) or (
         face_change is None and width_change is not None and width_change > cfg.too_close_ratio)
+    moved_width = width_change is not None and abs(width_change - 1) > cfg.moved_width_change and not grew
+    moved = (shift is not None and shift > cfg.moved_shift_widths) or moved_width
+
     row("face_size", "Face size vs baseline", m.face_size, base.face_size, face_change,
-        f"> {cfg.too_close_ratio:.2f}x", too_close, TOO_CLOSE)
+        f"> {cfg.too_close_ratio:.2f}x", grew and not moved, TOO_CLOSE,
+        "not judged after moving" if moved else "")
     row("head_ratio", "Head height (/ shoulder width)", m.head_ratio, base.head_ratio, head_change,
         f"< {cfg.head_drop_ratio:.2f}x", head_change is not None and head_change < cfg.head_drop_ratio, SLOUCHING)
     row("face_ratio", "Face / shoulder width", m.face_ratio, base.face_ratio, hunch_change,
-        f"> {cfg.hunch_ratio:.2f}x", hunch_change is not None and hunch_change > cfg.hunch_ratio, SLOUCHING)
+        f"> {cfg.hunch_ratio:.2f}x",
+        hunch_change is not None and hunch_change > cfg.hunch_ratio and not rotated, SLOUCHING,
+        "ignored: body turned" if rotated else "")
     row("tilt_deg", "Shoulder tilt (deg)", m.tilt_deg, base.tilt_deg, tilt_change,
         f"> {cfg.tilt_deg:g} deg", abs(tilt_change) > cfg.tilt_deg, LEANING)
     row("lateral", f"Head offset ({m.head_ref or 'n/a'}, / shoulder width)", m.lateral, base.lateral,
-        offset_change, f"> {cfg.lateral_shift:.2f}",
-        offset_change is not None and abs(offset_change) > cfg.lateral_shift, LEANING)
-    moved_width = width_change is not None and abs(width_change - 1) > cfg.moved_width_change and not too_close
-    moved = (shift is not None and shift > cfg.moved_shift_widths) or moved_width
+        offset_change, f"> {offset_limit:.2f}",
+        offset_change is not None and abs(offset_change) > offset_limit, LEANING,
+        "limit doubled: body turned" if rotated else "")
     row("moved", "Body moved (shoulder shift / width change)", shift, None, width_change,
         f"> {cfg.moved_shift_widths:g} widths or {cfg.moved_width_change:.0%}", moved, MOVED)
     return rows
 
 
-def classify(m: Measurement, base: Baseline, cfg: PostureConfig) -> tuple[str, list[str]]:
-    """Status and the reasons for it, from (smoothed) measurements vs the baseline."""
+MOVED_HINT = "You've moved since your baseline. Reset baseline?"
+
+
+def assess(m: Measurement, base: Baseline, cfg: PostureConfig) -> dict:
+    """Status, reasons and an optional hint, from (smoothed) measurements vs the baseline.
+
+    Posture comes first: if any posture measure is over its limit, that's the status ("Slumped"
+    when both a lean measure and a slouch measure fire), and "you've moved" is only a hint next
+    to it. "You've moved" is the status on its own only when the posture measures look normal.
+    """
     rows = {r["key"]: r for r in explain(m, base, cfg)}
-    if rows["moved"]["triggered"]:
-        return MOVED, ["You've moved since your baseline. Reset baseline?"]
-    reasons: dict[str, list[str]] = {TOO_CLOSE: [], SLOUCHING: [], LEANING: []}
-    if rows["face_size"]["triggered"]:
-        change = rows["face_size"]["change"]
-        reasons[TOO_CLOSE].append(f"Face {change:.0%} of its baseline size: move back from the screen"
-                                  if change else "Much closer than at baseline: move back from the screen")
-    if rows["head_ratio"]["triggered"]:
-        reasons[SLOUCHING].append("Head has dropped toward the shoulders: sit tall, chin back")
-    if rows["face_ratio"]["triggered"]:
-        reasons[SLOUCHING].append("Shoulders are hunched forward: roll them back and down")
+    moved = rows["moved"]["triggered"]
+    lean: list[str] = []
+    slouch: list[str] = []
     if rows["tilt_deg"]["triggered"]:
-        reasons[LEANING].append(f"Shoulders tilted {abs(rows['tilt_deg']['change']):.0f}° more than at baseline: "
-                                "level your shoulders")
+        lean.append(f"Shoulders tilted {abs(rows['tilt_deg']['change']):.0f}° more than at baseline: "
+                    "level your shoulders")
     if rows["lateral"]["triggered"]:
         side = "right" if rows["lateral"]["change"] > 0 else "left"  # image side
-        reasons[LEANING].append(f"Head leaning to the {side} of your shoulders: bring it back over them")
-    for status in (TOO_CLOSE, SLOUCHING, LEANING):
-        if reasons[status]:
-            return status, reasons[status]
-    return GOOD, []
+        lean.append(f"Head leaning to the {side} of your shoulders: bring it back over them")
+    if rows["head_ratio"]["triggered"]:
+        slouch.append("Head has dropped toward the shoulders: sit tall, chin back")
+    if rows["face_ratio"]["triggered"]:
+        slouch.append("Shoulders are hunched forward: roll them back and down")
+    hint = MOVED_HINT if moved else None
+
+    if lean and slouch:
+        return {"status": SLUMPED, "reasons": slouch + lean, "hint": hint}
+    if slouch:
+        return {"status": SLOUCHING, "reasons": slouch, "hint": hint}
+    if lean:
+        return {"status": LEANING, "reasons": lean, "hint": hint}
+    if moved:
+        return {"status": MOVED, "reasons": [MOVED_HINT], "hint": None}
+    if rows["face_size"]["triggered"]:
+        change = rows["face_size"]["change"]
+        return {"status": TOO_CLOSE, "hint": None,
+                "reasons": [f"Face {change:.0%} of its baseline size: move back from the screen"
+                            if change else "Much closer than at baseline: move back from the screen"]}
+    return {"status": GOOD, "reasons": [], "hint": None}
+
+
+def classify(m: Measurement, base: Baseline, cfg: PostureConfig) -> tuple[str, list[str]]:
+    """(status, reasons); see ``assess``."""
+    a = assess(m, base, cfg)
+    return a["status"], a["reasons"]
 
 
 @dataclass
 class Session:
     started_at: float = field(default_factory=time.time)
-    seconds: dict = field(default_factory=lambda: {s: 0.0 for s in (GOOD, SLOUCHING, LEANING, TOO_CLOSE, AWAY,
-                                                                     MOVED, UNCLEAR)})
+    seconds: dict = field(default_factory=lambda: {s: 0.0 for s in (GOOD, SLOUCHING, LEANING, TOO_CLOSE, SLUMPED,
+                                                                     AWAY, MOVED, UNCLEAR)})
     timeline: list = field(default_factory=list)  # [{"t": offset_s, "status": ...}] one per bucket
     reminders: int = 0
 
@@ -309,6 +351,7 @@ class PostureCoach:
         self.last: Measurement | None = None
         self.smoothed: Measurement | None = None  # what the last classification used
         self.last_problem: str | None = None  # this frame's shoulder problem, if any
+        self.hint: str | None = None  # shown next to the status, e.g. "you've moved, reset baseline?"
         self._quality: deque[tuple[float, bool]] = deque()  # (ts, shoulders unclear) recent frames
         self._calib_unclear = 0
 
@@ -430,8 +473,9 @@ class PostureCoach:
             while self._window and ts - self._window[0][0] > self.cfg.smooth_s:
                 self._window.popleft()
             self.smoothed = self._smoothed()
-            status, reasons = classify(self.smoothed, self.baseline, self.cfg)
-            self._propose(status, reasons, ts)
+            a = assess(self.smoothed, self.baseline, self.cfg)
+            self.hint = a["hint"]
+            self._propose(a["status"], a["reasons"], ts)
         self._account(dt, ts)
 
     def _smoothed(self) -> Measurement:
@@ -532,6 +576,7 @@ class PostureCoach:
             },
             "measurements": asdict(self.last) if self.last else None,
             "shoulder_problem": self.last_problem,
+            "hint": self.hint if self.status in BAD and not calibrating else None,
             # Every value behind the status (smoothed, vs baseline, with its limit): the debug panel.
             "debug": explain(self.smoothed, self.baseline, self.cfg)
             if self.smoothed is not None and self.baseline is not None and not calibrating else None,

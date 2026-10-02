@@ -7,7 +7,7 @@ import { describeError, fetchJson, formatDuration, loadStored, postJson, saveSto
 import { useCameraControl, useLaptopCamera, useLaptopFrames } from '../lib/laptopCamera';
 import { chipClass } from '../lib/ui';
 
-const BAD = new Set(['slouching', 'leaning', 'too_close']);
+const BAD = new Set(['slouching', 'leaning', 'too_close', 'slumped']);
 const SETTINGS_KEY = 'sentinel.posture.reminders';
 const INTERVALS = [
   [30, '30 s (demo)'],
@@ -27,13 +27,14 @@ const STATUS_STYLE = {
   no_baseline: { text: 'text-white/70', ring: 'border-white/20 bg-white/5', bar: 'bg-white/20' },
   moved: { text: 'text-sky-300', ring: 'border-sky-400/50 bg-sky-950/30', bar: 'bg-sky-500/60' },
   unclear: { text: 'text-violet-300', ring: 'border-violet-400/50 bg-violet-950/30', bar: 'bg-violet-500/60' },
+  slumped: { text: 'text-rose-300', ring: 'border-rose-400/60 bg-rose-950/30', bar: 'bg-rose-500' },
 };
 const style = (s) => STATUS_STYLE[s] || STATUS_STYLE.away;
 const STATUS_LABELS = {
   good: 'Good', slouching: 'Slouching', leaning: 'Leaning', too_close: 'Too close', away: 'Away', moved: 'Moved',
-  unclear: 'Unclear',
+  unclear: 'Unclear', slumped: 'Slumped',
 };
-const SUMMARY_KEYS = ['good', 'slouching', 'leaning', 'too_close', 'moved', 'unclear', 'away'];
+const SUMMARY_KEYS = ['good', 'slouching', 'leaning', 'slumped', 'too_close', 'moved', 'unclear', 'away'];
 const DEBUG_KEY = 'sentinel.posture.debug';
 
 const fmtNum = (v, digits = 2) => (v == null || Number.isNaN(v) ? '--' : Number(v).toFixed(digits));
@@ -66,7 +67,10 @@ const DebugPanel = ({ rows }) => (
                   ? `${r.change >= 0 ? '+' : ''}${fmtNum(r.change, r.key === 'tilt_deg' ? 1 : 2)}`
                   : r.change == null ? '--' : `${fmtNum(r.change, 2)}x`}
               </td>
-              <td className="text-right text-white/40">{r.limit}</td>
+              <td className="text-right text-white/40">
+                {r.limit}
+                {r.note ? <span className="block text-[9px] text-sky-300/80">{r.note}</span> : null}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -215,6 +219,12 @@ const StatusCard = ({ posture, connected, onBaseline, busy, mode }) => {
             <span className="text-[11px] mono uppercase tracking-widest">Start here</span>
             <ArrowDown className="w-5 h-5" />
           </div>
+        </div>
+      )}
+      {posture.hint && (
+        <div className="flex items-center justify-between gap-3 p-2 border border-sky-400/40 bg-sky-950/30 text-[11px] text-sky-200">
+          <span>{posture.hint}</span>
+          <button type="button" onClick={onBaseline} disabled={busy} className={chipClass(true)}>Reset baseline</button>
         </div>
       )}
       {posture.status === 'unclear' && (

@@ -7,11 +7,13 @@ from posture.coach import (
     LEANING,
     MOVED,
     SLOUCHING,
+    SLUMPED,
     TOO_CLOSE,
     Baseline,
     Measurement,
     PostureCoach,
     PostureConfig,
+    assess,
     classify,
     explain,
     measure,
@@ -19,5 +21,8 @@ from posture.coach import (
     shoulder_problem,
 )
 
-__all__ = ["BAD", "GOOD", "LABELS", "LEANING", "MOVED", "SLOUCHING", "TOO_CLOSE", "Baseline", "Measurement",
-           "PostureCoach", "PostureConfig", "classify", "explain", "measure", "select_main_person", "shoulder_problem"]
+__all__ = [
+    "BAD", "GOOD", "LABELS", "LEANING", "MOVED", "SLOUCHING", "SLUMPED", "TOO_CLOSE", "Baseline", "Measurement",
+    "PostureCoach", "PostureConfig", "assess", "classify", "explain", "measure", "select_main_person",
+    "shoulder_problem",
+]

@@ -443,3 +443,77 @@ def test_no_baseline_label_tells_you_what_to_do():
     c = PostureCoach()
     c.update(UPRIGHT, 0.0)
     assert c.snapshot()["label"] == "Press Set baseline to start"
+
+
+# --- posture first: moving never hides a slump (third webcam session) -------------------------------
+
+def test_reported_session_slumped_sideways_and_moved_back_is_a_posture_problem():
+    """The exact values from the webcam session: tilt 18.6 deg, head offset +1.61, face/shoulder
+    1.75x, face size 0.37x baseline. It must be a posture problem, with the moved hint beside it."""
+    from posture.coach import Baseline, Measurement, assess, explain
+
+    cfg = PostureConfig()
+    base = Baseline(shoulder_width=450.0, head_ratio=0.40, tilt_deg=0.0, lateral=0.0, face_size=63.0,
+                    face_ratio=63.0 / 450.0, mid_x=640.0, mid_y=500.0)
+    face = 0.37 * 63.0
+    face_ratio = 1.75 * base.face_ratio
+    width = face / face_ratio  # 0.21x: moved back and turned
+    now = Measurement(shoulder_width=width, head_ratio=0.40, tilt_deg=18.6, lateral=1.61, face_size=face,
+                      face_ratio=face_ratio, mid_x=600.0, mid_y=470.0, head_ref="ears")
+    a = assess(now, base, cfg)
+    assert a["status"] in ("leaning", "slumped")
+    assert a["hint"] == "You've moved since your baseline. Reset baseline?"
+    assert any("tilted 19°" in r for r in a["reasons"])
+    rows = {r["key"]: r for r in explain(now, base, cfg)}
+    assert rows["moved"]["triggered"]  # still detected, just not in charge
+    assert rows["face_ratio"]["note"] == "ignored: body turned" and not rows["face_ratio"]["triggered"]
+    assert rows["lateral"]["limit"] == "> 0.60" and rows["lateral"]["triggered"]  # 1.61 even with doubled limit
+
+
+def test_lean_plus_slouch_is_slumped_with_the_hint_alongside():
+    from posture.coach import Baseline, Measurement, assess
+
+    base = Baseline(450.0, 0.40, 0.0, 0.0, 63.0, 0.14, mid_x=640.0, mid_y=500.0)
+    now = Measurement(300.0, 0.25, 14.0, 0.1, 42.0, 0.14, mid_x=640.0, mid_y=520.0)  # moved back, head down, tilted
+    a = assess(now, base, PostureConfig())
+    assert a["status"] == "slumped" and a["hint"]
+    assert any("dropped" in r for r in a["reasons"]) and any("tilted" in r for r in a["reasons"])
+
+
+def test_moved_alone_only_when_posture_measures_are_normal():
+    from posture.coach import Baseline, Measurement, assess
+
+    base = Baseline(450.0, 0.40, 0.0, 0.0, 63.0, 0.14, mid_x=640.0, mid_y=500.0)
+    leaned_back = Measurement(300.0, 0.40, 1.0, 0.02, 42.0, 0.14, mid_x=640.0, mid_y=480.0)  # all ratios normal
+    a = assess(leaned_back, base, PostureConfig())
+    assert a["status"] == "moved" and a["hint"] is None
+
+
+def test_moving_only_switches_off_too_close():
+    from posture.coach import Baseline, Measurement, explain
+
+    base = Baseline(450.0, 0.40, 0.0, 0.0, 63.0, 0.14, mid_x=640.0, mid_y=500.0)
+    far_aside_bigger_face = Measurement(450.0, 0.40, 0.0, 0.0, 90.0, 0.2, mid_x=1300.0, mid_y=500.0)
+    rows = {r["key"]: r for r in explain(far_aside_bigger_face, base, PostureConfig())}
+    assert rows["moved"]["triggered"] and not rows["face_size"]["triggered"]
+    assert rows["face_size"]["note"] == "not judged after moving"
+
+
+def test_turned_body_trusts_tilt_and_relaxes_head_offset():
+    from posture.coach import Baseline, Measurement, assess
+
+    base = Baseline(450.0, 0.40, 0.0, 0.0, 63.0, 0.14, mid_x=640.0, mid_y=500.0)
+    # Turned toward one side, sitting straight: shoulders narrow (face/shoulder 1.5x), head offset
+    # inflated to 0.45 but under the doubled limit, tilt normal.
+    turned = Measurement(350.0, 0.42, 2.0, 0.45, 70.0, 0.20, mid_x=650.0, mid_y=500.0)
+    assert assess(turned, base, PostureConfig())["status"] == "good"
+    turned_and_tilted = Measurement(350.0, 0.42, 12.0, 0.45, 70.0, 0.20, mid_x=650.0, mid_y=500.0)
+    assert assess(turned_and_tilted, base, PostureConfig())["status"] == "leaning"
+
+
+def test_coach_snapshot_carries_the_hint():
+    c, t = coach_with_baseline()
+    slumped_far = kp(nose=(345, 215), eyes=((334, 210), (352, 210)), shoulders=((290, 280), (370, 305)))
+    run(c, slumped_far, t, 4)
+    s = c.snapshot()
+    assert s["status"] in ("leaning", "slumped") and s["hint"] and "Reset baseline" in s["hint"]
