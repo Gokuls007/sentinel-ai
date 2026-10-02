@@ -41,10 +41,11 @@ NOSE, L_EYE, R_EYE, L_EAR, R_EAR, L_SH, R_SH = 0, 1, 2, 3, 4, 5, 6
 
 GOOD, SLOUCHING, LEANING, TOO_CLOSE = "good", "slouching", "leaning", "too_close"
 AWAY, NO_BASELINE, CALIBRATING, MOVED = "away", "no_baseline", "calibrating", "moved"
+UNCLEAR = "unclear"
 BAD = (SLOUCHING, LEANING, TOO_CLOSE)
 LABELS = {GOOD: "Good", SLOUCHING: "Slouching", LEANING: "Leaning", TOO_CLOSE: "Too close",
-          AWAY: "Away", NO_BASELINE: "Set your baseline", CALIBRATING: "Hold still...",
-          MOVED: "You've moved"}
+          AWAY: "Away", NO_BASELINE: "Press Set baseline to start", CALIBRATING: "Hold still...",
+          MOVED: "You've moved", UNCLEAR: "Can't see your shoulders"}
 
 
 @dataclass
@@ -74,6 +75,13 @@ class PostureConfig:
     # that's sitting too close, which *is* judged).
     moved_shift_widths: float = 1.0
     moved_width_change: float = 0.25
+    # Shoulder quality. Frames with a shoulder keypoint below this confidence, or a shoulder
+    # width outside this range of eye spans (inter-eye distance; ~6 for adults, 6.4-7.1 on the
+    # first real webcam session), are not used. Not checked per side: leaning moves the head
+    # over one shoulder.
+    shoulder_min_conf: float = 0.5
+    shoulder_width_eyes: tuple = (3.0, 9.5)
+    unclear_fraction: float = 0.5   # this share of recent frames unclear: show the lighting hint
     timeline_bucket_s: float = 10.0
 
 
@@ -150,6 +158,53 @@ def measure(keypoints: np.ndarray, min_conf: float = 0.4) -> Measurement | None:
     )
 
 
+UNCLEAR_MESSAGE = "Can't see your shoulders clearly. Try better lighting or a lighter background."
+
+
+def shoulder_problem(keypoints: np.ndarray, cfg: PostureConfig) -> str | None:
+    """Why this frame's shoulders can't be trusted, or None. Dark clothes against a dark chair
+    put a shoulder keypoint on the arm or the chair: its confidence drops, or the shoulder width
+    stops matching the face size (judged in eye spans, a scale that doesn't depend on where you
+    sit)."""
+    kp = np.asarray(keypoints, float)
+    if kp.shape[0] < 7 or kp[NOSE, 2] < cfg.min_kp_conf:
+        return None  # no face: that's "away", not unclear shoulders
+    if min(kp[L_SH, 2], kp[R_SH, 2]) < cfg.shoulder_min_conf:
+        return "low_confidence"
+    if not _visible(kp, L_EYE, R_EYE, conf=cfg.min_kp_conf):
+        return None  # can't check proportions without the eyes
+    eye_span = float(np.hypot(*(kp[L_EYE, :2] - kp[R_EYE, :2])))
+    if eye_span < 3:
+        return None
+    width = float(np.hypot(*(kp[L_SH, :2] - kp[R_SH, :2]))) / eye_span
+    if not cfg.shoulder_width_eyes[0] <= width <= cfg.shoulder_width_eyes[1]:
+        return "implausible"
+    return None
+
+
+def select_main_person(poses: dict, frame_width: float, prev_id=None, keep_ratio: float = 1.5):
+    """The person the coach is for: the largest face-and-shoulder area, favouring the middle of
+    the frame. The current person is kept unless someone else is clearly more prominent
+    (``keep_ratio``), so the coach doesn't jump between people. ``poses`` maps id -> PoseResult."""
+    scores = {}
+    for pid, pose in poses.items():
+        kp = np.asarray(pose.keypoints, float)
+        upper = kp[:7][kp[:7, 2] >= 0.3]
+        if len(upper) < 3:
+            continue
+        w = float(upper[:, 0].max() - upper[:, 0].min())
+        h = float(upper[:, 1].max() - upper[:, 1].min())
+        cx = float(upper[:, 0].mean())
+        centrality = 1.0 - min(1.0, abs(cx - frame_width / 2) / (frame_width / 2)) if frame_width else 1.0
+        scores[pid] = w * h * (0.5 + 0.5 * centrality)
+    if not scores:
+        return None
+    best = max(scores, key=scores.get)
+    if prev_id in scores and scores[prev_id] * keep_ratio >= scores[best]:
+        return prev_id
+    return best
+
+
 def _ratio(a, b):
     return a / b if a is not None and b else None
 
@@ -222,7 +277,7 @@ def classify(m: Measurement, base: Baseline, cfg: PostureConfig) -> tuple[str, l
 class Session:
     started_at: float = field(default_factory=time.time)
     seconds: dict = field(default_factory=lambda: {s: 0.0 for s in (GOOD, SLOUCHING, LEANING, TOO_CLOSE, AWAY,
-                                                                     MOVED)})
+                                                                     MOVED, UNCLEAR)})
     timeline: list = field(default_factory=list)  # [{"t": offset_s, "status": ...}] one per bucket
     reminders: int = 0
 
@@ -253,6 +308,9 @@ class PostureCoach:
         self._origin: float | None = None  # first frame time of the session (timeline offsets)
         self.last: Measurement | None = None
         self.smoothed: Measurement | None = None  # what the last classification used
+        self.last_problem: str | None = None  # this frame's shoulder problem, if any
+        self._quality: deque[tuple[float, bool]] = deque()  # (ts, shoulders unclear) recent frames
+        self._calib_unclear = 0
 
     # --- baseline -------------------------------------------------------------------------
 
@@ -262,6 +320,7 @@ class PostureCoach:
         now = self.clock() if now is None else now
         delay = self.cfg.baseline_delay_s if delay is None else delay
         self._calib = []
+        self._calib_unclear = 0
         self._calib_start = now + delay
         self._calib_until = self._calib_start + self.cfg.baseline_seconds
         self._calib_error = None
@@ -288,7 +347,10 @@ class PostureCoach:
 
     def _finish_baseline(self) -> None:
         samples, self._calib = self._calib or [], None
+        unclear, self._calib_unclear = self._calib_unclear, 0
         problem = self.baseline_problem(samples)
+        if unclear >= max(1, len(samples)):  # at least half the frames had unusable shoulders
+            problem = UNCLEAR_MESSAGE
         if problem:
             self._calib_error = problem
             logger.info("posture baseline rejected (%d frames): %s", len(samples), problem)
@@ -327,24 +389,42 @@ class PostureCoach:
         """Feed the main person's keypoints for one frame (None if nobody is visible)."""
         dt = 0.0 if self._last_ts is None else min(1.0, max(0.0, ts - self._last_ts))
         self._last_ts = ts
-        m = measure(keypoints, self.cfg.min_kp_conf) if keypoints is not None else None
+        kp = np.asarray(keypoints, float) if keypoints is not None else None
+        face_seen = kp is not None and kp.shape[0] >= 7 and kp[NOSE, 2] >= self.cfg.min_kp_conf
+        problem = shoulder_problem(kp, self.cfg) if face_seen else None
+        m = measure(kp, self.cfg.min_kp_conf) if face_seen and problem is None else None
+        if face_seen:
+            self._last_seen = ts  # someone is there, even if their shoulders are unclear
         if m is not None:
-            self._last_seen = ts
             self.last = m
+        self.last_problem = problem
+        if face_seen:
+            self._quality.append((ts, problem is not None))
+        while self._quality and ts - self._quality[0][0] > self.cfg.smooth_s:
+            self._quality.popleft()
 
         if self._calib is not None:
-            if m is not None and ts >= self._calib_start:  # not during the get-ready countdown
-                self._calib.append(m)
+            if ts >= self._calib_start:  # not during the get-ready countdown
+                if m is not None:
+                    self._calib.append(m)
+                elif problem is not None:
+                    self._calib_unclear += 1
             if ts >= self._calib_until:
                 self._finish_baseline()
             self._account(dt, ts, count=False)
             return
 
+        unclear = (bool(self._quality) and
+                   sum(bad for _t, bad in self._quality) / len(self._quality) >= self.cfg.unclear_fraction)
         if self.baseline is None:
             self._set_status(NO_BASELINE, [], ts)
         elif ts - self._last_seen > self.cfg.away_after_s:
             self._set_status(AWAY, ["Nobody in front of the camera"], ts)
             self._window.clear()
+        elif unclear:
+            self._window.clear()  # don't judge posture from untrustworthy shoulders
+            self.smoothed = None
+            self._propose(UNCLEAR, [UNCLEAR_MESSAGE], ts)
         elif m is not None:
             self._window.append((ts, m))
             while self._window and ts - self._window[0][0] > self.cfg.smooth_s:
@@ -451,6 +531,7 @@ class PostureCoach:
                 "reminders": self.session.reminders,
             },
             "measurements": asdict(self.last) if self.last else None,
+            "shoulder_problem": self.last_problem,
             # Every value behind the status (smoothed, vs baseline, with its limit): the debug panel.
             "debug": explain(self.smoothed, self.baseline, self.cfg)
             if self.smoothed is not None and self.baseline is not None and not calibrating else None,

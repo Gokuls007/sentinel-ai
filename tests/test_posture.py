@@ -162,6 +162,7 @@ def test_posture_mode_runs_the_coach_and_no_alerts(tmp_config):
     p = SentinelPipeline.__new__(SentinelPipeline)
     p.mode = "posture"
     p.posture = PostureCoach()
+    p._posture_id = None
     p.frame_count = 0
     p.total_alerts = 0
     p._on_frame = None
@@ -362,3 +363,83 @@ def test_old_baseline_files_still_load(tmp_path):
                                 "face_size": 30, "face_ratio": 0.25, "recorded_at": 1, "frames": 30}))
     c = PostureCoach(baseline_path=str(path))
     assert c.baseline is not None and c.baseline.mid_x is None
+
+
+# --- main person only; untrustworthy shoulders (second webcam session) ------------------------------
+
+def person(cx, scale=1.0, pid=1):
+    from core.pose_estimator import PoseResult
+
+    k = kp(nose=(cx, 200 * scale), shoulders=((cx - 60 * scale, 300 * scale), (cx + 60 * scale, 300 * scale)),
+           eyes=((cx - 15 * scale, 190 * scale), (cx + 15 * scale, 190 * scale)))
+    return PoseResult(pid, k, np.array([cx - 80 * scale, 150 * scale, cx + 80 * scale, 400 * scale], np.float32))
+
+
+def test_main_person_is_the_large_central_one_not_the_couch_at_the_edge():
+    from posture.coach import select_main_person
+
+    poses = {1: person(640), 7: person(60, scale=0.6, pid=7)}  # you, and something at the left edge
+    assert select_main_person(poses, 1280) == 1
+    # The coach stays with you even if the edge detection gets a little bigger for a moment...
+    poses_bigger_edge = {1: person(640), 7: person(60, scale=1.1, pid=7)}
+    assert select_main_person(poses_bigger_edge, 1280, prev_id=1) == 1
+    # ...and only switches when someone else is clearly more prominent.
+    assert select_main_person({1: person(640, scale=0.5), 9: person(600, scale=1.2, pid=9)}, 1280, prev_id=1) == 9
+    assert select_main_person({}, 1280) is None
+
+
+def test_only_the_main_persons_skeleton_is_drawn(tmp_config):
+    from types import SimpleNamespace
+
+    from core.pipeline import SentinelPipeline
+
+    p = SentinelPipeline.__new__(SentinelPipeline)
+    p.mode, p.posture, p._posture_id = "posture", PostureCoach(), None
+    p.frame_count = p.total_alerts = 0
+    p._on_frame, p.config = None, tmp_config
+    poses = {1: person(640), 7: person(60, scale=0.6, pid=7)}
+    p.detector = SimpleNamespace(detect_and_track=lambda f: SimpleNamespace(detections=[], person_count=2,
+                                                                              to_dict=lambda: {}))
+    p.pose_estimator = SimpleNamespace(estimate=lambda *a: poses, get_all_features=dict)
+    p.clip_recorder = SimpleNamespace(add_frame=lambda *a: None)
+    drawn = []
+    p._draw_skeleton = lambda frame, pose: drawn.append(pose.track_id)
+    p.process_frame(np.zeros((720, 1280, 3), np.uint8), 1.0)
+    assert drawn == [1] and p._posture_id == 1
+
+
+def low_conf_shoulder():
+    k = UPRIGHT.copy()
+    k[6, 2] = 0.42  # visible, but not trustworthy (black shirt on a black chair)
+    return k
+
+
+def wide_shoulder():
+    return kp(shoulders=((260, 300), (560, 300)))  # 300 px vs a 30 px eye span: 10 eye spans
+
+
+def test_untrustworthy_shoulders_show_the_lighting_hint_not_a_posture():
+    from posture.coach import UNCLEAR_MESSAGE, shoulder_problem
+
+    cfg = PostureConfig()
+    assert shoulder_problem(low_conf_shoulder(), cfg) == "low_confidence"
+    assert shoulder_problem(wide_shoulder(), cfg) == "implausible"
+    assert shoulder_problem(UPRIGHT, cfg) is None
+    for bad in (low_conf_shoulder(), wide_shoulder()):
+        snap = baseline_then(bad)
+        assert snap["status"] == "unclear" and snap["reasons"] == [UNCLEAR_MESSAGE]
+        assert snap["debug"] is None and snap["session"]["poor_s"] == 0
+
+
+def test_baseline_refuses_unclear_shoulders():
+    from posture.coach import UNCLEAR_MESSAGE
+
+    c = PostureCoach()
+    snap = record(c, lambda i: low_conf_shoulder())
+    assert c.baseline is None and snap["calibration_error"] == UNCLEAR_MESSAGE
+
+
+def test_no_baseline_label_tells_you_what_to_do():
+    c = PostureCoach()
+    c.update(UPRIGHT, 0.0)
+    assert c.snapshot()["label"] == "Press Set baseline to start"

@@ -14,7 +14,7 @@ from config.settings import SentinelConfig
 from events import Event, EventBus, EventStore
 from notifications import NotificationDispatcher, build_notifiers
 from output.clip_recorder import ClipRecorder
-from posture import PostureCoach
+from posture import PostureCoach, select_main_person
 
 from .detector import Detector, FrameDetections
 from .pose_estimator import PoseEstimator, PoseResult
@@ -126,6 +126,7 @@ class SentinelPipeline:
         data_dir = os.path.dirname(os.path.abspath(config.output.db_path))
         self.posture = PostureCoach(baseline_path=os.path.join(data_dir, f"posture_baseline_{config.camera_id}.json"))
         self.paused = False  # demo footage off: the loop idles without reading frames
+        self._posture_id = None  # track id of the person the posture coach follows
 
         logger.info("Pipeline initialized successfully")
 
@@ -168,8 +169,10 @@ class SentinelPipeline:
         else:
             alerts, ergonomics = [], {}
             if self.mode == "posture":
-                main = max(poses.values(), key=lambda p: float((p.bbox[2] - p.bbox[0]) * (p.bbox[3] - p.bbox[1])),
-                           default=None)
+                # Only the person at the desk: the largest, most central face-and-shoulder area
+                # (someone or something on the couch behind is ignored).
+                self._posture_id = select_main_person(poses, frame.shape[1], prev_id=self._posture_id)
+                main = poses.get(self._posture_id) if self._posture_id is not None else None
                 self.posture.update(main.keypoints if main is not None else None, timestamp)
                 posture = self.posture.snapshot()
         lap("analytics")
@@ -180,7 +183,9 @@ class SentinelPipeline:
             self._draw_ergo_badges(annotated_frame, detections, ergonomics)
         else:
             annotated_frame = frame.copy()
-            for pose in poses.values():
+            shown = ([poses[self._posture_id]] if self.mode == "posture" and self._posture_id in poses
+                     else [] if self.mode == "posture" else list(poses.values()))
+            for pose in shown:
                 self._draw_skeleton(annotated_frame, pose)
         lap("annotate")
 

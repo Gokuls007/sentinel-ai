@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bell, BellOff, Crosshair, RotateCcw, Volume2, VolumeX, Webcam } from 'lucide-react';
+import { ArrowDown, Bell, BellOff, Crosshair, RotateCcw, Volume2, VolumeX, Webcam } from 'lucide-react';
 import DashboardPanel from '../components/DashboardPanel';
 import VideoFeed from '../components/VideoFeed';
 import { useAppMode } from '../context/appMode';
@@ -26,12 +26,14 @@ const STATUS_STYLE = {
   calibrating: { text: 'text-cyan-300', ring: 'border-cyan-400/60 bg-cyan-950/30', bar: 'bg-cyan-400' },
   no_baseline: { text: 'text-white/70', ring: 'border-white/20 bg-white/5', bar: 'bg-white/20' },
   moved: { text: 'text-sky-300', ring: 'border-sky-400/50 bg-sky-950/30', bar: 'bg-sky-500/60' },
+  unclear: { text: 'text-violet-300', ring: 'border-violet-400/50 bg-violet-950/30', bar: 'bg-violet-500/60' },
 };
 const style = (s) => STATUS_STYLE[s] || STATUS_STYLE.away;
 const STATUS_LABELS = {
   good: 'Good', slouching: 'Slouching', leaning: 'Leaning', too_close: 'Too close', away: 'Away', moved: 'Moved',
+  unclear: 'Unclear',
 };
-const SUMMARY_KEYS = ['good', 'slouching', 'leaning', 'too_close', 'moved', 'away'];
+const SUMMARY_KEYS = ['good', 'slouching', 'leaning', 'too_close', 'moved', 'unclear', 'away'];
 const DEBUG_KEY = 'sentinel.posture.debug';
 
 const fmtNum = (v, digits = 2) => (v == null || Number.isNaN(v) ? '--' : Number(v).toFixed(digits));
@@ -203,18 +205,33 @@ const StatusCard = ({ posture, connected, onBaseline, busy, mode }) => {
           {posture.reasons.map((r) => <li key={r}>• {r}</li>)}
         </ul>
       )}
-      {posture.status === 'no_baseline' && (
-        <p className="text-sm text-white/75 outfit">
-          Sit upright, facing the screen with both shoulders in view, then press <strong>Set baseline</strong>.
-          The coach compares you with that posture.
-        </p>
+      {posture.status === 'no_baseline' && !posture.calibrating && (
+        <div className="space-y-2">
+          <p className="text-sm text-white/75 outfit">
+            Sit upright, facing the screen with both shoulders in view. The coach compares you with that posture.
+          </p>
+          <div className="flex items-center justify-center gap-2 text-cyan-300 animate-bounce" aria-hidden="true">
+            <ArrowDown className="w-5 h-5" />
+            <span className="text-[11px] mono uppercase tracking-widest">Start here</span>
+            <ArrowDown className="w-5 h-5" />
+          </div>
+        </div>
+      )}
+      {posture.status === 'unclear' && (
+        <ul className="text-[11px] text-violet-200/90 outfit space-y-0.5">
+          <li>• Turn on a light in front of you (not behind)</li>
+          <li>• A lighter wall or chair behind dark clothes helps</li>
+          <li>• Keep both shoulders inside the picture</li>
+        </ul>
       )}
       {posture.calibration_error && <p className="text-[11px] text-red-300">{posture.calibration_error}</p>}
       <button
         type="button"
         onClick={onBaseline}
         disabled={busy || posture.calibrating}
-        className="w-full px-4 py-2.5 text-[11px] mono uppercase font-bold tracking-widest border border-cyan-400 text-black bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 flex items-center justify-center gap-2"
+        className={`w-full px-4 py-2.5 text-[11px] mono uppercase font-bold tracking-widest border border-cyan-400 text-black bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 flex items-center justify-center gap-2 ${
+          !posture.has_baseline && !posture.calibrating ? 'ring-4 ring-cyan-300/70 ring-offset-2 ring-offset-black shadow-[0_0_24px_rgba(34,211,238,0.6)] py-3.5 text-sm' : ''
+        }`}
       >
         <Crosshair className="w-4 h-4" aria-hidden="true" />
         {posture.has_baseline ? 'Reset baseline' : 'Set baseline'}

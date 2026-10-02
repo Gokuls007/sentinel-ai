@@ -15,7 +15,9 @@ from posture.coach import (
     classify,
     explain,
     measure,
+    select_main_person,
+    shoulder_problem,
 )
 
 __all__ = ["BAD", "GOOD", "LABELS", "LEANING", "MOVED", "SLOUCHING", "TOO_CLOSE", "Baseline", "Measurement",
-           "PostureCoach", "PostureConfig", "classify", "explain", "measure"]
+           "PostureCoach", "PostureConfig", "classify", "explain", "measure", "select_main_person", "shoulder_problem"]
