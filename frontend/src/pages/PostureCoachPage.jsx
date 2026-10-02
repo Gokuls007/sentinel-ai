@@ -98,10 +98,16 @@ const ModelPanel = ({ posture }) => {
 };
 
 /** The raw values behind each status: now vs baseline, the change, and the limit. */
-const DebugPanel = ({ rows }) => (
+const DebugPanel = ({ rows, yaw, turn }) => (
   <div className="border border-white/10 bg-black/40 p-2 overflow-x-auto">
+    <p className={`text-[10px] mono mb-1 ${turn ? 'text-sky-300' : 'text-white/60'}`}>
+      Head yaw (vs baseline, limit ±0.50): {yaw == null ? '--' : `${yaw >= 0 ? '+' : ''}${fmtNum(yaw, 2)}`}
+      {turn ? ` ● ${turn}: looking away, posture not judged` : ''}
+    </p>
     {!rows ? (
-      <p className="text-[10px] mono text-white/40">No measurements yet (set a baseline and sit in view).</p>
+      <p className="text-[10px] mono text-white/40">
+        {turn ? 'Face the screen to see the posture measurements.' : 'No measurements yet (set a baseline and sit in view).'}
+      </p>
     ) : (
       <table className="w-full text-[10px] mono">
         <caption className="sr-only">Posture measurements</caption>
@@ -327,7 +333,7 @@ const StatusCard = ({ posture, connected, onBaseline, onCancel, busy, mode }) =>
       </button>
       {debug && (classifier
         ? <ModelPanel posture={posture} />
-        : <DebugPanel rows={posture.debug} />)}
+        : <DebugPanel rows={posture.debug} yaw={posture.yaw} turn={posture.turn_reason} />)}
     </div>
   );
 };

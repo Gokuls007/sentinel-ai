@@ -140,6 +140,7 @@ class Baseline:
     frames: int = 0
     mid_x: float | None = None
     mid_y: float | None = None
+    yaw: float | None = None  # head yaw while recording (the looking-away reference); None = 0
 
     @classmethod
     def from_dict(cls, data: dict) -> Baseline:
@@ -382,6 +383,7 @@ class PostureCoach:
         self.hint: str | None = None  # shown next to the status, e.g. "you've moved, reset baseline?"
         self._quality: deque[tuple[float, bool]] = deque()  # (ts, shoulders unclear) recent frames
         self._calib_unclear = 0
+        self._calib_yaw: list[float] = []
         # Personal classifier (trained from the guided calibration); thresholds are the fallback.
         stem = os.path.splitext(baseline_path)[0].replace("posture_baseline", "posture_{}") if baseline_path else None
         self.model_path = stem.format("model") + ".pkl" if stem else None
@@ -556,6 +558,7 @@ class PostureCoach:
         now = self.clock() if now is None else now
         delay = self.cfg.baseline_delay_s if delay is None else delay
         self._calib = []
+        self._calib_yaw = []
         self._calib_unclear = 0
         self._calib_start = now + delay
         self._calib_until = self._calib_start + self.cfg.baseline_seconds
@@ -587,6 +590,9 @@ class PostureCoach:
         problem = self.baseline_problem(samples)
         if unclear >= max(1, len(samples)):  # at least half the frames had unusable shoulders
             problem = UNCLEAR_MESSAGE
+        yaws, self._calib_yaw = self._calib_yaw, []
+        if not problem and yaws and abs(float(np.median(yaws))) > self.cfg.looking_away_yaw:
+            problem = "Your head looked turned away. Face the screen and try again."
         if problem:
             self._calib_error = problem
             logger.info("posture baseline rejected (%d frames): %s", len(samples), problem)
@@ -607,6 +613,7 @@ class PostureCoach:
             frames=len(samples),
             mid_x=med([s.mid_x for s in samples]),
             mid_y=med([s.mid_y for s in samples]),
+            yaw=float(np.median(yaws)) if yaws else None,
         )
         self._save()
         self._window.clear()
@@ -643,6 +650,9 @@ class PostureCoach:
             if ts >= self._calib_start:  # not during the get-ready countdown
                 if m is not None:
                     self._calib.append(m)
+                    _turned, yaw, _why = head_turn(kp, self.cfg.min_kp_conf)
+                    if yaw is not None:
+                        self._calib_yaw.append(yaw)
                 elif problem is not None:
                     self._calib_unclear += 1
             if ts >= self._calib_until:
@@ -664,6 +674,11 @@ class PostureCoach:
         elif ts - self._last_seen > self.cfg.away_after_s:
             self._set_status(AWAY, ["Nobody in front of the camera"], ts)
             self._window.clear()
+            self._away_look_since = None
+        elif self._looking_away(kp if face_seen else None, self.baseline.yaw, ts):
+            self._window.clear()  # a turned head says nothing about posture (and skews head offset)
+            self.smoothed = None
+            self.hint = None
         elif unclear:
             self._window.clear()  # don't judge posture from untrustworthy shoulders
             self.smoothed = None
@@ -678,25 +693,32 @@ class PostureCoach:
             self._propose(a["status"], a["reasons"], ts)
         self._account(dt, ts)
 
+    def _looking_away(self, kp, ref_yaw: float, ts: float) -> bool:
+        """Head turned away from the screen (both methods): "looking away", neutral, with the usual
+        switch delay; held over ``looking_away_to_away_s`` it counts as away. True if turned."""
+        turned, self.yaw, self.turn_reason = (head_turn(kp, self.cfg.min_kp_conf, self.cfg.looking_away_yaw,
+                                                        ref_yaw or 0.0)
+                                              if kp is not None else (False, None, None))
+        if not turned:
+            self._away_look_since = None
+            return False
+        if self._away_look_since is None:
+            self._away_look_since = ts
+        if ts - self._away_look_since >= self.cfg.looking_away_to_away_s:
+            self._set_status(AWAY, ["Looking away from the screen for over "
+                                    f"{self.cfg.looking_away_to_away_s / 60:g} min"], ts)
+        else:
+            self._propose(LOOKING_AWAY, ["Head turned away from the screen"], ts)
+        return True
+
     def _update_with_model(self, kp, unclear: bool, ts: float) -> None:
         if ts - self._last_seen > self.cfg.away_after_s:
             self.stable.reset()
             self._away_look_since = None
             self._set_status(AWAY, ["Nobody in front of the camera"], ts)
             return
-        turned, self.yaw, self.turn_reason = (head_turn(kp, self.cfg.min_kp_conf, self.cfg.looking_away_yaw,
-                                                        self.model.ref.get("yaw", 0.0))
-                                              if kp is not None else (False, None, None))
-        if turned:  # before the classifier: it only knows the postures it was shown
-            if self._away_look_since is None:
-                self._away_look_since = ts
-            if ts - self._away_look_since >= self.cfg.looking_away_to_away_s:
-                self._set_status(AWAY, ["Looking away from the screen for over "
-                                        f"{self.cfg.looking_away_to_away_s / 60:g} min"], ts)
-            else:
-                self._propose(LOOKING_AWAY, ["Head turned away from the screen"], ts)
-            return
-        self._away_look_since = None
+        if self._looking_away(kp, self.model.ref.get("yaw", 0.0), ts):
+            return  # before the classifier: it only knows the postures it was shown
         if unclear:
             self.stable.reset()
             self._propose(UNCLEAR, [UNCLEAR_MESSAGE], ts)
@@ -809,8 +831,8 @@ class PostureCoach:
             "method": "classifier" if self.model is not None else "thresholds",
             "probabilities": dict(self.probs) if self.model is not None else None,
             "features": self.last_raw if self.model is not None else None,
-            "yaw": self.yaw if self.model is not None else None,
-            "turn_reason": self.turn_reason if self.model is not None else None,
+            "yaw": self.yaw,
+            "turn_reason": self.turn_reason,
             "ood": {"distance": self.ood, "threshold": self.model.ood_threshold}
             if self.model is not None and self.model.ood_threshold is not None else None,
             "recording": self._recording_snapshot(ts),

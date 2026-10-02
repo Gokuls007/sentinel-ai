@@ -8,8 +8,10 @@ from posture.coach import (
     AWAY,
     GOOD,
     LEANING,
+    LOOKING_AWAY,
     NO_BASELINE,
     SLOUCHING,
+    SLUMPED,
     TOO_CLOSE,
     PostureCoach,
     PostureConfig,
@@ -276,12 +278,19 @@ def test_baseline_rejected_if_it_does_not_look_upright():
     assert c2.baseline is None and "very low" in snap2["calibration_error"]
 
 
-def test_glancing_sideways_is_not_leaning():
-    """Turning the head moves the nose a lot but the eye midpoint only a little."""
+def test_glancing_sideways_is_looking_away_not_leaning():
+    """Turning the head moves the nose a lot but the eye midpoint only a little: looking away
+    (neutral), never a posture problem."""
     glance = kp(nose=(350, 200), eyes=((310, 190), (340, 190)))
     c, t = coach_with_baseline()
-    run(c, glance, t, 4)
-    assert c.snapshot()["status"] == GOOD
+    statuses = []
+    for _ in range(40):
+        t += 0.1
+        c.update(glance, t)
+        statuses.append(c.status)
+    assert c.status == LOOKING_AWAY and not set(statuses) & {LEANING, SLOUCHING, SLUMPED}
+    snap = c.snapshot()
+    assert snap["session"]["poor_s"] == 0 and snap["yaw"] > 0.5 and snap["turn_reason"]
 
 
 # --- lean is measured against your own body, never the frame (requested after the webcam test) --
@@ -301,12 +310,48 @@ def test_sitting_upright_but_shifted_sideways_in_the_frame_is_good():
         assert baseline_then(shifted(WITH_EARS, dx=dx), WITH_EARS)["status"] == GOOD
 
 
-def test_turning_the_head_to_look_sideways_is_good():
-    # Nose swings 35 px, eyes 12 px, ears 8 px: a glance, not a lean.
+def test_turning_the_head_to_look_sideways_is_looking_away():
+    # Nose swings 35 px, eyes 12 px, ears 8 px: a glance, not a lean. Neutral, never Leaning or Good.
     turned = kp(nose=(355, 200), eyes=((317, 190), (347, 190)), ears=((298, 205), (358, 205)))
-    assert baseline_then(turned, WITH_EARS)["status"] == GOOD
+    assert baseline_then(turned, WITH_EARS)["status"] == LOOKING_AWAY
     turned_no_ears = kp(nose=(355, 200), eyes=((317, 190), (347, 190)))
-    assert baseline_then(turned_no_ears)["status"] == GOOD
+    assert baseline_then(turned_no_ears)["status"] == LOOKING_AWAY
+    one_eye = kp(nose=(355, 200), eyes=((317, 190), (347, 190)))
+    one_eye[2, 2] = 0.1
+    assert baseline_then(one_eye)["status"] == LOOKING_AWAY
+
+
+def test_looking_away_timing_matches_the_classifier():
+    """Same switch delay as any status (a 1 s glance changes nothing), counted as neither good
+    nor poor, and held over 2 min it counts as away. Facing the screen brings the posture back."""
+    turned = kp(nose=(355, 200), eyes=((317, 190), (347, 190)))
+    c, t = coach_with_baseline()
+    t = run(c, UPRIGHT, t, 3)
+    t = run(c, turned, t, 1)
+    assert c.status == GOOD
+    t = run(c, turned, t, 30)
+    assert c.status == LOOKING_AWAY
+    t = run(c, turned, t, 95)
+    assert c.status == AWAY
+    snap = c.snapshot()
+    assert snap["session"]["seconds"]["looking_away"] > 100 and snap["session"]["poor_s"] == 0
+    run(c, UPRIGHT, t, 4)
+    assert c.status == GOOD
+
+
+def test_baseline_refuses_a_turned_head_and_stores_its_yaw(tmp_path):
+    turned = kp(nose=(355, 200), eyes=((317, 190), (347, 190)))
+    c = PostureCoach(PostureConfig())
+    c.update(turned, 0.0)
+    c.start_baseline(now=0.0)
+    run(c, turned, 0.0, 7)
+    assert c.baseline is None and "turned" in c.snapshot()["calibration_error"]
+    # A slightly off-centre camera: a small constant yaw becomes the reference.
+    off = kp(nose=(326, 200))
+    c2, t = coach_with_baseline(off)
+    assert c2.baseline.yaw == pytest.approx(0.2)
+    run(c2, off, t, 4)
+    assert c2.status == GOOD and c2.snapshot()["yaw"] == pytest.approx(0, abs=1e-6)
 
 
 def test_real_lean_head_and_shoulders_tilted_is_leaning():
