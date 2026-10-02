@@ -48,6 +48,9 @@ class _TrackState:
     last_signals: dict | None = None
     upright_since: float | None = None  # start of the current run of "looks upright" frames
     anchor: object = None  # box centre where a recovered (re-found) person was lying
+    floor_y: float | None = None  # where the feet were while standing (image y)
+    box_samples: list = field(default_factory=list)  # upright box heights (box calibration)
+    box_scale: float = 0.0
 
 
 class FallDetector:
@@ -66,7 +69,16 @@ class FallDetector:
                  head_drop_ratio: float = 0.5, stillness_seconds: float = 1.0,
                  stillness_speed_threshold: float = 0.15, fallen_timeout_seconds: float = 5.0,
                  cooldown_seconds: float = 30.0, lost_hold_seconds: float = 0.0,
-                 upright_hold_seconds: float = 0.0):
+                 upright_hold_seconds: float = 0.0, ground_mode: str = "torso",
+                 box_calibration: bool = False):
+        # ground_mode: how "on the ground" is judged. "torso" (default): torso near horizontal
+        #   and head dropped. "combined": also direction-independent signals (hips near the
+        #   floor, the skeleton collapsing), with a veto when the hips are still high (bending
+        #   to pick something up).
+        # box_calibration: without a measurable skeleton, estimate standing height from an
+        #   upright bounding box so fall detection can start.
+        self.ground_mode = ground_mode
+        self.box_calibration = box_calibration
         # lost_hold_seconds: a person who vanishes while falling / on the ground (detector
         #   misses many lying people) is held at their last position, motionless, this long.
         # upright_hold_seconds: "looks upright" must last this long before leaving the
@@ -94,6 +106,8 @@ class FallDetector:
         """Advance the state machine for one person; returns an event on a confirmed fall."""
         st = self.tracks.setdefault(track_id, _TrackState())
         body_h = features.initial_standing_height
+        if body_h <= 0 and self.box_calibration:
+            body_h = self._box_scale(st, pose)
         if body_h <= 0:  # not calibrated yet: we don't know how tall this person is
             self._remember(st, pose, timestamp)
             return None
@@ -114,9 +128,7 @@ class FallDetector:
 
         elif st.state == self.FALLING:
             st.peak_descent = max(st.peak_descent, signals["descent_speed"])
-            on_ground = signals["horizontal_pose"] and (
-                signals["head_dropped"] or not signals["head_known"])
-            if on_ground:
+            if self._on_ground(signals):
                 self._enter_fallen(st, track_id, timestamp, signals, pose)
             elif timestamp - st.falling_since > self.FALLING_WINDOW_S:
                 st.state = self.UPRIGHT  # e.g. sat down or crouched quickly
@@ -251,7 +263,24 @@ class FallDetector:
         else:
             is_still = abs(descent_speed) < self.stillness_speed_threshold
 
+        # Direction-independent: hip height above the feet (visible ankles, else where the feet
+        # were while standing), and the vertical spread of the visible keypoints.
+        kp = pose.keypoints
+        visible = kp[kp[:, 2] >= 0.3]
+        ankles = kp[[15, 16]]
+        ankles = ankles[ankles[:, 2] >= 0.3]
+        hips = kp[[11, 12]]
+        hips = hips[hips[:, 2] >= 0.3]
+        if len(ankles) and not horizontal:
+            foot_y = float(ankles[:, 1].mean())
+            st.floor_y = foot_y if st.floor_y is None else 0.8 * st.floor_y + 0.2 * foot_y
+        ref = float(ankles[:, 1].mean()) if len(ankles) else st.floor_y
+        hip_height = (ref - float(hips[:, 1].mean())) / body_h if (len(hips) and ref is not None) else None
+        spread = (float(visible[:, 1].max() - visible[:, 1].min()) / body_h) if len(visible) >= 5 else None
+
         return {
+            "hip_height": hip_height,
+            "spread": spread,
             "descent_speed": descent_speed,
             "aspect_ratio": aspect_ratio,
             "torso_angle": torso if torso is not None else -1.0,
@@ -281,7 +310,7 @@ class FallDetector:
         if mode == "pose":
             return self.check(track_id, pose, features, timestamp)
         st = self.tracks.get(track_id)
-        body_h = features.initial_standing_height
+        body_h = features.initial_standing_height or (st.box_scale if st is not None else 0.0)
         if st is None or st.state not in (self.FALLING, self.FALLEN) or body_h <= 0:
             return None
         if not self._lying(st.last_signals or {}):
@@ -323,9 +352,42 @@ class FallDetector:
             return bool(signals.get("horizontal_pose"))
         return self.LYING_TORSO_DEG <= torso <= 180.0 - self.LYING_TORSO_DEG
 
-    @staticmethod
-    def _stood_up(signals) -> bool:
-        return not signals["horizontal_pose"] and not signals["head_dropped"]
+    # Direction-independent thresholds (fractions of the head-to-ankle height). Standing, the
+    # hips are ~0.6 above the ankles and the keypoints span ~1.0; lying, both drop near 0.
+    HIP_LOW = 0.25       # hips this close to the floor: down
+    HIP_HIGH = 0.35      # hips at least this high: not on the ground (e.g. bending over)
+    SPREAD_COLLAPSED = 0.5
+
+    def _on_ground(self, signals) -> bool:
+        torso_rule = signals["horizontal_pose"] and (signals["head_dropped"] or not signals["head_known"])
+        if self.ground_mode != "combined":
+            return torso_rule
+        hip_h = signals.get("hip_height")
+        spread = signals.get("spread")
+        low = hip_h is not None and hip_h < self.HIP_LOW
+        collapsed = spread is not None and spread < self.SPREAD_COLLAPSED
+        high_hips = hip_h is not None and hip_h > self.HIP_HIGH
+        return (torso_rule or (low and collapsed) or (collapsed and signals["head_dropped"])) and not high_hips
+
+    def _box_scale(self, st: _TrackState, pose: PoseResult) -> float:
+        """Head-to-ankle scale from upright boxes (taller than 1.6x their width) when the
+        skeleton can't be measured: median of 10 samples, x0.9 (the box includes the crown and
+        feet)."""
+        if st.box_scale > 0:
+            return st.box_scale
+        w = float(pose.bbox[2] - pose.bbox[0])
+        h = float(pose.bbox[3] - pose.bbox[1])
+        if w > 0 and h / w >= 1.6:
+            st.box_samples.append(0.9 * h)
+            if len(st.box_samples) >= 10:
+                st.box_scale = float(np.median(st.box_samples))
+        return st.box_scale
+
+    def _stood_up(self, signals) -> bool:
+        up = not signals["horizontal_pose"] and not signals["head_dropped"]
+        if self.ground_mode == "combined" and signals.get("hip_height") is not None:
+            up = up and signals["hip_height"] >= self.HIP_LOW
+        return up
 
     def _upright_held(self, st: _TrackState, signals, timestamp: float) -> bool:
         """Upright now, and (with hysteresis) for at least ``upright_hold_seconds``."""
@@ -349,7 +411,7 @@ class FallDetector:
             timestamp=timestamp,
             confidence=confidence,
             stage=self.CONFIRMED,
-            signals={k: (round(float(v), 3) if not isinstance(v, bool) else v) for k, v in signals.items()},
+            signals={k: (v if v is None or isinstance(v, bool) else round(float(v), 3)) for k, v in signals.items()},
             head_y=float(pose.head_y),
             hip_y=float(pose.mid_hip[1]),
             velocity=round(float(st.peak_descent), 3),

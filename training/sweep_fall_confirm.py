@@ -75,6 +75,8 @@ class Fixes:
     recovery_rotated: bool = False      # 3. rotated retry
     upright_hold_seconds: float = 0.0   # 4. hysteresis before leaving the ground state
     recovery_mode: str = "pose"         # how a re-found person is used: "pose" or "presence"
+    ground_mode: str = "torso"          # "torso" or "combined" (direction-independent signals)
+    box_calibration: bool = False       # standing height from upright boxes if no skeleton
 
     @property
     def chain(self) -> str | None:
@@ -224,6 +226,8 @@ def make_detector(fall_cfg, confirm_s: float, fixes: Fixes = BASELINE):
         cooldown_seconds=fall_cfg.cooldown_seconds,
         lost_hold_seconds=fixes.lost_hold_seconds,
         upright_hold_seconds=fixes.upright_hold_seconds,
+        ground_mode=fixes.ground_mode,
+        box_calibration=fixes.box_calibration,
     )
 
 

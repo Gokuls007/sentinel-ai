@@ -7,6 +7,7 @@ replaced in place by `--write docs/BENCHMARKS.md`.
 |---|---|
 | Latency and throughput | `python scripts/benchmark.py --write docs/BENCHMARKS.md` |
 | Fall detection accuracy (URFD) | `python training/eval_fall.py --download --write docs/BENCHMARKS.md` |
+| Fall detection: rules vs learned model, unseen subjects | `python training/fall_round3.py final --write docs/BENCHMARKS.md` |
 | Fall confirmation time sweep | `python training/sweep_fall_confirm.py --write docs/BENCHMARKS.md` |
 | False alarms on other non-fall footage | `python training/eval_false_alarms.py --write docs/BENCHMARKS.md` |
 | Search accuracy | `python scripts/eval_search.py --write docs/BENCHMARKS.md` |
@@ -65,6 +66,79 @@ _No squat or kneel footage evaluated yet. Add the ergonomics clip to `data/recor
 
 This footage totals 3.2 minutes. That is far too little for a real field false-alarm rate, which needs hours of normal work at the target site.
 <!-- benchmark:false-alarms:end -->
+
+## Fall detection: rules vs learned model (unseen subjects)
+
+<!-- benchmark:fall-final:start -->
+_Measured 2026-10-02 with `python training/fall_round3.py final`._ **Test set: CAUCAFall subjects 6-10 only** (25 falls, 25 daily activities, 4.5 min of no-fall video). These people were never used to design, tune or train anything. Training and tuning used URFD, the sample clips and CAUCAFall subjects 1-5 (55 falls). Default 1 s confirmation.
+
+| Method | Confirmed recall | Confirmed false alarms / h (count) | Possible recall | Possible false alarms / h (count) |
+|---|---|---|---|---|
+| Rules: baseline | 2 / 25 (8%) | 52.9 (4) | 7 / 25 (28%) | 79.4 (6) |
+| Rules: frozen candidate (rotated retry + hysteresis, presence) | 4 / 25 (16%) | 66.2 (5) | 8 / 25 (32%) | 79.4 (6) |
+| Rules: + direction-independent signals | 4 / 25 (16%) | 0.0 (0) | 10 / 25 (40%) | 0.0 (0) |
+| Rules: + direction-independent signals + box calibration | 4 / 25 (16%) | 0.0 (0) | 10 / 25 (40%) | 0.0 (0) |
+| Rules: candidate + direction-independent + box calibration | 5 / 25 (20%) | 39.7 (3) | 10 / 25 (40%) | 52.9 (4) |
+| Learned: gradient boosting on pose features (threshold 0.5, chosen by cross-validation on training videos) | 14 / 25 (56%) | 39.7 (3) | 18 / 25 (72%) | 92.6 (7) |
+
+False alarms on the test subjects by activity (confirmed / possible):
+
+| Method | Hop | Kneel | Pick up object | Sit down | Walk |
+|---|---|---|---|---|---|
+| Rules: baseline | 0 / 0 | 0 / 0 | 3 / 4 | 1 / 2 | 0 / 0 |
+| Rules: frozen candidate | 0 / 0 | 0 / 0 | 4 / 4 | 1 / 2 | 0 / 0 |
+| Rules: + direction-independent signals | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| Rules: + direction-independent signals + box calibration | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| Rules: candidate + direction-independent + box calibration | 0 / 0 | 0 / 0 | 3 / 3 | 0 / 1 | 0 / 0 |
+| Learned: gradient boosting on pose features | 0 / 0 | 0 / 2 | 1 / 2 | 2 / 3 | 0 / 0 |
+
+Tuning half (CAUCAFall subjects 1-5), for reference. Rules only; the learned model was trained on these subjects:
+
+| Method | Confirmed recall | Confirmed false alarms / h (count) | Possible recall | Possible false alarms / h (count) |
+|---|---|---|---|---|
+| Rules: baseline | 5 / 25 (20%) | 0.0 (0) | 14 / 25 (56%) | 44.6 (3) |
+| Rules: frozen candidate (rotated retry + hysteresis, presence) | 8 / 25 (32%) | 0.0 (0) | 14 / 25 (56%) | 59.5 (4) |
+| Rules: + direction-independent signals | 7 / 25 (28%) | 0.0 (0) | 15 / 25 (60%) | 0.0 (0) |
+| Rules: + direction-independent signals + box calibration | 7 / 25 (28%) | 0.0 (0) | 15 / 25 (60%) | 0.0 (0) |
+| Rules: candidate + direction-independent + box calibration | 8 / 25 (32%) | 0.0 (0) | 15 / 25 (60%) | 29.8 (2) |
+
+Learned model: `HistGradientBoostingClassifier` (200 trees, depth 4) on 12 per-frame pose features over a 1 s window (descent_now, descent_max_1s, drop_from_start, shrink, shrink_min_1s, aspect, torso, spread, hip_height, head_drop, hip_std_05s, visible_kps). Possible = probability above the threshold for 0.3 s; confirmed = above it for a further 1 s. Threshold grid with grouped 5-fold cross-validation on training videos (recall minus false alarms per no-fall video): 0.5 → +0.48, 0.6 → +0.44, 0.7 → +0.39, 0.8 → +0.30, 0.9 → +0.26, 0.95 → +0.19.
+
+Notes on the learned model:
+- Its "confirmed" level means the probability stayed above the threshold for 1.3 s. It has no separate stillness check like the rules, so the two confirmed levels are not identical in meaning.
+- It runs offline only (this script). It isn't wired into the live pipeline.
+- An earlier run had a bug: a dip below the threshold shorter than 0.5 s didn't break a streak. These numbers are from the corrected code; the rule rows were unaffected.
+
+With only 25 test falls and 4.5 min of no-fall video, one fall is 4 points of recall and one false alarm is about 13 per hour. Differences of one or two events are noise.
+
+**Diagnosis (tuning subjects only): why falls never reached the on-the-ground stage** (baseline rules):
+
+CAUCAFall tuning subjects 1-5: 25 falls, 14 reached the ground, 11 did not.
+
+Why (missed falls):
+
+- 6 x person not tracked during the fall
+- 3 x never calibrated (no standing height before the fall)
+- 1 x descent too slow
+- 1 x descended, but the torso never looked horizontal
+
+By on-screen direction (all falls: reached / total):
+
+- not visible: 2 / 8
+- sideways (rotates): 12 / 14
+- toward/away (shortens): 0 / 1
+- unclear: 0 / 2
+
+By fall type (folder label):
+
+- Fall backwards: 4 / 5
+- Fall forward: 2 / 5
+- Fall left: 3 / 5
+- Fall right: 2 / 5
+- Fall sitting: 3 / 5
+
+Most misses are visibility problems (the person isn't tracked during the fall, or never calibrated), not fall direction: sideways falls reach the ground in most clips, and only one clip is clearly toward or away from the camera.
+<!-- benchmark:fall-final:end -->
 
 ## Fall confirmation time sweep
 

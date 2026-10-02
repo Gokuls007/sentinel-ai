@@ -68,6 +68,8 @@ class AnomalyEngine:
             cooldown_seconds=f.cooldown_seconds,
             lost_hold_seconds=f.lost_hold_seconds,
             upright_hold_seconds=f.upright_hold_seconds,
+            ground_mode=f.ground_mode,
+            box_calibration=f.box_calibration,
         )
 
         self.zone_monitor = ZoneMonitor(
