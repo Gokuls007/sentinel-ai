@@ -15,7 +15,7 @@ too long. So the coach tracks *movement*, not instant posture:
   posture swung the 1 s-smoothed shoulder width by up to 40% and the tilt by up to 24 degrees.
   With the first thresholds (1 s smoothing, 3 s hold, 15% / 10 degrees) two minutes of
   seated posture changes registered five "movements", so the still timer never got far.
-  The defaults below register none on that recording (tests/data/real_seated_shoulders.json).
+  The defaults below register none on that recording (tests/fixtures/real_seated_shoulders.json).
 - **Breaks** = away for ``break_min_s`` or more, or a completed stretch break.
 - **Static time** = only still stretches longer than ``static_min_s`` (10 min) count, so short
   pauses between movements don't inflate it.

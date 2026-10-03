@@ -221,7 +221,7 @@ def test_real_seated_session_counts_as_still():
     """Real laptop-webcam measures (one person, seated: lean right, upright, slouching, moving
     naturally), played twice: about two minutes of ordinary sitting. The first thresholds found
     five "movements" here, so the still timer kept resetting and the reminder never came."""
-    path = os.path.join(os.path.dirname(__file__), "data", "real_seated_shoulders.json")
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "real_seated_shoulders.json")
     with open(path, encoding="utf-8") as f:
         rows = json.load(f)["rows"]
     span = rows[-1][0] + 0.05
