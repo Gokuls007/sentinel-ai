@@ -11,7 +11,7 @@ import { BreakBanner, BreakPanel, TipCard } from './PostureCoaching';
 import { MovementCard, MovementSettings, TodayPanel } from './MovementCoach';
 
 const ALERTS_KEY = 'sentinel.posture.reminders';
-const DETAILS_KEY = 'sentinel.posture.details';
+const ADVANCED_KEY = 'sentinel.posture.advanced';
 
 // Static class names so Tailwind generates them.
 const STATUS_STYLE = {
@@ -396,9 +396,10 @@ const PostureCoachPage = () => {
   const posture = frameData?.posture || null;
   const [timeline, setTimeline] = useState([]);
   const [moveTimeline, setMoveTimeline] = useState([]);
-  const [details, setDetails] = useState(() => Boolean(loadStored(DETAILS_KEY, false)));
-  const toggleDetails = () => setDetails((d) => {
-    saveStored(DETAILS_KEY, !d);
+  // Calibration, the posture details and table, and the timeline: collapsed by default.
+  const [advanced, setAdvanced] = useState(() => Boolean(loadStored(ADVANCED_KEY, false)));
+  const toggleAdvanced = () => setAdvanced((d) => {
+    saveStored(ADVANCED_KEY, !d);
     return !d;
   });
   const [busy, setBusy] = useState(false);
@@ -459,27 +460,33 @@ const PostureCoachPage = () => {
               <CoachCard posture={posture} connected={feedStatus === 'live'} busy={busy} mode={mode}
                 onCancel={() => call('/api/posture/recording/cancel?camera=laptop')}
                 onBreak={breakAction} />
-              <button type="button" onClick={toggleDetails} aria-expanded={details}
-                className={`${chipClass(details)} flex items-center gap-1.5`}>
-                {details ? <ChevronUp className="w-3 h-3" aria-hidden="true" /> : <ChevronDown className="w-3 h-3" aria-hidden="true" />}
-                {details ? 'Hide details' : 'Show details'}
-              </button>
-              {details && (
-                <PostureDetails posture={posture} busy={busy}
-                  onBaseline={() => call('/api/posture/baseline?camera=laptop')} />
-              )}
               <TipCard enabled={running} />
               <MovementSettings settings={posture?.settings} alerts={alerts} updateAlerts={updateAlerts} busy={busy}
                 onChange={(patch) => call('/api/posture/settings?camera=laptop', null, patch, putJson)} />
-              <CalibrationPanel posture={posture} busy={busy}
-                call={(path, body) => call(path, null, body)}
-                remove={(path) => call(path, null, {}, deleteJson)} />
             </div>
           </div>
-          <TodayPanel timeline={moveTimeline} />
-          {details && (
-            <SessionSummary posture={posture} timeline={timeline}
-              onReset={() => call('/api/posture/session/reset?camera=laptop', () => setTimeline([]))} />
+          <button type="button" onClick={toggleAdvanced} aria-expanded={advanced}
+            className={`${chipClass(advanced)} flex items-center gap-1.5`}>
+            {advanced ? <ChevronUp className="w-3 h-3" aria-hidden="true" /> : <ChevronDown className="w-3 h-3" aria-hidden="true" />}
+            Advanced: calibration, posture details, timeline
+          </button>
+          {advanced && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-12 gap-4">
+                <div className="col-span-12 lg:col-span-6">
+                  <PostureDetails posture={posture} busy={busy}
+                    onBaseline={() => call('/api/posture/baseline?camera=laptop')} />
+                </div>
+                <div className="col-span-12 lg:col-span-6">
+                  <CalibrationPanel posture={posture} busy={busy}
+                    call={(path, body) => call(path, null, body)}
+                    remove={(path) => call(path, null, {}, deleteJson)} />
+                </div>
+              </div>
+              <TodayPanel timeline={moveTimeline} />
+              <SessionSummary posture={posture} timeline={timeline}
+                onReset={() => call('/api/posture/session/reset?camera=laptop', () => setTimeline([]))} />
+            </div>
           )}
           <p className="text-[10px] mono text-white/30">
             Runs entirely on this computer. A movement coach: it tracks how long you stay still, not every

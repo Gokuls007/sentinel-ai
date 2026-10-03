@@ -3,12 +3,19 @@
 Nobody holds one posture all day, and shifting is normal; the real problem is staying static
 too long. So the coach tracks *movement*, not instant posture:
 
-- **Moved** = a meaningful position change held for ``hold_s`` (the torso shifts by
+- **Moved** = a large position change for ``hold_s`` in total within ``hold_window_s`` (held,
+  or moving around in view: walking crosses back near the old spot now and then; the torso shifts by
   ``shift_widths`` shoulder widths, the shoulder line turns by ``lean_change_deg``, or the
-  shoulder width changes by ``width_change``, i.e. leaning in or back), getting up (away for
-  ``away_s``), or finishing a stretch break. It is measured against your own position since
-  the last movement, smoothed over ``smooth_s``, so it needs no calibration, and typing,
-  fidgeting and glancing around don't count.
+  shoulder width changes by ``width_change``, i.e. leaning far in or back), getting up (away
+  for ``away_s``), or finishing a stretch break. It is measured against your own position
+  since the last movement, smoothed over ``smooth_s``, so it needs no calibration.
+- **Not movement:** typing, fidgeting, glancing around, and ordinary seated posture changes
+  (upright, slouching, leaning). From a laptop webcam a small torso turn changes the
+  shoulders' apparent width and angle a lot: in a real session, sitting "naturally" in one
+  posture swung the 1 s-smoothed shoulder width by up to 40% and the tilt by up to 24 degrees.
+  With the first thresholds (1 s smoothing, 3 s hold, 15% / 10 degrees) two minutes of
+  seated posture changes registered five "movements", so the still timer never got far.
+  The defaults below register none on that recording (tests/data/real_seated_shoulders.json).
 - **Breaks** = away for ``break_min_s`` or more, or a completed stretch break.
 - **Static time** = only still stretches longer than ``static_min_s`` (10 min) count, so short
   pauses between movements don't inflate it.
@@ -18,7 +25,9 @@ too long. So the coach tracks *movement*, not instant posture:
 
 from __future__ import annotations
 
+import json
 import math
+import os
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -31,17 +40,20 @@ MOVING, STILL, LONG_STILL, AWAY, BREAK = "moving", "still", "long_still", "away"
 
 @dataclass
 class MovementConfig:
-    shift_widths: float = 0.35
-    lean_change_deg: float = 10.0
-    width_change: float = 0.15
-    hold_s: float = 3.0
-    smooth_s: float = 1.0
+    shift_widths: float = 0.5
+    lean_change_deg: float = 20.0
+    width_change: float = 0.35
+    hold_s: float = 8.0
+    hold_window_s: float = 12.0   # ...counted in total within this window
+    smooth_s: float = 3.0
     away_s: float = 20.0
     break_min_s: float = 60.0
     static_min_s: float = 600.0
     reminder_s: float = 1800.0
     snooze_s: float = 600.0
-    moving_shown_s: float = 60.0   # "moving" for this long after a movement, then "still"
+    moving_shown_s: float = 10.0   # "moving" for this long after a real movement, then "still"
+    log_every_s: float = 1.0       # the movement log (for tuning): one line per second
+    log_max_bytes: int = 4_000_000
     timeline_bucket_s: float = 10.0
 
 
@@ -77,13 +89,15 @@ class Today:
 
 
 class MovementTracker:
-    def __init__(self, cfg: MovementConfig | None = None, history=None, now: float | None = None):
+    def __init__(self, cfg: MovementConfig | None = None, history=None, now: float | None = None,
+                 log_path: str | None = None):
         self.cfg = cfg or MovementConfig()
         self.history = history
         self._window: deque[tuple[float, _Pose]] = deque()
         self.anchor: _Pose | None = None
         self.last_moved: float | None = None
         self._changed_since: float | None = None
+        self._big: deque[tuple[float, bool]] = deque()  # (ts, large change?) over hold_window_s
         self._last_seen: float | None = None
         self._away_since: float | None = None
         self._away_ended = False  # away long enough that the still stretch was closed
@@ -97,6 +111,11 @@ class MovementTracker:
         self._bucket_start: float | None = None
         self._last_ts: float | None = None
         self.today = self._load_today(now)
+        self._moved_at: float | None = None  # the last *real* movement (not the session start)
+        self.log_path = log_path
+        self._last_log = 0.0
+        self._last_measure: dict | None = None
+        self._measured_at: float | None = None
 
     # --- today's totals (persisted in the history) ---------------------------------------------
 
@@ -145,6 +164,7 @@ class MovementTracker:
         self._changed_since = None
         self.reminder_offered = False
         self.last_change = {"at": ts, "why": why}
+        self._moved_at = ts
 
     def _end_stretch(self, ts: float) -> None:
         if self.last_moved is None:
@@ -174,6 +194,7 @@ class MovementTracker:
         else:
             self._away(ts)
         self._account(dt, ts)
+        self._log_measures(ts)
         if (not self.reminder_offered and not self.on_break and self.state(ts) not in (AWAY, BREAK)
                 and self.still_s(ts) >= self.cfg.reminder_s and ts >= self.snooze_until):
             self.reminder_offered = True
@@ -212,19 +233,51 @@ class MovementTracker:
             self.anchor, self.last_moved = self._smoothed(), ts
             return
         c = self._change(self._smoothed())
+        self._last_measure = c
+        self._measured_at = ts
         big = (c["shift"] >= self.cfg.shift_widths or c["lean"] >= self.cfg.lean_change_deg
                or c["width"] >= self.cfg.width_change)
-        if not big:
+        # A large change for ``hold_s`` in total within the last ``hold_window_s``: a new position
+        # held, or moving around in view (walking crosses back near the old spot now and then).
+        self._big.append((ts, big))
+        while self._big and ts - self._big[0][0] > self.cfg.hold_window_s:
+            self._big.popleft()
+        if big and self._changed_since is None:
+            self._changed_since = ts
+        if not any(b for _t, b in self._big):
             self._changed_since = None
             return
-        if self._changed_since is None:
-            self._changed_since = ts
-        if ts - self._changed_since >= self.cfg.hold_s:
+        frames = list(self._big)
+        big_s = sum(min(1.0, frames[i + 1][0] - frames[i][0]) for i in range(len(frames) - 1) if frames[i][1])
+        if big_s >= self.cfg.hold_s:
             why = max(("shift", c["shift"] / self.cfg.shift_widths), ("lean", c["lean"] / self.cfg.lean_change_deg),
                       ("width", c["width"] / self.cfg.width_change), key=lambda kv: kv[1])[0]
             # Dated from when the change started, not when it was confirmed.
             self._moved(self._changed_since, self._smoothed(), {"shift": "changed position", "lean": "changed lean",
                                                                 "width": "leaned in or back"}[why])
+            self._moved_at = ts  # show "moving" from when it was confirmed
+            self._big.clear()
+
+    def _log_measures(self, ts: float) -> None:
+        """One JSON line per second: the change measures vs the anchor and the state, so the
+        thresholds can be tuned on real sessions (issue #4). Local only; trimmed when large."""
+        if not self.log_path or ts - self._last_log < self.cfg.log_every_s:
+            return
+        self._last_log = ts
+        c = self._last_measure or {}
+        fresh = self._measured_at is not None and ts - self._measured_at <= self.cfg.log_every_s
+        row = {"t": round(ts, 2), "state": self.state(ts), "still_s": round(self.still_s(ts), 1),
+               "measured": fresh, **({k: round(v, 3) for k, v in c.items()} if fresh else {})}
+        try:
+            if os.path.isfile(self.log_path) and os.path.getsize(self.log_path) > self.cfg.log_max_bytes:
+                with open(self.log_path, encoding="utf-8") as f:
+                    lines = f.readlines()
+                with open(self.log_path, "w", encoding="utf-8") as f:
+                    f.writelines(lines[len(lines) // 2:])
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row) + "\n")
+        except OSError:
+            self.log_path = None  # can't write: stop trying
 
     # --- breaks and the reminder ---------------------------------------------------------------
 
@@ -241,6 +294,7 @@ class MovementTracker:
         self._end_stretch(ts)
         self.last_moved = ts
         self.last_change = {"at": ts, "why": "stretch break"}
+        self._moved_at = ts
 
     def snooze(self, ts: float) -> None:
         self.reminder_offered = False
@@ -267,7 +321,7 @@ class MovementTracker:
         if self.last_moved is None:
             return AWAY
         s = self.still_s(ts)
-        if s < self.cfg.moving_shown_s:
+        if self._moved_at is not None and ts - self._moved_at < self.cfg.moving_shown_s:
             return MOVING
         return LONG_STILL if s > self.cfg.static_min_s else STILL
 

@@ -378,7 +378,8 @@ class CoachSettings:
     lean_enabled: bool = True
     lean_min: float = 20.0
     # Shortened timings for testing and recording a demo: reminder after 1 min, long holds 2 min.
-    demo_timings: bool = False
+    # On by default until the demo GIF is recorded; then turn it off in Settings (and here).
+    demo_timings: bool = True
 
     DEMO_REMINDER_S = 60.0
     DEMO_HOLD_S = 120.0
@@ -445,7 +446,8 @@ class PostureCoach:
         # The movement coach: time since you last moved, breaks, static time, the movement
         # reminder (which offers the stretch break), and long-hold warnings for sustained extremes.
         self.break_cfg = BreakConfig()
-        self.movement = MovementTracker(MovementConfig(), history=self.history, now=clock())
+        self.movement = MovementTracker(MovementConfig(), history=self.history, now=clock(),
+                                        log_path=stem.format("movement_log") + ".jsonl" if stem else None)
         self.holds = HoldTracker(HoldConfig())
         self._hold_window: deque = deque()  # (ts, head_ratio, tilt, lateral) for the classifier path
         # Shared by every camera's coach (Settings can change them while the webcam is off).
@@ -1121,7 +1123,7 @@ class PostureCoach:
             "holds": self.holds.snapshot(
                 ts, available=self._hold_reference() is not None,
                 reason=None if self._hold_reference() is not None else
-                "Set a baseline or calibrate to turn on long-hold warnings (head down, strong lean)"),
+                "Set a baseline or calibrate (under Advanced) to turn on long-hold warnings (head down, strong lean)"),
             "settings": asdict(self.settings),
         }
 

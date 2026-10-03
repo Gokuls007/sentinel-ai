@@ -216,16 +216,23 @@ Switch the mode to **Desk Posture Coach** and start your webcam. It is a *moveme
 not a posture police. Nobody holds one posture all day and shifting is normal; the real
 problem is staying still too long.
 
-- **What it shows:** "Still for 23 min" (time since you last moved), plus today's breaks,
-  static time and longest still stretch, and a timeline of moving, still and away.
+- **What it shows:** one card with "Still for 23 min" (time since you last moved), the
+  movement reminder and the stretch break, plus a line with today's breaks, static time and
+  longest still stretch. Calibration, the posture details and the timeline are under
+  **Advanced** (collapsed).
 - **What counts as moving:**
-  - a real position change held for about 3 s: the torso shifts, you lean in or back, or the
-    shoulders turn;
   - getting up;
-  - a stretch break.
+  - a stretch break;
+  - a large position change held for about 8 s, such as moving your chair, leaning far back
+    or standing partly.
 
-  It is measured against your own position, so it works without any calibration. Typing,
-  fidgeting and glancing around don't count.
+  It is measured against your own position, so it works without any calibration.
+- **What doesn't count:** typing, fidgeting, glancing around, and ordinary seated posture
+  changes between upright, slouching and leaning.
+  - On a laptop webcam, a small torso turn swings the shoulders' apparent width and angle a
+    lot. A real session showed this, and the thresholds are set from it.
+  - Per-second measures are logged locally to `data/posture_movement_log_laptop.jsonl` for
+    tuning.
 - **Static time** counts only still stretches longer than 10 minutes.
 - **One reminder** comes after 30 minutes without moving, whatever your posture (15–60 min is
   configurable). It offers a 1-minute guided stretch break: neck tilts, shoulder shrugs and a
@@ -236,11 +243,14 @@ problem is staying still too long.
   - When one fires, a faint outline of your own good posture appears on the video, with
     "Back to good" once you've corrected.
 - **Personal calibration (optional):** record a few postures, and a small local model learns
-  them. It feeds the long-hold checks and the setup tips, and its moment-to-moment view sits
-  behind "Show details".
+  them. It feeds the long-hold checks and the setup tips. Its moment-to-moment view is under
+  Advanced.
 - **Setup tips** come from your history, for example "your screen is probably too low".
 - **Demo timings** (Settings, clearly labelled) shorten the reminder to 1 minute and the
   long-hold warnings to 2, for testing and recording a demo.
+  - **They're on by default for now,** with a badge on the coach page. Turn them off in
+    Settings for everyday use.
+  - Once the demo is recorded, the default goes back to off.
 
 Everything runs on this computer. No video, posture or movement data leaves it, and no LLM is
 involved. The webcam gives 2D estimates; this is not a medical or ergonomic assessment.

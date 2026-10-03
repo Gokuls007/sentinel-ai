@@ -435,7 +435,7 @@ def test_movement_reminder_offers_the_break_and_the_break_counts(tmp_path):
     assert snap["movement"]["breaks_today"] == 1 and snap["movement"]["still_s"] == 0
     assert snap["session"]["seconds"]["good"] == good_before  # break time isn't posture time
     # Settings and today's breaks are saved.
-    c.update_settings(reminder_min=45)
+    c.update_settings(reminder_min=45, demo_timings=False)
     again = PostureCoach(PostureConfig(), baseline_path=path, clock=lambda: t)
     assert again.settings.reminder_min == 45 and again.movement.cfg.reminder_s == 45 * 60
     assert again.movement.today.breaks == 1
@@ -443,7 +443,7 @@ def test_movement_reminder_offers_the_break_and_the_break_counts(tmp_path):
 
 def test_demo_timings_shorten_the_reminder_and_holds():
     c = PostureCoach(PostureConfig())
-    c.update_settings(demo_timings=True)
+    assert c.settings.demo_timings  # on by default until the demo is recorded
     assert c.movement.cfg.reminder_s == 60 and c.holds.cfg.head_down_s == 120 and c.holds.cfg.lean_s == 120
     assert c.snapshot()["movement"]["demo_timings"] is True
     c.update_settings(demo_timings=False, lean_min=25)

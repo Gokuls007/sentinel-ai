@@ -82,26 +82,14 @@ export const MovementCard = ({ posture, onBreak, busy }) => {
           {posture.guidance?.active && <FixGuidance guidance={posture.guidance} />}
         </div>
       ))}
-      <dl className="grid grid-cols-3 gap-3 text-center">
-        <div className="border border-white/10 p-2">
-          <dt className="text-[9px] mono uppercase text-white/40">Breaks today</dt>
-          <dd className="text-2xl font-bold outfit text-white">{mv.breaks_today}</dd>
-        </div>
-        <div className="border border-white/10 p-2">
-          <dt className="text-[9px] mono uppercase text-white/40">Static time today</dt>
-          <dd className="text-2xl font-bold outfit text-white">{span(mv.static_today_s)}</dd>
-        </div>
-        <div className="border border-white/10 p-2">
-          <dt className="text-[9px] mono uppercase text-white/40">Longest still</dt>
-          <dd className="text-2xl font-bold outfit text-white">{span(mv.longest_still_s)}</dd>
-        </div>
-      </dl>
-      <p className="text-[10px] text-white/40 outfit">
-        Shifting around is normal; only staying still too long is flagged. Static time counts still stretches over{' '}
-        {Math.round(mv.static_min_s / 60)} min. Reminder after {span(reminder.after_s)} still
-        {reminder.snoozed ? ' (snoozed)' : ''}{reminder.skipped ? ' (skipped until you next move)' : ''}.
+      <p className="text-[11px] mono text-white/55">
+        Today: {mv.breaks_today} break{mv.breaks_today === 1 ? '' : 's'} · static {span(mv.static_today_s)} · longest
+        still {span(mv.longest_still_s)}
       </p>
-      {!holds.available && <p className="text-[10px] text-white/40 outfit">{holds.reason}.</p>}
+      <p className="text-[10px] text-white/40 outfit">
+        Shifting around in your chair is normal and isn&apos;t flagged. You&apos;re reminded after {span(reminder.after_s)}{' '}
+        without moving{reminder.snoozed ? ' (snoozed)' : ''}{reminder.skipped ? ' (skipped until you next move)' : ''}.
+      </p>
       <button type="button" disabled={busy || mv.state === 'on_break'} onClick={() => onBreak('start')}
         className={`${chipClass(false)} flex items-center gap-1.5`}>
         <Coffee className="w-3 h-3" aria-hidden="true" /> Stretch break now
