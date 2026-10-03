@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowDown, ChevronDown, ChevronUp, Crosshair, RotateCcw, Webcam } from 'lucide-react';
 import DashboardPanel from '../components/DashboardPanel';
+import StopCameraButton from '../components/StopCameraButton';
 import VideoFeed from '../components/VideoFeed';
 import { useAppMode } from '../context/appMode';
 import { deleteJson, describeError, fetchJson, formatDuration, loadStored, postJson, putJson, saveStored } from '../lib/api';
@@ -224,7 +225,7 @@ const StartCamera = ({ control, cam }) => (
         <Webcam className="w-4 h-4" aria-hidden="true" />
         {cam?.status === 'starting' || control.busy === 'start' ? 'Starting camera...' : 'Start camera'}
       </button>
-      <p className="text-[10px] mono text-white/40">After this first start, the camera starts automatically when you open the app.</p>
+      <p className="text-[10px] mono text-white/40">Once started, it starts again automatically when you open the app, until you press Stop camera.</p>
     </div>
   </DashboardPanel>
 );
@@ -452,9 +453,17 @@ const PostureCoachPage = () => {
       ) : (
         <>
           <div className="grid grid-cols-12 gap-4">
-            <div className="col-span-12 lg:col-span-7 h-[min(60vh,560px)] min-h-[300px]">
-              <VideoFeed title="You" frame={frame} status={feedStatus} stats={frameData?.stats || null}
-                source="Laptop webcam" />
+            <div className="col-span-12 lg:col-span-7 space-y-2">
+              <div className="h-[min(60vh,560px)] min-h-[300px]">
+                <VideoFeed title="You" frame={frame} status={feedStatus} stats={frameData?.stats || null}
+                  source="Laptop webcam" />
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[10px] mono text-white/40">
+                  Stopping releases the webcam and pauses the coach; it starts again only when you press Start.
+                </span>
+                <StopCameraButton onStop={() => control.stop()} busy={control.busy === 'stop'} />
+              </div>
             </div>
             <div className="col-span-12 lg:col-span-5 space-y-4">
               <CoachCard posture={posture} connected={feedStatus === 'live'} busy={busy} mode={mode}

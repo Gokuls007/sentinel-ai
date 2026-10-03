@@ -71,10 +71,14 @@ class VideoSource:
         return self
 
     def stop(self):
+        """Stop capturing and release the device (a webcam's light goes off). The capture thread
+        releases its own capture when it exits; releasing it from here while that thread is
+        still inside ``read()`` can leave the device held on Windows, so only release here if
+        the thread has already finished."""
         self.stop_event.set()
         if self.capture_thread:
-            self.capture_thread.join(timeout=2)
-        if self.cap:
+            self.capture_thread.join(timeout=5)
+        if self.cap and not (self.capture_thread and self.capture_thread.is_alive()):
             self.cap.release()
         logger.info("VideoSource stopped")
 

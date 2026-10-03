@@ -5,10 +5,12 @@ import {
 } from 'lucide-react';
 import { MODES, useAppMode } from '../context/appMode';
 import StatusBadge from './StatusBadge';
+import StopCameraButton from './StopCameraButton';
 import EmptyState from './EmptyState';
 import PageErrorBoundary from './PageErrorBoundary';
 import { useFeed } from '../context/liveFeed';
 import { loadStored, saveStored, usePoll } from '../lib/api';
+import { stopLaptopCamera } from '../lib/laptopCamera';
 
 const SETTINGS = { to: '/settings', label: 'Settings', title: 'Settings', icon: Settings };
 // Each mode shows only its own pages.
@@ -153,8 +155,9 @@ const Layout = () => {
   const unseen = useUnseenAlerts(onEvents);
   const { connected } = useFeed();
   // "Camera on" dot for My Camera: the webcam keeps running when you leave that page.
-  const { data: cams } = usePoll('/api/cameras', 5000, connected);
-  const cameraOn = Array.isArray(cams) && cams.some((c) => c.id === 'laptop' && c.status === 'running');
+  const [camReload, setCamReload] = useState(0);
+  const { data: cams } = usePoll(`/api/cameras?r=${camReload}`, 3000, connected);
+  const cameraOn = Array.isArray(cams) && cams.some((c) => c.id === 'laptop' && ['running', 'starting'].includes(c.status));
   const { mode, demoFootage } = useAppMode();
   const nav = NAV_BY_MODE[mode] || NAV_BY_MODE.warehouse;
   const match = (n) => (n.end || n.to === '/' ? pathname === n.to : pathname.startsWith(n.to));
@@ -177,6 +180,15 @@ const Layout = () => {
             {current?.title || 'Not found'}
           </h1>
           <div className="flex items-center gap-3">
+            {cameraOn && (
+              <span className="flex items-center gap-2 text-[10px] mono uppercase text-red-200">
+                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" aria-hidden="true" /> Webcam on
+                <StopCameraButton onStop={async () => {
+                  await stopLaptopCamera();
+                  setCamReload((n) => n + 1);
+                }} />
+              </span>
+            )}
             <ModeSwitcher />
             <StatusBadge />
           </div>

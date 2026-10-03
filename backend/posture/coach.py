@@ -456,6 +456,7 @@ class PostureCoach:
         self.settings = self._load_settings()
         self._apply_settings()
         self.routine: BreakRoutine | None = None
+        self._last_ts_prev: float | None = None
         self.break_result: dict | None = None
         self.ghost_good = self._calibration_ghost()
         self.calibration_counts = {p: len(v) for p, v in self.recordings().items()}
@@ -715,8 +716,14 @@ class PostureCoach:
         if m is not None:
             self.last = m
         self.last_problem = problem
+        if self._last_ts_prev is not None and ts - self._last_ts_prev > self.movement.cfg.max_gap_s:
+            self.holds.pause(ts - self._last_ts_prev)  # camera stopped / computer asleep
+        self._last_ts_prev = ts
         if self.routine is None:
-            self.movement.update(kp, ts, self.cfg.min_kp_conf, seen=face_seen)
+            # Present without measurable shoulders only with a clear face (nose and both eyes):
+            # a chair or a jacket can give a faint "nose", never a clear face.
+            clear_face = kp is not None and kp.shape[0] >= 3 and min(kp[0, 2], kp[1, 2], kp[2, 2]) >= 0.5
+            self.movement.update(kp, ts, self.cfg.min_kp_conf, seen=clear_face)
         if face_seen:
             self._quality.append((ts, problem is not None))
         while self._quality and ts - self._quality[0][0] > self.cfg.smooth_s:

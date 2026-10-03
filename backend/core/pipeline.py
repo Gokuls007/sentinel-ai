@@ -187,6 +187,12 @@ class SentinelPipeline:
                 # (someone or something on the couch behind is ignored).
                 self._posture_id = select_main_person(poses, frame.shape[1], prev_id=self._posture_id)
                 main = poses.get(self._posture_id) if self._posture_id is not None else None
+                # The tracker keeps a track alive on weak detections (confidence 0.1+). For the
+                # coach that would keep an empty chair "occupied", so only a confident detection
+                # counts as someone at the desk.
+                if main is not None and not self.confident_person(
+                        self._posture_id, detections, getattr(self.detector, "conf_threshold", 0.5)):
+                    main = None
                 self.posture.update(main.keypoints if main is not None else None, timestamp)
                 posture = self.posture.snapshot()
         lap("analytics")
@@ -428,6 +434,13 @@ class SentinelPipeline:
     def flush_ergo_time(self) -> None:
         if self.anomaly_engine.ergo is not None:
             self.event_store.add_ergo_time(self.config.camera_id, self.anomaly_engine.ergo.drain_time())
+
+    @staticmethod
+    def confident_person(track_id, detections, threshold: float) -> bool:
+        """This frame has a confident detection for the track (not a weak box that only keeps
+        an existing track alive)."""
+        return any(d.track_id == track_id and d.class_name == "person" and d.confidence >= threshold
+                   for d in detections.detections)
 
     @staticmethod
     def _draw_ghost(frame: np.ndarray, ghost: dict | None) -> None:

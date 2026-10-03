@@ -76,6 +76,12 @@ export function useLaptopFrames(onFrame) {
   return state;
 }
 
+/** Stop the webcam from anywhere (the header button) and turn auto-start off. */
+export async function stopLaptopCamera() {
+  saveStored(AUTOSTART_KEY, false);
+  return postJson(`/api/cameras/${LAPTOP}/stop`, {});
+}
+
 export function storedCameraIndex() {
   const v = Number(loadStored(INDEX_KEY, 0));
   return [0, 1, 2, 3].includes(v) ? v : 0;

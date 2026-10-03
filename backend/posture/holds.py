@@ -90,6 +90,14 @@ class HoldTracker:
                 self.reset(kind)
         return started
 
+    def pause(self, gap: float) -> None:
+        """No frames for ``gap`` seconds: that time counts toward no hold."""
+        for kind in (HEAD_DOWN, LEAN):
+            if self.since[kind] is not None:
+                self.since[kind] += gap
+            if kind in self.last_true:
+                self.last_true[kind] += gap
+
     def reset(self, kind: str) -> None:
         self.since[kind] = None
         self.warned.pop(kind, None)

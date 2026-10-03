@@ -16,7 +16,9 @@ too long. So the coach tracks *movement*, not instant posture:
   With the first thresholds (1 s smoothing, 3 s hold, 15% / 10 degrees) two minutes of
   seated posture changes registered five "movements", so the still timer never got far.
   The defaults below register none on that recording (tests/fixtures/real_seated_shoulders.json).
-- **Breaks** = away for ``break_min_s`` or more, or a completed stretch break.
+- **Breaks** = away for ``break_min_s`` (20 s) or more, or a completed stretch break.
+- **Paused** when no frames arrive for ``max_gap_s`` (camera stopped, computer asleep): that
+  time never counts as being still. (A real session counted a 20-minute stall as "still".)
 - **Static time** = only still stretches longer than ``static_min_s`` (10 min) count, so short
   pauses between movements don't inflate it.
 - **Reminder** once you've been still for ``reminder_s`` (30 min), whatever your posture; it
@@ -47,7 +49,8 @@ class MovementConfig:
     hold_window_s: float = 12.0   # ...counted in total within this window
     smooth_s: float = 3.0
     away_s: float = 20.0
-    break_min_s: float = 60.0
+    break_min_s: float = 20.0      # away this long counts as a break (as soon as it's "away")
+    max_gap_s: float = 5.0         # no frames for longer (camera stopped, PC asleep): paused
     static_min_s: float = 600.0
     reminder_s: float = 1800.0
     snooze_s: float = 600.0
@@ -102,6 +105,7 @@ class MovementTracker:
         self._away_since: float | None = None
         self._away_ended = False  # away long enough that the still stretch was closed
         self._skip_from: float | None = None
+        self._seen = False
         self.on_break = False
         self.reminder_offered = False
         self.reminder_id = 0
@@ -182,9 +186,13 @@ class MovementTracker:
     def update(self, keypoints, ts: float, min_conf: float = 0.4, seen: bool | None = None) -> None:
         """``seen``: someone is there even if their shoulders can't be measured this frame (face
         visible, dim light). Then nothing changes: it's neither movement nor being away."""
-        dt = 0.0 if self._last_ts is None else min(1.0, max(0.0, ts - self._last_ts))
+        gap = 0.0 if self._last_ts is None else ts - self._last_ts
+        if gap > self.cfg.max_gap_s:
+            self.pause(gap)
+        dt = min(1.0, max(0.0, gap))
         self._last_ts = ts
         self._roll_day(ts)
+        self._seen = pose_of(keypoints, min_conf) is not None or bool(seen)
         pose = pose_of(keypoints, min_conf)
         if pose is not None:
             self._present(pose, ts)
@@ -200,6 +208,22 @@ class MovementTracker:
             self.reminder_offered = True
             self.reminder_id += 1
             self._log(ts, "move_reminder", {"still_s": round(self.still_s(ts), 1)})
+
+    def pause(self, gap: float) -> None:
+        """No frames for ``gap`` seconds (camera stopped, computer asleep): shift every running
+        timer by the gap so that time counts as nothing (not still, not away)."""
+        if self.last_moved is not None:
+            self.last_moved += gap
+        if self._away_since is not None:
+            self._away_since += gap
+        if self._last_seen is not None:
+            self._last_seen += gap
+        if self.snooze_until and self.snooze_until != float("inf"):
+            self.snooze_until += gap
+        self._window.clear()
+        self._big.clear()
+        self._changed_since = None
+        self._bucket, self._bucket_start = {}, None
 
     def _away(self, ts: float) -> None:
         if self._last_seen is None:
@@ -252,10 +276,10 @@ class MovementTracker:
         if big_s >= self.cfg.hold_s:
             why = max(("shift", c["shift"] / self.cfg.shift_widths), ("lean", c["lean"] / self.cfg.lean_change_deg),
                       ("width", c["width"] / self.cfg.width_change), key=lambda kv: kv[1])[0]
-            # Dated from when the change started, not when it was confirmed.
-            self._moved(self._changed_since, self._smoothed(), {"shift": "changed position", "lean": "changed lean",
-                                                                "width": "leaned in or back"}[why])
-            self._moved_at = ts  # show "moving" from when it was confirmed
+            # Dated when confirmed: with a cumulative window the "start" can be long before
+            # (a real session showed "still 29 s" while the person was clearly moving).
+            self._moved(ts, self._smoothed(), {"shift": "changed position", "lean": "changed lean",
+                                               "width": "leaned in or back"}[why])
             self._big.clear()
 
     def _log_measures(self, ts: float) -> None:
@@ -267,7 +291,7 @@ class MovementTracker:
         c = self._last_measure or {}
         fresh = self._measured_at is not None and ts - self._measured_at <= self.cfg.log_every_s
         row = {"t": round(ts, 2), "state": self.state(ts), "still_s": round(self.still_s(ts), 1),
-               "measured": fresh, **({k: round(v, 3) for k, v in c.items()} if fresh else {})}
+               "measured": fresh, "seen": self._seen, **({k: round(v, 3) for k, v in c.items()} if fresh else {})}
         try:
             if os.path.isfile(self.log_path) and os.path.getsize(self.log_path) > self.cfg.log_max_bytes:
                 with open(self.log_path, encoding="utf-8") as f:

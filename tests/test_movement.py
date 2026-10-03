@@ -96,10 +96,10 @@ def test_a_detection_dropout_is_not_getting_up_but_leaving_is():
     t = run(m, lambda: None, t, 25)  # away 25 s: got up
     assert m.state(t) == AWAY and m.still_s(t) == 0
     t = run(m, body, t, 1)
-    assert m.still_s(t) < 1.1 and m.today.breaks == 0  # moved, but too short for a break
+    assert m.still_s(t) < 1.1 and m.today.breaks == 1  # away 20 s or more: a break
     t = run(m, lambda: None, t, 90)
     t = run(m, body, t, 1)
-    assert m.today.breaks == 1
+    assert m.today.breaks == 2
 
 
 def test_face_visible_but_shoulders_unclear_is_still_present():
@@ -156,7 +156,7 @@ def test_today_survives_a_restart_and_rolls_over_at_midnight(tmp_path):
     t = run(m, lambda: body(x=400), t, 14, fps=2)  # a ~90 s stretch: static
     m.finish_break(t, completed=True)
     again = MovementTracker(MovementConfig(static_min_s=60), history=h, now=t)
-    assert again.today.breaks == 1 and again.today.static_s == pytest.approx(92, abs=4)
+    assert again.today.breaks == 1 and again.today.static_s == pytest.approx(100, abs=4)
     tomorrow = MovementTracker(history=h, now=T0 + 86400)
     assert tomorrow.today.breaks == 0 and tomorrow.today.static_s == 0
     h.close()
@@ -240,3 +240,90 @@ def test_real_seated_session_counts_as_still():
     assert moves == 0 and still > 115
     first = MovementConfig(shift_widths=0.35, lean_change_deg=10, width_change=0.15, hold_s=3, smooth_s=1)
     assert replay(first)[0] >= 3  # the bug, reproduced
+
+
+# --- the real webcam session of 2026-10-03 (tests/fixtures/real_session_movement_log.json) -------
+
+def replay_real_session():
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+    from replay_movement_log import FIXTURE, load, replay
+
+    return replay(load(FIXTURE), MovementTracker(now=1_790_000_000.0))
+
+
+def at(records, t):
+    return min(records, key=lambda r: abs(r["t"] - t))
+
+
+def test_real_session_a_stall_with_no_frames_is_not_still_time():
+    """No frames for 20 minutes (computer asleep): the first version showed "still 1311 s"."""
+    rec = replay_real_session()
+    after_gap = at(rec, 1311)
+    assert after_gap["still_s"] < 200 and after_gap["state"] != LONG_STILL
+    assert all(r["state"] != LONG_STILL for r in rec)
+
+
+def test_real_session_leaving_is_away_after_20_s_and_a_break():
+    rec = replay_real_session()
+    left = 1455  # last row with the person measured before leaving
+    assert at(rec, left + 21)["state"] == AWAY
+    assert at(rec, left + 34)["breaks"] == 0  # not yet back
+    back = next(r for r in rec if r["t"] > left + 30 and r["measured"])
+    assert back["breaks"] == 1 and back["still_s"] < 2  # a break, and the timer starts fresh
+
+
+def test_real_session_standing_up_and_moving_resets_the_timer_promptly():
+    """At ~1415 s the person moved a lot (shift 1.3-7 shoulder widths); the first version
+    dated it back to an earlier burst and showed "still 28 s" while they were moving."""
+    rec = replay_real_session()
+    moving = next(r for r in rec if 1414 <= r["t"] <= 1430 and r["state"] == MOVING)
+    assert moving["still_s"] < 2
+
+
+def test_no_frames_pauses_the_still_timer():
+    m = MovementTracker(now=T0)
+    t = run(m, body, T0, 60)
+    t += 1200  # camera stopped / computer asleep for 20 min
+    t = run(m, body, t, 1)
+    assert m.still_s(t) == pytest.approx(61, abs=1.5)
+
+
+def test_a_faint_nose_is_not_someone_at_the_desk():
+    """An empty chair (or a jacket) can give a weak "nose"; only a clear face or measurable
+    shoulders mean someone is there."""
+    from posture.coach import PostureCoach, PostureConfig
+
+    c = PostureCoach(PostureConfig())
+    t = T0
+    for _ in range(300):
+        t += 0.1
+        c.update(body(), t)
+    ghost = np.zeros((17, 3), np.float32)
+    ghost[0] = (320, 200, 0.6)  # a faint nose, no eyes, no shoulders
+    for _ in range(250):
+        t += 0.1
+        c.update(ghost, t)
+    assert c.snapshot()["movement"]["state"] == AWAY
+
+
+def test_weak_detections_that_only_keep_a_track_alive_do_not_count():
+    from types import SimpleNamespace
+
+    from core.pipeline import SentinelPipeline
+
+    dets = SimpleNamespace(detections=[SimpleNamespace(track_id=3, class_name="person", confidence=0.18)])
+    assert not SentinelPipeline.confident_person(3, dets, 0.5)
+    dets.detections[0].confidence = 0.8
+    assert SentinelPipeline.confident_person(3, dets, 0.5)
+
+
+def test_holds_pause_too():
+    h = HoldTracker(HoldConfig(head_down_s=100))
+    down = {HEAD_DOWN: True, LEAN: False}
+    for t in range(60):
+        h.update(down, float(t))
+    h.pause(1000)
+    h.update(down, 1060.0)
+    assert h.held_s(HEAD_DOWN, 1060.0) == pytest.approx(60, abs=1) and HEAD_DOWN not in h.warned
