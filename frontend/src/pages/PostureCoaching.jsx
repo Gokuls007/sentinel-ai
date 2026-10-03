@@ -1,10 +1,8 @@
 import { useEffect, useState } from 'react';
-import { CheckCircle2, Coffee, Lightbulb, MoveUp, X } from 'lucide-react';
+import { CheckCircle2, Lightbulb, MoveUp, X } from 'lucide-react';
 import DashboardPanel from '../components/DashboardPanel';
 import { fetchJson, postJson } from '../lib/api';
 import { chipClass } from '../lib/ui';
-
-const BREAK_MINUTES = [30, 45, 50, 60];
 
 /** While a poor posture is shown: what to do, and whether the ghost is on the video. */
 export const FixGuidance = ({ guidance }) => {
@@ -76,61 +74,18 @@ export const BreakPanel = ({ routine, note, onStood, onCancel, busy }) => (
   </div>
 );
 
-/** The offer after a long sit, and the result after a break. */
-export const BreakBanner = ({ brk, call, busy }) => {
-  if (!brk) return null;
-  if (brk.result) {
-    const done = brk.result.outcome === 'completed';
-    return (
-      <div className="p-3 border-l-2 border-teal-400 bg-teal-950/30 text-teal-100 text-sm outfit flex items-center gap-2">
-        <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
-        {done ? 'Break done. Nice work: all three movements confirmed.'
-          : brk.result.outcome === 'cancelled' ? 'Break ended early.' : 'Break finished (some steps not confirmed).'}
-      </div>
-    );
-  }
-  if (!brk.offered || brk.routine) return null;
+/** The result after a break (the offer comes with the movement reminder). */
+export const BreakBanner = ({ brk }) => {
+  if (!brk?.result) return null;
+  const done = brk.result.outcome === 'completed';
   return (
-    <div className="p-4 border-2 border-teal-400/70 bg-teal-950/40 flex items-start justify-between gap-4 flex-wrap" role="alert">
-      <div>
-        <div className="text-lg font-bold text-teal-200 outfit flex items-center gap-2">
-          <Coffee className="w-5 h-5" aria-hidden="true" /> {Math.round(brk.sit_min)} minutes at the desk: time for a 1-minute break?
-        </div>
-        <div className="text-sm text-teal-100/80 outfit">Neck tilts, shoulder shrugs and a stand-up. The camera counts them for you.</div>
-      </div>
-      <div className="flex gap-2">
-        <button type="button" disabled={busy} className={chipClass(true)} onClick={() => call('start')}>Start break</button>
-        <button type="button" disabled={busy} className={chipClass(false)} onClick={() => call('snooze')}>
-          Snooze {Math.round(brk.snooze_min)} min
-        </button>
-        <button type="button" disabled={busy} className={chipClass(false)} onClick={() => call('skip')}>Skip</button>
-      </div>
+    <div className="p-3 border-l-2 border-teal-400 bg-teal-950/30 text-teal-100 text-sm outfit flex items-center gap-2">
+      <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+      {done ? 'Break done. Nice work: all three movements confirmed.'
+        : brk.result.outcome === 'cancelled' ? 'Break ended early.' : 'Break finished (some steps not confirmed).'}
     </div>
   );
 };
-
-/** Sitting time and the break interval. */
-export const BreakSettings = ({ brk, onMinutes, onStart, busy }) => (
-  <DashboardPanel title="Stretch breaks">
-    <div className="space-y-3">
-      <p className="text-[11px] text-white/60 outfit">
-        Offer a 1-minute break after this long at the desk ({brk ? `${Math.round(brk.sit_min)} min so far` : '--'}):
-      </p>
-      <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Offer a break after">
-        {BREAK_MINUTES.map((m) => (
-          <button key={m} type="button" role="radio" aria-checked={brk?.sit_minutes === m} disabled={busy}
-            onClick={() => onMinutes(m)} className={chipClass(brk?.sit_minutes === m)}>
-            {m} min
-          </button>
-        ))}
-        <button type="button" disabled={busy || !brk || brk.routine} onClick={onStart} className={chipClass(false)}>
-          Break now
-        </button>
-      </div>
-      <p className="text-[10px] text-white/40 outfit">{brk?.note}</p>
-    </div>
-  </DashboardPanel>
-);
 
 /** One setup tip at a time, from the last 7 days, with the evidence behind it. */
 export const TipCard = ({ enabled }) => {

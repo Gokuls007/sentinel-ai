@@ -448,9 +448,10 @@ class PostureCoach:
         self.movement = MovementTracker(MovementConfig(), history=self.history, now=clock())
         self.holds = HoldTracker(HoldConfig())
         self._hold_window: deque = deque()  # (ts, head_ratio, tilt, lateral) for the classifier path
-        saved = self.history.get_setting("coach_settings", {}) if self.history else {}
-        known = {f.name for f in fields(CoachSettings)}
-        self.settings = CoachSettings(**{k: v for k, v in (saved or {}).items() if k in known})
+        # Shared by every camera's coach (Settings can change them while the webcam is off).
+        self.settings_path = (os.path.join(os.path.dirname(baseline_path) or ".", "coach_settings.json")
+                              if baseline_path else None)
+        self.settings = self._load_settings()
         self._apply_settings()
         self.routine: BreakRoutine | None = None
         self.break_result: dict | None = None
@@ -851,6 +852,25 @@ class PostureCoach:
         self.holds.cfg.head_down_s = CoachSettings.DEMO_HOLD_S if demo else s.head_down_min * 60
         self.holds.cfg.lean_s = CoachSettings.DEMO_HOLD_S if demo else s.lean_min * 60
 
+    def _load_settings(self) -> CoachSettings:
+        saved = {}
+        if self.settings_path and os.path.isfile(self.settings_path):
+            try:
+                with open(self.settings_path, encoding="utf-8") as f:
+                    saved = json.load(f)
+            except (OSError, ValueError):
+                saved = {}
+        known = {f.name for f in fields(CoachSettings)}
+        try:
+            return CoachSettings(**{k: v for k, v in saved.items() if k in known})
+        except TypeError:
+            return CoachSettings()
+
+    def reload_settings(self) -> None:
+        """Pick up settings another camera's coach saved."""
+        self.settings = self._load_settings()
+        self._apply_settings()
+
     def update_settings(self, **changes) -> dict:
         known = {f.name for f in fields(CoachSettings)}
         unknown = set(changes) - known
@@ -858,8 +878,10 @@ class PostureCoach:
             raise ValueError(f"unknown setting(s): {sorted(unknown)}")
         self.settings = CoachSettings(**{**asdict(self.settings), **changes})
         self._apply_settings()
-        if self.history:
-            self.history.set_setting("coach_settings", asdict(self.settings))
+        if self.settings_path:
+            os.makedirs(os.path.dirname(self.settings_path) or ".", exist_ok=True)
+            with open(self.settings_path, "w", encoding="utf-8") as f:
+                json.dump(asdict(self.settings), f, indent=2)
         return asdict(self.settings)
 
     def _ghost_ref(self) -> tuple[dict | None, float | None]:

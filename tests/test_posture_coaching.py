@@ -503,3 +503,13 @@ def test_pipeline_draws_the_ghost_faintly():
     assert frame.max() == 0
     SentinelPipeline._draw_ghost(frame, {"points": place_ghost(normalise(UPRIGHT), SLOUCH), "edges": GHOST_EDGES})
     assert 0 < frame.max() < 255  # drawn, but blended (faint)
+
+
+def test_settings_are_shared_by_every_cameras_coach(tmp_path):
+    laptop = PostureCoach(PostureConfig(), baseline_path=str(tmp_path / "posture_baseline_laptop.json"))
+    primary = PostureCoach(PostureConfig(), baseline_path=str(tmp_path / "posture_baseline_cam-0.json"))
+    primary.update_settings(demo_timings=True)  # e.g. from Settings while the webcam is off
+    laptop.reload_settings()
+    assert laptop.settings.demo_timings and laptop.movement.cfg.reminder_s == 60
+    later = PostureCoach(PostureConfig(), baseline_path=str(tmp_path / "posture_baseline_laptop.json"))
+    assert later.settings.demo_timings  # a camera started afterwards picks them up too

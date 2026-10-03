@@ -211,6 +211,40 @@ How it works:
 The compiler's accuracy is measured by `python scripts/eval_rules.py` (see
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
 
+### Desk movement coach (laptop webcam)
+Switch the mode to **Desk Posture Coach** and start your webcam. It is a *movement* coach,
+not a posture police. Nobody holds one posture all day and shifting is normal; the real
+problem is staying still too long.
+
+- **What it shows:** "Still for 23 min" (time since you last moved), plus today's breaks,
+  static time and longest still stretch, and a timeline of moving, still and away.
+- **What counts as moving:**
+  - a real position change held for about 3 s: the torso shifts, you lean in or back, or the
+    shoulders turn;
+  - getting up;
+  - a stretch break.
+
+  It is measured against your own position, so it works without any calibration. Typing,
+  fidgeting and glancing around don't count.
+- **Static time** counts only still stretches longer than 10 minutes.
+- **One reminder** comes after 30 minutes without moving, whatever your posture (15–60 min is
+  configurable). It offers a 1-minute guided stretch break: neck tilts, shoulder shrugs and a
+  stand-up, counted by the camera. Moving resets it.
+- **Short-term posture is never flagged.** Warnings come only for sustained extremes: the head
+  far down, or a strong lean, held for 20 minutes (configurable, or off).
+  - These need a reference: an upright baseline, or the personal calibration below.
+  - When one fires, a faint outline of your own good posture appears on the video, with
+    "Back to good" once you've corrected.
+- **Personal calibration (optional):** record a few postures, and a small local model learns
+  them. It feeds the long-hold checks and the setup tips, and its moment-to-moment view sits
+  behind "Show details".
+- **Setup tips** come from your history, for example "your screen is probably too low".
+- **Demo timings** (Settings, clearly labelled) shorten the reminder to 1 minute and the
+  long-hold warnings to 2, for testing and recording a demo.
+
+Everything runs on this computer. No video, posture or movement data leaves it, and no LLM is
+involved. The webcam gives 2D estimates; this is not a medical or ergonomic assessment.
+
 ## API
 | Endpoint | Returns |
 |---|---|

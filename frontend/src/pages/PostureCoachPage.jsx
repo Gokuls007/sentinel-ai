@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowDown, Bell, BellOff, Crosshair, RotateCcw, Volume2, VolumeX, Webcam } from 'lucide-react';
+import { ArrowDown, ChevronDown, ChevronUp, Crosshair, RotateCcw, Webcam } from 'lucide-react';
 import DashboardPanel from '../components/DashboardPanel';
 import VideoFeed from '../components/VideoFeed';
 import { useAppMode } from '../context/appMode';
@@ -7,22 +7,11 @@ import { deleteJson, describeError, fetchJson, formatDuration, loadStored, postJ
 import { useCameraControl, useLaptopCamera, useLaptopFrames } from '../lib/laptopCamera';
 import { chipClass } from '../lib/ui';
 import { CalibrationPanel, ProbabilityBars, RecordingPrompt } from './PostureCalibration';
-import { BackToGood, BreakBanner, BreakPanel, BreakSettings, FixGuidance, TipCard } from './PostureCoaching';
+import { BreakBanner, BreakPanel, TipCard } from './PostureCoaching';
+import { MovementCard, MovementSettings, TodayPanel } from './MovementCoach';
 
-const BAD = new Set(['slouching', 'leaning', 'too_close', 'slumped']);
-const SETTINGS_KEY = 'sentinel.posture.reminders';
-const INTERVALS = [
-  [30, '30 s (demo)'],
-  [60, '1 min'],
-  [300, '5 min'],
-  [600, '10 min'],
-];
-const LOOK_DOWN_INTERVALS = [
-  [300, '5 min'],
-  [600, '10 min'],
-  [1200, '20 min'],
-  [1800, '30 min'],
-];
+const ALERTS_KEY = 'sentinel.posture.reminders';
+const DETAILS_KEY = 'sentinel.posture.details';
 
 // Static class names so Tailwind generates them.
 const STATUS_STYLE = {
@@ -169,58 +158,52 @@ function chime() {
   }
 }
 
-function useReminderSettings() {
-  const [settings, setSettings] = useState(() => ({
-    notify: true, sound: true, interval: 300, lookDownInterval: 600, ...loadStored(SETTINGS_KEY, {}),
-  }));
+function useAlertSettings() {
+  const [settings, setSettings] = useState(() => ({ notify: true, sound: true, ...loadStored(ALERTS_KEY, {}) }));
   const update = (patch) => setSettings((s) => {
     const next = { ...s, ...patch };
-    saveStored(SETTINGS_KEY, next);
+    saveStored(ALERTS_KEY, next);
     return next;
   });
   return [settings, update];
 }
 
-/** A gentle reminder once a poor posture has been held for `interval` seconds, then again every
- * `interval` while it continues. Looking down is neutral: reminded only after `lookDownInterval`.
- * Returns [banner, dismiss, onFrame]; pass onFrame to the frame
- * socket so the check runs on every frame. */
-function useReminders(settings) {
-  const [banner, setBanner] = useState(null);
-  const last = useRef({ episode: null, at: 0 });
-  const settingsRef = useRef(settings);
+/** A chime and a browser notification once per movement reminder and per long-hold warning
+ * (the coach decides when; the page shows them). Returns onFrame for the frame socket. */
+function useCoachAlerts(alerts) {
+  const seen = useRef({ reminder: null, holds: new Set() });
+  const alertsRef = useRef(alerts);
   useEffect(() => {
-    settingsRef.current = settings;
-  }, [settings]);
+    alertsRef.current = alerts;
+  }, [alerts]);
 
-  const onFrame = useCallback((frameData) => {
+  return useCallback((frameData) => {
     const posture = frameData?.posture;
-    const s = settingsRef.current;
-    if (!posture) return;
-    const lookingDown = posture.status === 'looking_down';
-    const interval = lookingDown ? s.lookDownInterval : s.interval;
-    if (!(BAD.has(posture.status) || lookingDown) || posture.held_s < interval) return;
-    const now = Date.now();
-    const sameEpisode = last.current.episode === posture.episode;
-    if (sameEpisode && now - last.current.at < interval * 1000) return;
-    last.current = { episode: posture.episode, at: now };
-    const body = lookingDown
-      ? 'Look up for a moment: rest your eyes on something far away and roll your shoulders back.'
-      : posture.reasons?.[0] || 'Take a moment to sit tall.';
-    const title = `${posture.label} for ${formatDuration(posture.held_s).slice(3)}`;
-    setBanner({ title, body, at: now });
-    if (s.sound) chime();
-    if (s.notify && 'Notification' in window && Notification.permission === 'granted') {
-      try {
-        new Notification(`Posture: ${title}`, { body, tag: 'sentinel-posture', silent: true });
-      } catch {
-        // some browsers only allow notifications from a service worker
+    if (!posture?.movement) return;
+    const s = alertsRef.current;
+    const ping = (title, body) => {
+      if (s.sound) chime();
+      if (s.notify && 'Notification' in window && Notification.permission === 'granted') {
+        try {
+          new Notification(title, { body, tag: 'sentinel-movement', silent: true });
+        } catch {
+          // some browsers only allow notifications from a service worker
+        }
+      }
+      postJson('/api/posture/reminder?camera=laptop', {}).catch(() => {});
+    };
+    const r = posture.movement.reminder;
+    if (r.offered && seen.current.reminder !== r.id) {
+      seen.current.reminder = r.id;
+      ping('Time to move', `You've been still for ${Math.round(posture.movement.still_s / 60)} min. Stand up or take a stretch break.`);
+    }
+    for (const w of posture.holds?.active || []) {
+      if (!seen.current.holds.has(w.id)) {
+        seen.current.holds.add(w.id);
+        ping(w.label, w.instruction);
       }
     }
-    postJson('/api/posture/reminder?camera=laptop', {}).catch(() => {});
   }, []);
-
-  return [banner, () => setBanner(null), onFrame];
 }
 
 const StartCamera = ({ control, cam }) => (
@@ -246,12 +229,8 @@ const StartCamera = ({ control, cam }) => (
   </DashboardPanel>
 );
 
-const StatusCard = ({ posture, connected, onBaseline, onCancel, onBreak, busy, mode }) => {
-  const [debug, setDebug] = useState(() => Boolean(loadStored(DEBUG_KEY, false)));
-  const toggleDebug = () => setDebug((d) => {
-    saveStored(DEBUG_KEY, !d);
-    return !d;
-  });
+/** The main column: calibration prompts and breaks take over; otherwise the movement card. */
+const CoachCard = ({ posture, connected, onCancel, onBreak, busy, mode }) => {
   if (!connected || !posture) {
     return (
       <div className="border border-white/10 bg-white/5 p-6 text-center text-[11px] mono text-white/50 uppercase tracking-widest">
@@ -266,24 +245,29 @@ const StatusCard = ({ posture, connected, onBaseline, onCancel, onBreak, busy, m
         onStood={() => onBreak('stood')} onCancel={() => onBreak('cancel')} />
     );
   }
+  return <MovementCard posture={posture} onBreak={onBreak} busy={busy} />;
+};
+
+/** "Show details": the moment-to-moment posture view (never flagged; for curiosity and tuning). */
+const PostureDetails = ({ posture, onBaseline, busy }) => {
+  const [debug, setDebug] = useState(() => Boolean(loadStored(DEBUG_KEY, false)));
+  const toggleDebug = () => setDebug((d) => {
+    saveStored(DEBUG_KEY, !d);
+    return !d;
+  });
+  if (!posture) return null;
   const s = style(posture.status);
-  const bad = BAD.has(posture.status) || posture.status === 'looking_down';
   const classifier = posture.method === 'classifier';
   return (
-    <div className={`border-2 ${s.ring} p-5 space-y-4`} role="status" aria-live="polite">
-      <div className="text-[10px] mono uppercase tracking-[0.3em] text-white/40">Posture</div>
-      <div className={`text-5xl md:text-6xl font-bold outfit leading-none ${s.text}`}>{posture.label}</div>
+    <div className={`border ${s.ring} p-4 space-y-3`}>
+      <div className="text-[10px] mono uppercase tracking-[0.3em] text-white/40">Posture right now (not flagged)</div>
+      <div className={`text-3xl font-bold outfit leading-none ${s.text}`}>{posture.label}</div>
       {posture.calibrating && (
         <div className="text-sm text-cyan-200">
           {posture.calibration_phase === 'get_ready'
             ? `Recording starts in ${Math.ceil(posture.calibration_left_s)}...`
             : `Recording... ${posture.calibration_left_s.toFixed(1)} s left`}
         </div>
-      )}
-      <BackToGood correction={posture.back_to_good} />
-      {posture.guidance?.active && <FixGuidance guidance={posture.guidance} />}
-      {bad && (
-        <div className="text-[11px] mono uppercase text-white/50">for {formatDuration(posture.held_s).slice(3)}</div>
       )}
       {posture.reasons?.length > 0 && (
         <ul className="space-y-1 text-sm text-white/85 outfit">
@@ -293,8 +277,8 @@ const StatusCard = ({ posture, connected, onBaseline, onCancel, onBreak, busy, m
       {posture.status === 'no_baseline' && !posture.calibrating && (
         <div className="space-y-2">
           <p className="text-sm text-white/75 outfit">
-            Sit upright, facing the screen with both shoulders in view. The coach compares you with that posture.
-            For better accuracy, use Personal calibration below.
+            A baseline (or Personal calibration) turns on the long-hold warnings: sit upright, facing the
+            screen with both shoulders in view. Movement tracking works without it.
           </p>
           <div className="flex items-center justify-center gap-2 text-cyan-300 animate-bounce" aria-hidden="true">
             <ArrowDown className="w-5 h-5" />
@@ -347,81 +331,20 @@ const StatusCard = ({ posture, connected, onBaseline, onCancel, onBreak, busy, m
   );
 };
 
-const ReminderSettings = ({ settings, update }) => {
-  const [permission, setPermission] = useState(() => ('Notification' in window ? Notification.permission : 'unsupported'));
-  const toggleNotify = async () => {
-    const on = !settings.notify;
-    if (on && permission === 'default') {
-      try {
-        setPermission(await Notification.requestPermission());
-      } catch {
-        setPermission('denied');
-      }
-    }
-    update({ notify: on });
-  };
-  return (
-    <DashboardPanel title="Reminders">
-      <div className="space-y-3">
-        <p className="text-[11px] text-white/60 outfit">
-          A gentle reminder when a poor posture has lasted this long:
-        </p>
-        <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Remind after">
-          {INTERVALS.map(([s, label]) => (
-            <button key={s} type="button" role="radio" aria-checked={settings.interval === s}
-              onClick={() => update({ interval: s })} className={chipClass(settings.interval === s)}>
-              {label}
-            </button>
-          ))}
-        </div>
-        <p className="text-[11px] text-white/60 outfit">
-          Looking down (keyboard or phone) isn&apos;t poor posture, but remind me after:
-        </p>
-        <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Remind about looking down after">
-          {LOOK_DOWN_INTERVALS.map(([s, label]) => (
-            <button key={s} type="button" role="radio" aria-checked={settings.lookDownInterval === s}
-              onClick={() => update({ lookDownInterval: s })} className={chipClass(settings.lookDownInterval === s)}>
-              {label}
-            </button>
-          ))}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={toggleNotify} aria-pressed={settings.notify}
-            className={`${chipClass(settings.notify)} flex items-center gap-1.5`}>
-            {settings.notify ? <Bell className="w-3 h-3" aria-hidden="true" /> : <BellOff className="w-3 h-3" aria-hidden="true" />}
-            Notification {settings.notify ? 'on' : 'off'}
-          </button>
-          <button type="button" onClick={() => update({ sound: !settings.sound })} aria-pressed={settings.sound}
-            className={`${chipClass(settings.sound)} flex items-center gap-1.5`}>
-            {settings.sound ? <Volume2 className="w-3 h-3" aria-hidden="true" /> : <VolumeX className="w-3 h-3" aria-hidden="true" />}
-            Sound {settings.sound ? 'on' : 'off'}
-          </button>
-          <button type="button" onClick={chime} className={chipClass(false)}>Test sound</button>
-        </div>
-        {settings.notify && permission === 'denied' && (
-          <p className="text-[10px] text-amber-300">
-            Browser notifications are blocked for this site, so reminders show here on the page instead.
-          </p>
-        )}
-      </div>
-    </DashboardPanel>
-  );
-};
-
 const SessionSummary = ({ posture, timeline, onReset }) => {
   const s = posture?.session;
   const total = s ? Object.values(s.seconds).reduce((a, b) => a + b, 0) : 0;
   const pct = s?.good_fraction != null ? Math.round(s.good_fraction * 100) : null;
   return (
-    <DashboardPanel title="This session" headerAction={s ? `${formatDuration(total)} TRACKED` : null}>
+    <DashboardPanel title="Posture this session (details)" headerAction={s ? `${formatDuration(total)} TRACKED` : null}>
       {!s ? (
         <p className="text-[11px] mono text-white/40">No data yet.</p>
       ) : (
         <div className="space-y-4">
           <div className="flex items-end gap-6 flex-wrap">
             <div>
-              <div className="text-4xl font-bold outfit text-emerald-300 leading-none">{pct != null ? `${pct}%` : '--'}</div>
-              <div className="text-[10px] mono uppercase text-white/40 mt-1">good posture</div>
+              <div className="text-2xl font-bold outfit text-white/70 leading-none">{pct != null ? `${pct}%` : '--'}</div>
+              <div className="text-[10px] mono uppercase text-white/40 mt-1">upright (for reference)</div>
             </div>
             <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-[11px] mono">
               {SUMMARY_KEYS.map((k) => (
@@ -431,7 +354,6 @@ const SessionSummary = ({ posture, timeline, onReset }) => {
                 </div>
               ))}
             </dl>
-            <div className="text-[11px] mono text-white/50">{s.reminders} reminder{s.reminders === 1 ? '' : 's'}</div>
           </div>
           <div>
             <div className="text-[9px] mono uppercase text-white/40 mb-1">Timeline (10 s per block)</div>
@@ -468,11 +390,17 @@ const PostureCoachPage = () => {
   const control = useCameraControl(camState);
   const { cam, loaded } = camState;
   const running = cam?.status === 'running';
-  const [settings, update] = useReminderSettings();
-  const [banner, dismiss, onFrame] = useReminders(settings);
+  const [alerts, updateAlerts] = useAlertSettings();
+  const onFrame = useCoachAlerts(alerts);
   const { status: feedStatus, frame, frameData } = useLaptopFrames(onFrame);
   const posture = frameData?.posture || null;
   const [timeline, setTimeline] = useState([]);
+  const [moveTimeline, setMoveTimeline] = useState([]);
+  const [details, setDetails] = useState(() => Boolean(loadStored(DETAILS_KEY, false)));
+  const toggleDetails = () => setDetails((d) => {
+    saveStored(DETAILS_KEY, !d);
+    return !d;
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -480,7 +408,11 @@ const PostureCoachPage = () => {
     if (!running) return undefined;
     let cancelled = false;
     const load = () => fetchJson('/api/posture?camera=laptop')
-      .then((d) => !cancelled && setTimeline(d.timeline || []))
+      .then((d) => {
+        if (cancelled) return;
+        setTimeline(d.timeline || []);
+        setMoveTimeline(d.movement_timeline || []);
+      })
       .catch(() => {});
     load();
     const id = setInterval(load, 10000);
@@ -512,17 +444,8 @@ const PostureCoachPage = () => {
           <button type="button" className={chipClass(true)} onClick={() => setMode('posture')}>Switch to posture</button>
         </div>
       )}
-      {banner && (
-        <div className="p-4 border-2 border-amber-400/70 bg-amber-950/40 flex items-start justify-between gap-4" role="alert">
-          <div>
-            <div className="text-lg font-bold text-amber-200 outfit">{banner.title}</div>
-            <div className="text-sm text-amber-100/90 outfit">{banner.body}</div>
-          </div>
-          <button type="button" onClick={dismiss} className={chipClass(true)}>Got it</button>
-        </div>
-      )}
       {error && <p className="text-[11px] text-red-300">{error}</p>}
-      {running && <BreakBanner brk={posture?.break} busy={busy} call={breakAction} />}
+      {running && <BreakBanner brk={posture?.break} />}
       {!running ? (
         <StartCamera control={control} cam={cam} />
       ) : (
@@ -533,24 +456,34 @@ const PostureCoachPage = () => {
                 source="Laptop webcam" />
             </div>
             <div className="col-span-12 lg:col-span-5 space-y-4">
-              <StatusCard posture={posture} connected={feedStatus === 'live'} busy={busy} mode={mode}
-                onBaseline={() => call('/api/posture/baseline?camera=laptop')}
+              <CoachCard posture={posture} connected={feedStatus === 'live'} busy={busy} mode={mode}
                 onCancel={() => call('/api/posture/recording/cancel?camera=laptop')}
                 onBreak={breakAction} />
+              <button type="button" onClick={toggleDetails} aria-expanded={details}
+                className={`${chipClass(details)} flex items-center gap-1.5`}>
+                {details ? <ChevronUp className="w-3 h-3" aria-hidden="true" /> : <ChevronDown className="w-3 h-3" aria-hidden="true" />}
+                {details ? 'Hide details' : 'Show details'}
+              </button>
+              {details && (
+                <PostureDetails posture={posture} busy={busy}
+                  onBaseline={() => call('/api/posture/baseline?camera=laptop')} />
+              )}
               <TipCard enabled={running} />
+              <MovementSettings settings={posture?.settings} alerts={alerts} updateAlerts={updateAlerts} busy={busy}
+                onChange={(patch) => call('/api/posture/settings?camera=laptop', null, patch, putJson)} />
               <CalibrationPanel posture={posture} busy={busy}
                 call={(path, body) => call(path, null, body)}
                 remove={(path) => call(path, null, {}, deleteJson)} />
-              <ReminderSettings settings={settings} update={update} />
-              <BreakSettings brk={posture?.break} busy={busy} onStart={() => breakAction('start')}
-                onMinutes={(m) => call('/api/posture/break/settings?camera=laptop', null, { sit_minutes: m }, putJson)} />
             </div>
           </div>
-          <SessionSummary posture={posture} timeline={timeline}
-            onReset={() => call('/api/posture/session/reset?camera=laptop', () => setTimeline([]))} />
+          <TodayPanel timeline={moveTimeline} />
+          {details && (
+            <SessionSummary posture={posture} timeline={timeline}
+              onReset={() => call('/api/posture/session/reset?camera=laptop', () => setTimeline([]))} />
+          )}
           <p className="text-[10px] mono text-white/30">
-            Runs entirely on this computer. Front-facing webcam estimate compared with your own baseline;
-            not a medical or ergonomic assessment.
+            Runs entirely on this computer. A movement coach: it tracks how long you stay still, not every
+            posture change. Front-facing webcam estimates; not a medical or ergonomic assessment.
           </p>
         </>
       )}

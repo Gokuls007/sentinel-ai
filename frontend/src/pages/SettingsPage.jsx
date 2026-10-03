@@ -1,8 +1,9 @@
+import { useState } from 'react';
 import DashboardPanel from '../components/DashboardPanel';
 import EmptyState from '../components/EmptyState';
 import { MODES, useAppMode } from '../context/appMode';
 import { useFeed } from '../context/liveFeed';
-import { describeError, useFetch } from '../lib/api';
+import { describeError, putJson, useFetch } from '../lib/api';
 import { chipClass } from '../lib/ui';
 
 const Row = ({ label, children }) => (
@@ -71,6 +72,51 @@ const ModeAndFootage = () => {
   );
 };
 
+/** Demo timings: a short movement reminder and long-hold warnings, for testing and recording. */
+const DemoTimings = () => {
+  const [reload, setReload] = useState(0);
+  const { data, error } = useFetch('/api/posture/settings', reload);
+  const [busy, setBusy] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const on = Boolean(data?.demo_timings);
+  const toggle = async () => {
+    setBusy(true);
+    setSaveError(null);
+    try {
+      await putJson('/api/posture/settings', { demo_timings: !on });
+      setReload((n) => n + 1);
+    } catch (err) {
+      setSaveError(err.detail || describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <DashboardPanel title="Desk posture coach">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-[12px] font-bold text-white outfit flex items-center gap-2">
+            Demo timings
+            <span className="text-[9px] mono uppercase font-bold text-black bg-amber-300 px-1.5 py-0.5">For demos only</span>
+          </div>
+          <p className="text-[10px] text-white/50 outfit max-w-md">
+            For testing and recording a demo: the movement reminder comes after 1 minute still instead of 30, and
+            long-hold warnings after 2 minutes instead of 20. Turn it off for everyday use; the coach page shows a
+            badge while it&apos;s on.
+          </p>
+        </div>
+        <button type="button" role="switch" aria-checked={on} disabled={busy || !data} onClick={toggle}
+          className={`relative flex-none w-11 h-6 border transition-colors disabled:opacity-40 ${on ? 'bg-amber-300 border-amber-200' : 'bg-black/60 border-white/20'}`}>
+          <span className="sr-only">Demo timings</span>
+          <span className={`absolute top-0.5 bg-white transition-all ${on ? 'left-[22px]' : 'left-0.5'}`}
+            style={{ width: 18, height: 18 }} aria-hidden="true" />
+        </button>
+      </div>
+      {(error || saveError) && <p className="text-[10px] text-red-300 mt-2">{saveError || describeError(error)}</p>}
+    </DashboardPanel>
+  );
+};
+
 const SettingsPage = () => {
   const { status } = useFeed();
   const { data: meta, error } = useFetch('/api/meta', status);
@@ -78,6 +124,7 @@ const SettingsPage = () => {
   const notice = (
     <>
       <ModeAndFootage />
+      <DemoTimings />
       <p className="text-[11px] outfit text-white/60">
         The settings below are read-only here. Change them in the backend config and{' '}
         <code className="mono text-cyan-300">.env</code>, then restart the backend.

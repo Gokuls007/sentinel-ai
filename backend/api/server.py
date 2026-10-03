@@ -765,7 +765,12 @@ def put_coach_settings(body: CoachSettingsIn, request: Request, camera: str | No
     """Movement reminder time, long-hold warnings, and demo timings (1 min reminder, 2 min holds)."""
     _check_camera_control(request)
     p = _posture_pipeline(camera)
-    return p.posture.update_settings(**body.model_dump(exclude_none=True))
+    out = p.posture.update_settings(**body.model_dump(exclude_none=True))
+    for other in _pipelines():  # one shared settings file: every running coach follows it
+        coach = getattr(other, "posture", None)
+        if coach is not None and coach is not p.posture and hasattr(coach, "reload_settings"):
+            coach.reload_settings()
+    return out
 
 
 @app.delete("/api/posture/model")
