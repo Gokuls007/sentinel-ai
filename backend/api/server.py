@@ -586,7 +586,8 @@ def _posture_pipeline(camera: str | None):
 def get_posture(camera: str | None = None):
     """The coach's current status, session totals and the session timeline (10 s buckets)."""
     p = _posture_pipeline(camera)
-    return to_serializable({**p.posture.snapshot(), "timeline": p.posture.timeline(), "mode": p.mode})
+    return to_serializable({**p.posture.snapshot(), "timeline": p.posture.timeline(),
+                            "movement_timeline": p.posture.movement.timeline(), "mode": p.mode})
 
 
 @app.post("/api/posture/baseline")
@@ -727,8 +728,13 @@ def get_posture_history(camera: str | None = None, days: int = Query(7, ge=1, le
     return to_serializable({"days": h.daily(days), "corrections": h.corrections(time.time() - days * 86400)})
 
 
-class BreakSettingsRequest(BaseModel):
-    sit_minutes: float = Field(..., ge=5, le=240)
+class CoachSettingsIn(BaseModel):
+    reminder_min: float | None = Field(None, ge=5, le=240)
+    head_down_enabled: bool | None = None
+    head_down_min: float | None = Field(None, ge=5, le=240)
+    lean_enabled: bool | None = None
+    lean_min: float | None = Field(None, ge=5, le=240)
+    demo_timings: bool | None = None
 
 
 _BREAK_ACTIONS = {"start": "start_break", "snooze": "snooze_break", "skip": "skip_break",
@@ -749,12 +755,17 @@ def posture_break(action: str, request: Request, camera: str | None = None):
     return to_serializable(p.posture.snapshot())
 
 
-@app.put("/api/posture/break/settings")
-def posture_break_settings(body: BreakSettingsRequest, request: Request, camera: str | None = None):
+@app.get("/api/posture/settings")
+def get_coach_settings(camera: str | None = None):
+    return _posture_pipeline(camera).posture.settings.__dict__
+
+
+@app.put("/api/posture/settings")
+def put_coach_settings(body: CoachSettingsIn, request: Request, camera: str | None = None):
+    """Movement reminder time, long-hold warnings, and demo timings (1 min reminder, 2 min holds)."""
     _check_camera_control(request)
     p = _posture_pipeline(camera)
-    p.posture.set_break_minutes(body.sit_minutes)
-    return to_serializable(p.posture.snapshot()["break"])
+    return p.posture.update_settings(**body.model_dump(exclude_none=True))
 
 
 @app.delete("/api/posture/model")

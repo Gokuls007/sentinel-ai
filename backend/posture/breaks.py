@@ -1,7 +1,7 @@
 """Guided stretch breaks, checked by the camera.
 
-After a configurable sitting time (default 50 min of being at the desk; 5 min away resets it)
-a 1-minute break is offered: neck tilts, shoulder shrugs and standing up. The pose is used to
+The movement reminder (posture/movement.py) offers a 1-minute break after you've been still
+too long: neck tilts, shoulder shrugs and standing up. The pose is used to
 count the reps and confirm each step. Gentle, general movements only: not medical advice.
 
 Shoulder *shrugs* rather than rolls: from the front, 2D keypoints can't tell a roll from a
@@ -178,38 +178,3 @@ class BreakRoutine:
                 "left_s": round(max(0.0, self.cfg.step_max_s - (ts - self.step_start)), 1),
                 "counts": {k: list(v) for k, v in self._targets()[s["key"]].items()},
                 "waiting_for_reference": self.ref is None, "note": SAFETY_NOTE}
-
-
-class BreakScheduler:
-    """Sitting time and the break offer: offered after ``sit_minutes`` at the desk; snooze
-    delays it, skip or a finished break resets the sitting time, and so does being away for
-    ``away_reset_s``."""
-
-    def __init__(self, cfg: BreakConfig | None = None):
-        self.cfg = cfg or BreakConfig()
-        self.sit_s = 0.0
-        self.offered = False
-        self.snooze_until = 0.0
-        self._away_since: float | None = None
-
-    def update(self, present: bool, dt: float, ts: float) -> bool:
-        """Returns True on the frame the break is first offered."""
-        if present:
-            self._away_since = None
-            self.sit_s += dt
-        else:
-            self._away_since = ts if self._away_since is None else self._away_since
-            if ts - self._away_since >= self.cfg.away_reset_s:
-                self.sit_s, self.offered = 0.0, False
-        if not self.offered and self.sit_s >= self.cfg.sit_minutes * 60 and ts >= self.snooze_until:
-            self.offered = True
-            return True
-        return False
-
-    def snooze(self, ts: float) -> None:
-        self.offered = False
-        self.snooze_until = ts + self.cfg.snooze_s
-
-    def reset(self) -> None:
-        """Skipped, or a break was taken."""
-        self.sit_s, self.offered, self.snooze_until = 0.0, False, 0.0

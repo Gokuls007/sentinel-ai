@@ -7,8 +7,8 @@ from datetime import datetime
 import numpy as np
 import pytest
 
-from posture.breaks import BreakConfig, BreakRoutine, BreakScheduler, RepCounter
-from posture.coach import GOOD, SLOUCHING, PostureCoach, PostureConfig
+from posture.breaks import BreakConfig, BreakRoutine, RepCounter
+from posture.coach import PostureCoach, PostureConfig
 from posture.guidance import CorrectionTracker, instruction, median_skeleton, normalise, place_ghost
 from posture.history import PostureHistory, current_tip, find_tips
 from test_posture import LEAN, SLOUCH, UPRIGHT, coach_with_baseline, kp, run
@@ -104,50 +104,100 @@ def test_jittery_frames_do_not_count_as_corrected():
         assert tr.update("slouching", t, i % 2 == 0) is None  # half good, half poor
 
 
-def test_coach_back_to_good_comes_before_the_official_status(tmp_path):
+def test_short_slouches_are_never_flagged_long_holds_are(tmp_path):
     c, t = coach_with_baseline()
+    c.holds.cfg.head_down_s = 5  # 20 min in real use
     assert c.baseline.skeleton
     t = run(c, SLOUCH, t, 4)
     snap = c.snapshot()
-    assert snap["status"] == SLOUCHING and snap["guidance"]["active"]
-    assert snap["guidance"]["instruction"] == "Sit back and lift your head"
+    assert snap["holds"]["active"] == [] and not snap["guidance"]["active"] and c.ghost() is None
+    assert snap["holds"]["progress"]["head_down"]["held_s"] > 3
+    t = run(c, SLOUCH, t, 2)
+    snap = c.snapshot()
+    (warning,) = snap["holds"]["active"]
+    assert warning["kind"] == "head_down" and snap["guidance"]["active"]
+    assert snap["guidance"]["instruction"] == "Lift your head and sit back"
     ghost = c.ghost()
     assert ghost and ghost["points"][0][1] < SLOUCH[0, 1]
-    shown_at = c._status_since
+    warned_at = t
     corrected_at = None
     for _ in range(30):
         t += 0.1
         c.update(UPRIGHT, t)
         if corrected_at is None and c.snapshot()["back_to_good"]:
             corrected_at = t
-            assert c.status == SLOUCHING and c.ghost() is None  # official status not yet changed
-    assert corrected_at is not None
-    btg = c.snapshot()["back_to_good"]
-    assert btg["seconds"] == pytest.approx(corrected_at - shown_at, abs=0.05) and btg["posture"] == SLOUCHING
-    assert c.status == GOOD and btg["id"] == 1  # the official switch didn't record a second correction
+            assert c.ghost() is None
+    assert corrected_at is not None and 0.8 < corrected_at - warned_at < 2.0
+    snap = c.snapshot()
+    assert snap["holds"]["active"] == [] and snap["holds"]["progress"]["head_down"]["held_s"] == 0
+    assert snap["back_to_good"]["posture"] == "slouching"
+
+
+def test_a_brief_dip_out_of_the_extreme_does_not_reset_the_hold():
+    c, t = coach_with_baseline()
+    c.holds.cfg.head_down_s, c.holds.cfg.interrupt_s = 8, 3
+    t = run(c, SLOUCH, t, 5)
+    t = run(c, UPRIGHT, t, 2)  # under the 3 s interruption allowance
+    t = run(c, SLOUCH, t, 3)
+    assert [w["kind"] for w in c.snapshot()["holds"]["active"]] == ["head_down"]
+    c2, t2 = coach_with_baseline()
+    c2.holds.cfg.head_down_s, c2.holds.cfg.interrupt_s = 8, 3
+    t2 = run(c2, SLOUCH, t2, 5)
+    t2 = run(c2, UPRIGHT, t2, 5)  # a real change: the hold starts over
+    t2 = run(c2, SLOUCH, t2, 4)
+    assert c2.snapshot()["holds"]["active"] == []
+
+
+def test_a_strong_lean_held_long_warns_and_a_mild_one_never_does():
+    from test_posture import kp as make_kp
+
+    strong = make_kp(shoulders=((260, 280), (380, 320)))  # ~18 degrees
+    mild = make_kp(shoulders=((260, 290), (380, 310)))    # ~9.5 degrees: an ordinary lean
+    c, t = coach_with_baseline()
+    c.holds.cfg.lean_s = 5
+    run(c, mild, t, 8)
+    assert c.snapshot()["holds"]["active"] == []
+    c, t = coach_with_baseline()
+    c.holds.cfg.lean_s = 5
+    run(c, strong, t, 8)
+    assert [w["kind"] for w in c.snapshot()["holds"]["active"]] == ["lean"]
+
+
+def test_long_holds_need_a_reference_and_can_be_turned_off():
+    c = PostureCoach(PostureConfig())
+    run(c, SLOUCH, 0.0, 3)
+    holds = c.snapshot()["holds"]
+    assert holds["available"] is False and "baseline" in holds["reason"]
+    c, t = coach_with_baseline()
+    c.update_settings(head_down_enabled=False)
+    c.holds.cfg.head_down_s = 2
+    run(c, SLOUCH, t, 6)
+    assert c.snapshot()["holds"]["active"] == []
 
 
 def test_no_ghost_without_a_recorded_good_skeleton():
     c, t = coach_with_baseline()
     c.baseline.skeleton = None  # an old baseline, recorded before the ghost existed
-    run(c, SLOUCH, t, 4)
+    c.holds.cfg.head_down_s = 3
+    run(c, SLOUCH, t, 6)
     snap = c.snapshot()
     assert snap["guidance"]["active"] and not snap["guidance"]["ghost_available"] and c.ghost() is None
     assert snap["guidance"]["instruction"]
 
 
-def test_classifier_mode_quick_check_and_calibration_ghost(tmp_path):
+def test_classifier_mode_long_hold_and_quick_back_to_good(tmp_path):
     from test_posture_classifier import calibrated_coach, feed
 
     rng = np.random.default_rng(21)
     c, t = calibrated_coach(tmp_path, rng)
     c.train_model()
+    c.holds.cfg.head_down_s = 5
     assert c.ghost_good is not None
     t = feed(c, "good", t, 10, rng)
-    t = feed(c, "slouching", t, 16, rng)
-    assert c.status == SLOUCHING and c.ghost() is not None
+    t = feed(c, "slouching", t, 8, rng)
+    assert [w["kind"] for w in c.snapshot()["holds"]["active"]] == ["head_down"] and c.ghost() is not None
     t = feed(c, "good", t, 1.5, rng)
-    assert c.snapshot()["back_to_good"] and c.status == SLOUCHING  # 5 s stability still running
+    assert c.snapshot()["back_to_good"] and c.snapshot()["holds"]["active"] == []
 
 
 # --- history and tips --------------------------------------------------------------------------
@@ -237,21 +287,23 @@ def test_strongest_tip_first_and_dismissal(hist):
 def test_history_persists_across_restarts_with_lean_side(tmp_path):
     path = str(tmp_path / "posture_baseline_laptop.json")
     c = PostureCoach(PostureConfig(), baseline_path=path)
+    c.holds.cfg.head_down_s = 3
     t = 1_790_000_000.0
     c.update(UPRIGHT, t)
     c.start_baseline(now=t)
     t = run(c, UPRIGHT, t, 7)
     t = run(c, SLOUCH, t, 8)
-    t = run(c, UPRIGHT, t, 4)  # corrected
+    t = run(c, UPRIGHT, t, 4)  # corrected after the long-hold warning
     t = run(c, LEAN, t, 8)
     c.history.close()
     again = PostureHistory(str(tmp_path / "posture_history_laptop.db"))
     totals = again.totals(t - 3600)
     assert totals["slouching"] > 3 and totals["good"] > 0
     assert any(k.startswith("leaning_") for k in totals)  # stored with your side
+    assert not any(k.startswith("mv:") for k in totals)  # movement time is kept apart
     (fix,) = again.corrections(t - 3600)
-    # Shown ~2 s into the 8 s slouch, corrected ~1 s after sitting up: about 7 s.
-    assert fix["posture"] == SLOUCHING and 6 < fix["seconds"] < 8
+    # Warned 3 s into the slouch, corrected ~1 s after sitting up (5 s later).
+    assert fix["posture"] == "head_down" and 5 < fix["seconds"] < 7
     again.close()
 
 
@@ -349,46 +401,22 @@ def test_a_step_left_unfinished_moves_on_and_is_partial():
     assert r.done and r.result()["outcome"] == "partial"
 
 
-def test_scheduler_offer_snooze_skip_and_away_reset():
-    s = BreakScheduler(BreakConfig(sit_minutes=50, away_reset_s=300, snooze_s=600))
-    t = 0.0
-    offered = False
-    for _ in range(50 * 60):
-        t += 1
-        offered = s.update(True, 1, t) or offered
-    assert offered and s.offered
-    s.snooze(t)
-    for _ in range(599):
-        t += 1
-        s.update(True, 1, t)
-    assert not s.offered
-    t += 2
-    s.update(True, 1, t)
-    assert s.offered
-    s.reset()  # skipped
-    assert s.sit_s == 0 and not s.offered
-    for _ in range(40 * 60):
-        t += 1
-        s.update(True, 1, t)
-    for _ in range(301):  # a real break away from the desk
-        t += 1
-        s.update(False, 1, t)
-    assert s.sit_s == 0
-
-
-def test_coach_offers_runs_and_logs_a_break(tmp_path):
+def test_movement_reminder_offers_the_break_and_the_break_counts(tmp_path):
     path = str(tmp_path / "posture_baseline_laptop.json")
     c = PostureCoach(PostureConfig(), baseline_path=path)
     t = 1_790_000_000.0
     c.update(UPRIGHT, t)
     c.start_baseline(now=t)
     t = run(c, UPRIGHT, t, 7)
-    c.set_break_minutes(0.2)  # 12 s at the desk (the baseline recording itself isn't counted)
-    t = run(c, UPRIGHT, t, 11)
-    assert not c.snapshot()["break"]["offered"]
-    t = run(c, UPRIGHT, t, 2)
-    assert c.snapshot()["break"]["offered"]
+    c.movement.cfg.reminder_s = 25  # still since the first frame (the baseline recording too)
+    t = run(c, UPRIGHT, t, 10)
+    assert not c.snapshot()["movement"]["reminder"]["offered"]
+    t = run(c, UPRIGHT, t, 10)
+    snap = c.snapshot()
+    assert snap["movement"]["reminder"]["offered"] and snap["movement"]["still_s"] >= 25
     c.start_break(now=t)
+    assert not c.snapshot()["movement"]["reminder"]["offered"]
+    assert c.snapshot()["movement"]["state"] == "on_break"
     t = run(c, UPRIGHT, t, 3.1)
     for _ in range(3):
         t = run(c, tilted(20), t, 1)
@@ -404,11 +432,24 @@ def test_coach_offers_runs_and_logs_a_break(tmp_path):
     c.stood_up(now=t)
     snap = c.snapshot()
     assert snap["break"]["routine"] is None and snap["break"]["result"]["outcome"] == "completed"
-    assert snap["break"]["sit_min"] == 0 and not snap["break"]["offered"]
+    assert snap["movement"]["breaks_today"] == 1 and snap["movement"]["still_s"] == 0
     assert snap["session"]["seconds"]["good"] == good_before  # break time isn't posture time
-    # The setting is saved with the history.
-    again = PostureCoach(PostureConfig(), baseline_path=path)
-    assert again.breaks.cfg.sit_minutes == 0.2
+    # Settings and today's breaks are saved.
+    c.update_settings(reminder_min=45)
+    again = PostureCoach(PostureConfig(), baseline_path=path, clock=lambda: t)
+    assert again.settings.reminder_min == 45 and again.movement.cfg.reminder_s == 45 * 60
+    assert again.movement.today.breaks == 1
+
+
+def test_demo_timings_shorten_the_reminder_and_holds():
+    c = PostureCoach(PostureConfig())
+    c.update_settings(demo_timings=True)
+    assert c.movement.cfg.reminder_s == 60 and c.holds.cfg.head_down_s == 120 and c.holds.cfg.lean_s == 120
+    assert c.snapshot()["movement"]["demo_timings"] is True
+    c.update_settings(demo_timings=False, lean_min=25)
+    assert c.movement.cfg.reminder_s == 30 * 60 and c.holds.cfg.lean_s == 25 * 60
+    with pytest.raises(ValueError):
+        c.update_settings(sit_minutes=50)
 
 
 @pytest.fixture
@@ -440,13 +481,15 @@ def test_coaching_endpoints(coaching_api):
     assert api.post("/api/posture/tips/too_close/dismiss", json={}).json() == {"tip": None}
     days = api.get("/api/posture/history?days=7").json()["days"]
     assert days and days[-1]["seconds"]["too_close"] == 3000
-    assert api.put("/api/posture/break/settings", json={"sit_minutes": 45}).json()["sit_minutes"] == 45
-    assert api.put("/api/posture/break/settings", json={"sit_minutes": 1}).status_code == 422
+    assert api.put("/api/posture/settings", json={"reminder_min": 45}).json()["reminder_min"] == 45
+    assert api.put("/api/posture/settings", json={"reminder_min": 1}).status_code == 422
+    assert api.put("/api/posture/settings", json={"demo_timings": True}).json()["demo_timings"] is True
+    assert api.get("/api/posture/settings").json()["demo_timings"] is True
     coach.update(UPRIGHT, now)
     snap = api.post("/api/posture/break/start", json={}).json()
     assert snap["break"]["routine"]["phase"] == "get_ready" and "not medical advice" in snap["break"]["note"]
     assert api.post("/api/posture/break/cancel", json={}).json()["break"]["result"]["outcome"] == "cancelled"
-    assert api.post("/api/posture/break/snooze", json={}).json()["break"]["snoozed"] is True
+    assert api.post("/api/posture/break/snooze", json={}).json()["movement"]["reminder"]["snoozed"] is True
     assert api.post("/api/posture/break/skip", json={}).status_code == 200
     assert api.post("/api/posture/break/dance", json={}).status_code == 404
 

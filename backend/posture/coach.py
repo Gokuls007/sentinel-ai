@@ -35,7 +35,7 @@ from dataclasses import asdict, dataclass, field, fields
 
 import numpy as np
 
-from posture.breaks import SAFETY_NOTE, BreakConfig, BreakRoutine, BreakScheduler
+from posture.breaks import SAFETY_NOTE, BreakConfig, BreakRoutine
 from posture.classifier import (
     POSTURE_LABELS,
     POSTURES,
@@ -50,13 +50,15 @@ from posture.classifier import (
 from posture.guidance import (
     GHOST_EDGES,
     CorrectionTracker,
-    instruction,
     median_skeleton,
     normalise,
     place_ghost,
     to_json,
 )
 from posture.history import PostureHistory
+from posture.holds import HEAD_DOWN, INSTRUCTIONS, LEAN, HoldConfig, HoldTracker, extremes
+from posture.movement import AWAY as MOVE_AWAY
+from posture.movement import MovementConfig, MovementTracker
 
 logger = logging.getLogger("sentinel.posture")
 
@@ -367,6 +369,21 @@ class Session:
     reminders: int = 0
 
 
+@dataclass
+class CoachSettings:
+    """What the person can change on the coach page (saved with the history)."""
+    reminder_min: float = 30.0
+    head_down_enabled: bool = True
+    head_down_min: float = 20.0
+    lean_enabled: bool = True
+    lean_min: float = 20.0
+    # Shortened timings for testing and recording a demo: reminder after 1 min, long holds 2 min.
+    demo_timings: bool = False
+
+    DEMO_REMINDER_S = 60.0
+    DEMO_HOLD_S = 120.0
+
+
 class PostureCoach:
     def __init__(self, cfg: PostureConfig | None = None, baseline_path: str | None = None,
                  clock=time.time):
@@ -425,10 +442,16 @@ class PostureCoach:
         if stem:
             os.makedirs(os.path.dirname(stem) or ".", exist_ok=True)
             self.history = PostureHistory(stem.format("history") + ".db", clock=clock)
-        bcfg = BreakConfig()
-        if self.history:
-            bcfg.sit_minutes = float(self.history.get_setting("break_sit_minutes", bcfg.sit_minutes))
-        self.breaks = BreakScheduler(bcfg)
+        # The movement coach: time since you last moved, breaks, static time, the movement
+        # reminder (which offers the stretch break), and long-hold warnings for sustained extremes.
+        self.break_cfg = BreakConfig()
+        self.movement = MovementTracker(MovementConfig(), history=self.history, now=clock())
+        self.holds = HoldTracker(HoldConfig())
+        self._hold_window: deque = deque()  # (ts, head_ratio, tilt, lateral) for the classifier path
+        saved = self.history.get_setting("coach_settings", {}) if self.history else {}
+        known = {f.name for f in fields(CoachSettings)}
+        self.settings = CoachSettings(**{k: v for k, v in (saved or {}).items() if k in known})
+        self._apply_settings()
         self.routine: BreakRoutine | None = None
         self.break_result: dict | None = None
         self.ghost_good = self._calibration_ghost()
@@ -689,6 +712,8 @@ class PostureCoach:
         if m is not None:
             self.last = m
         self.last_problem = problem
+        if self.routine is None:
+            self.movement.update(kp, ts, self.cfg.min_kp_conf, seen=face_seen)
         if face_seen:
             self._quality.append((ts, problem is not None))
         while self._quality and ts - self._quality[0][0] > self.cfg.smooth_s:
@@ -764,25 +789,78 @@ class PostureCoach:
     # --- coaching: fix guidance and breaks ---------------------------------------------------
 
     def _coach_frame(self, kp, m, dt: float, ts: float) -> None:
+        """Long holds and their fix guidance. Short-term posture is never flagged."""
         self._kp = kp
-        ok = None  # does this frame on its own look Good? (the quick "back to good" check)
-        if self.status in BAD and kp is not None and self.turn_reason is None:
-            if self.model is not None:
-                ok = None if self._frame_good is None else self._frame_good >= self.cfg.quick_good_prob
-            elif m is not None and self.baseline is not None:
-                ok = assess(m, self.baseline, self.cfg)["status"] == GOOD
-        corrected = self.guide.update(self.status, ts, ok)
-        if corrected and self.history:
-            self.history.add_correction(ts, corrected["posture"], corrected["seconds"], corrected["after_reminder"])
-        if self.status in BAD:
-            rows = (explain(self.smoothed, self.baseline, self.cfg)
-                    if self.model is None and self.smoothed is not None and self.baseline is not None else None)
-            self.instruction = instruction(self.status, rows, self.cfg)
-        else:
-            self.instruction = None
-        present = ts - self._last_seen <= self.cfg.away_after_s and self.status != AWAY
-        if self.breaks.update(present, dt, ts) and self.history:
-            self.history.add_event(ts, "break_offered", {"sat_min": round(self.breaks.sit_s / 60, 1)})
+        smoothed, frame = self._extreme_flags(kp, m, ts)
+        if self.movement.state(ts) == MOVE_AWAY:  # got up: whatever was held is over
+            self.holds.reset(HEAD_DOWN)
+            self.holds.reset(LEAN)
+        for kind in self.holds.update(smoothed, ts):
+            if self.history:
+                self.history.add_event(ts, "hold_warning", {"kind": kind})
+        warned = [k for k in (HEAD_DOWN, LEAN) if k in self.holds.warned]
+        kind = warned[0] if warned else None
+        guide_status = {HEAD_DOWN: SLOUCHING, LEAN: LEANING}.get(kind, GOOD)
+        ok = None if kind is None or frame is None else not frame[kind]
+        corrected = self.guide.update(guide_status, ts, ok)
+        if corrected:
+            self.holds.reset(kind)  # corrected on purpose: the hold starts over
+            if self.history:
+                self.history.add_correction(ts, kind, corrected["seconds"], corrected["after_reminder"])
+        self.instruction = INSTRUCTIONS[kind] if kind else None
+
+    def _hold_reference(self) -> dict | None:
+        if self.model is not None:
+            return self.model.ref
+        if self.baseline is not None:
+            b = self.baseline
+            return {"head_ratio": b.head_ratio, "tilt_deg": b.tilt_deg, "lateral": b.lateral}
+        return None
+
+    def _extreme_flags(self, kp, m, ts: float) -> tuple[dict | None, dict | None]:
+        """(smoothed flags, this frame's flags) for the long-hold checks; None when this frame
+        can't be judged (away, turned head, unclear shoulders, no reference)."""
+        ref = self._hold_reference()
+        if ref is None or kp is None or self.turn_reason is not None or self.status == UNCLEAR:
+            return None, None
+        cfg = self.holds.cfg
+        if self.model is not None:
+            raw = self.last_raw if self.last_raw is not None else None
+            if raw is None:
+                return None, None
+            self._hold_window.append((ts, raw["head_ratio"], raw["tilt_deg"], raw["lateral"]))
+            while self._hold_window and ts - self._hold_window[0][0] > self.cfg.smooth_s:
+                self._hold_window.popleft()
+            med = [float(np.median([row[i] for row in self._hold_window])) for i in (1, 2, 3)]
+            cls = self.stable.current
+            return (extremes(*med, ref, cfg, cls),
+                    extremes(raw["head_ratio"], raw["tilt_deg"], raw["lateral"], ref, cfg, cls))
+        if m is None or self.smoothed is None:
+            return None, None
+        s = self.smoothed
+        return (extremes(s.head_ratio, s.tilt_deg, s.lateral, ref, cfg),
+                extremes(m.head_ratio, m.tilt_deg, m.lateral, ref, cfg))
+
+    # --- settings ------------------------------------------------------------------------------
+
+    def _apply_settings(self) -> None:
+        s = self.settings
+        demo = s.demo_timings
+        self.movement.cfg.reminder_s = CoachSettings.DEMO_REMINDER_S if demo else s.reminder_min * 60
+        self.holds.cfg.head_down_enabled, self.holds.cfg.lean_enabled = s.head_down_enabled, s.lean_enabled
+        self.holds.cfg.head_down_s = CoachSettings.DEMO_HOLD_S if demo else s.head_down_min * 60
+        self.holds.cfg.lean_s = CoachSettings.DEMO_HOLD_S if demo else s.lean_min * 60
+
+    def update_settings(self, **changes) -> dict:
+        known = {f.name for f in fields(CoachSettings)}
+        unknown = set(changes) - known
+        if unknown:
+            raise ValueError(f"unknown setting(s): {sorted(unknown)}")
+        self.settings = CoachSettings(**{**asdict(self.settings), **changes})
+        self._apply_settings()
+        if self.history:
+            self.history.set_setting("coach_settings", asdict(self.settings))
+        return asdict(self.settings)
 
     def _ghost_ref(self) -> tuple[dict | None, float | None]:
         """(Good skeleton, Good shoulder width px): the calibration's with a model, else the baseline's."""
@@ -796,10 +874,10 @@ class PostureCoach:
         """The ghost of your Good posture in image pixels, while a poor posture is being corrected."""
         if not self.guide.ghost_visible or self._kp is None:
             return None
-        ref, good_width = self._ghost_ref()
+        ref, _good_width = self._ghost_ref()
         if not ref:
             return None
-        pts = place_ghost(ref, self._kp, good_width if self.status == TOO_CLOSE else None, self.cfg.min_kp_conf)
+        pts = place_ghost(ref, self._kp, None, self.cfg.min_kp_conf)
         return {"points": pts, "edges": GHOST_EDGES} if pts else None
 
     def _now(self, now: float | None) -> float:
@@ -811,19 +889,19 @@ class PostureCoach:
         if self.rec is not None or self._calib is not None:
             raise ValueError("finish the calibration first")
         now = self._now(now)
-        self.routine = BreakRoutine(now, self.breaks.cfg, self.cfg.min_kp_conf)
-        self.breaks.offered = False
+        self.routine = BreakRoutine(now, self.break_cfg, self.cfg.min_kp_conf)
+        self.movement.start_break()
         self.break_result = None
 
     def snooze_break(self, now: float | None = None) -> None:
         now = self._now(now)
-        self.breaks.snooze(now)
+        self.movement.snooze(now)
         if self.history:
             self.history.add_event(now, "break_snoozed")
 
     def skip_break(self, now: float | None = None) -> None:
         now = self._now(now)
-        self.breaks.reset()
+        self.movement.dismiss(now)
         if self.history:
             self.history.add_event(now, "break_skipped")
 
@@ -845,21 +923,15 @@ class PostureCoach:
             result["outcome"] = "cancelled"
         self.break_result = {**result, "at": ts}
         self.routine = None
-        self.breaks.reset()
+        self.movement.finish_break(ts, completed=result["outcome"] == "completed")
+        self.holds.reset(HEAD_DOWN)
+        self.holds.reset(LEAN)
         self.guide.update(AWAY, ts, None)  # a fresh start after the break
         if self.history:
             self.history.add_event(ts, "break_" + result["outcome"], result)
 
-    def set_break_minutes(self, minutes: float) -> None:
-        self.breaks.cfg.sit_minutes = float(minutes)
-        if self.history:
-            self.history.set_setting("break_sit_minutes", float(minutes))
-
     def _break_snapshot(self, ts: float) -> dict:
-        b = self.breaks
-        return {"offered": b.offered, "sit_min": round(b.sit_s / 60, 1), "sit_minutes": b.cfg.sit_minutes,
-                "snoozed": ts < b.snooze_until, "snooze_min": b.cfg.snooze_s / 60,
-                "routine": self.routine.snapshot(ts) if self.routine else None,
+        return {"routine": self.routine.snapshot(ts) if self.routine else None,
                 "result": self.break_result if self.break_result and ts - self.break_result["at"] <= 10 else None,
                 "note": SAFETY_NOTE}
 
@@ -1023,6 +1095,12 @@ class PostureCoach:
             },
             "back_to_good": self.guide.recent(ts),
             "break": self._break_snapshot(ts),
+            "movement": {**self.movement.snapshot(ts), "demo_timings": self.settings.demo_timings},
+            "holds": self.holds.snapshot(
+                ts, available=self._hold_reference() is not None,
+                reason=None if self._hold_reference() is not None else
+                "Set a baseline or calibrate to turn on long-hold warnings (head down, strong lean)"),
+            "settings": asdict(self.settings),
         }
 
     def model_summary(self) -> dict | None:

@@ -86,11 +86,19 @@ class PostureHistory:
 
     # --- reading ------------------------------------------------------------------------------
 
-    def _rows(self, since: float) -> list[tuple[int, str, float]]:
+    def _rows(self, since: float, movement: bool = False) -> list[tuple[int, str, float]]:
+        """Posture rows by default; movement-coach rows ("mv:" statuses) with ``movement``."""
         self.flush()
         with self._lock:
-            return self._db.execute("SELECT minute, status, seconds FROM minutes WHERE minute >= ?",
+            rows = self._db.execute("SELECT minute, status, seconds FROM minutes WHERE minute >= ?",
                                     (int(since // 60),)).fetchall()
+        return [r for r in rows if r[1].startswith("mv:") == movement]
+
+    def events(self, since: float, kinds: tuple[str, ...] | None = None) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute("SELECT ts, kind, data FROM events WHERE ts >= ? ORDER BY ts", (since,)).fetchall()
+        return [{"ts": ts, "kind": k, "data": json.loads(d or "{}")} for ts, k, d in rows
+                if kinds is None or k in kinds]
 
     def totals(self, since: float) -> dict[str, float]:
         out: dict[str, float] = {}
