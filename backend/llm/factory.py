@@ -7,7 +7,7 @@ from llm.base import LLMClient, LLMError
 
 PROVIDERS = ("nvidia", "anthropic")
 DEFAULT_MODELS = {
-    "nvidia": "nvidia/nemotron-3-super-120b-a12b",
+    "nvidia": "nvidia/nemotron-3-ultra-550b-a55b",  # the 120B "super" model was retired on 2026-10-03
     "anthropic": "claude-sonnet-5-5",
 }
 

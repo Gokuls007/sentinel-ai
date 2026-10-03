@@ -147,7 +147,7 @@ How it works:
 
 Setup:
 1. Put an API key in `.env`. The default, `LLM_PROVIDER=nvidia`, needs `NVIDIA_API_KEY`
-   (free trial keys at build.nvidia.com) and uses `nvidia/nemotron-3-super-120b-a12b`.
+   (free trial keys at build.nvidia.com) and uses `nvidia/nemotron-3-ultra-550b-a55b`.
    `LLM_PROVIDER=anthropic` needs `ANTHROPIC_API_KEY` and uses `claude-sonnet-5-5`.
 2. Restart the server.
 
