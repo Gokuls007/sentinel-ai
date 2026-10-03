@@ -1,6 +1,7 @@
 """Any OpenAI-compatible chat endpoint: NVIDIA (the default, Nemotron), Groq, Cerebras, vLLM...
 
-Notes from testing nvidia/nemotron-3-super-120b-a12b on integrate.api.nvidia.com:
+Notes from testing nvidia/nemotron-3-super-120b-a12b on integrate.api.nvidia.com (that model was
+retired on 2026-10-03; the default is now nvidia/nemotron-3-ultra-550b-a55b):
 - ``tool_choice="required"`` returns HTTP 500, so the model always chooses (``auto``).
 - Occasional 5xx blips: the SDK retries them (``max_retries``).
 - Rarely, a tool call arrives as text (``<tool_call>{...}</tool_call>``) or with junk after

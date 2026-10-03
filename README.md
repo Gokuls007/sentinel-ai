@@ -147,7 +147,7 @@ How it works:
 
 Setup:
 1. Put an API key in `.env`. The default, `LLM_PROVIDER=nvidia`, needs `NVIDIA_API_KEY`
-   (free trial keys at build.nvidia.com) and uses `nvidia/nemotron-3-super-120b-a12b`.
+   (free trial keys at build.nvidia.com) and uses `nvidia/nemotron-3-ultra-550b-a55b`.
    `LLM_PROVIDER=anthropic` needs `ANTHROPIC_API_KEY` and uses `claude-sonnet-5-5`.
 2. Restart the server.
 
@@ -158,6 +158,46 @@ Privacy and cost:
 - Search is allowed from this computer only (`ALLOW_REMOTE_SEARCH`) and is rate-limited.
 
 Accuracy is measured by `python scripts/eval_search.py` (see [docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
+
+### Rules: write safety rules in plain English
+On the **Rules** page you type a rule such as "alert if someone stays in the loading dock for
+more than 30 seconds". It is compiled once into a structured rule, you check a plain-words
+preview, and only then does it run on every frame.
+
+How it works:
+- **The compiler** (`backend/rules/compiler.py`) sends your sentence and the zone names to
+  the LLM once. The model must either submit a rule from a fixed set of conditions, or refuse
+  and say what's missing. Examples of refusals: helmets, distance to forklifts, "looks tired".
+  - The rule is validated, including that every zone exists. Errors go back to the model
+    for one repair attempt.
+  - It never invents a zone or a condition.
+- **The preview** is written by code, not the model, for example:
+  "Person · in Loading Dock · for 30 s → medium alert, clip". It comes with warnings worth
+  checking, such as a loosely matched zone name, or an instant rule that may be noisy.
+- **The engine** (`backend/rules/engine.py`) runs in warehouse mode with no LLM involved. It
+  keeps a timer and a cooldown per rule and per person, and fires once per episode. Rule
+  events go through the same clips, store, notifications and dashboard as other alerts.
+- **Conditions available now:**
+  - being in or out of a zone;
+  - a fall;
+  - not moving for a while;
+  - 2D REBA posture risk;
+  - people counts, overall or per zone;
+  - a time window;
+  - holding a phone, laptop or book;
+  - head turned;
+  - looking down.
+
+  Helmets, vests and forklifts need open-vocabulary detection (Phase 3b).
+- **Cost:** a phone rule adds that class to the detector's existing pass, and only while such
+  a rule exists. Ten rules add about 0.2 ms per frame.
+- **Presets:** "Warehouse safety" loads a ready-made set of rules.
+- **Built-in rules:** with `RULES_BUILTINS=true`, falls and restricted zones run as built-in
+  rules instead of the original detectors. It's off until the parity check
+  (`python scripts/rules_parity.py`) shows they match.
+
+The compiler's accuracy is measured by `python scripts/eval_rules.py` (see
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
 
 ## API
 | Endpoint | Returns |
@@ -170,6 +210,9 @@ Accuracy is measured by `python scripts/eval_search.py` (see [docs/BENCHMARKS.md
 | `WS /ws/feed` | `history`, then `alert` and `frame` messages |
 | `POST /api/search {"question"}` | Server-Sent Events: `tool_call` / `tool_result` steps, then `done` with the answer and cited events |
 | `GET /api/search/status` | whether search is configured, plus the provider and model (never keys) |
+| `POST /api/rules/compile {"text"}` | a draft rule with its preview and warnings, or a refusal (saves nothing) |
+| `POST /api/rules`, `GET /api/rules`, `PATCH /api/rules/{id}`, `DELETE /api/rules/{id}` | confirm, list (with fire counts), edit or turn off, delete |
+| `GET /api/presets`, `POST /api/presets/{name}/apply` | presets, and loading one (asks before replacing preset rules) |
 
 Set `WEBHOOK_URL` to get every alert POSTed as JSON.
 
@@ -192,6 +235,7 @@ CI runs both, plus the frontend lint and build, and a Docker build with a smoke 
 backend/
   core/      video_source, detector (YOLOv8 + ByteTrack), pose_estimator, pipeline, samples
   anomaly/   fall_detector, zone_monitor, engine (loitering, alert routing), temporal_model
+  rules/     plain-English rules: dsl (format), compiler (LLM), engine (per frame), presets, store
   output/    clip_recorder, event_logger (SQLite), webhook
   api/       FastAPI server (REST, WebSocket, serves the dashboard)
 config/demo/ scenario zone files
@@ -211,7 +255,8 @@ tests/       pytest suite
   the person once they are on the floor. Re-finding them around their last box, including
   with the image rotated 90°, is implemented (`anomaly/fall_recovery.py`) but off by default:
   on unseen subjects it added false alarms.
-- **Plain-English rules and presets** (exam hall, desk posture coach): see
+- **More rule conditions:** helmets, vests and forklifts (Phase 3b, after the YOLO-World
+  accuracy test), and the exam-hall preset with its review page (Phase 3d). See
   [docs/plans/phase-3-rules.md](docs/plans/phase-3-rules.md).
 
 ## Credits

@@ -164,7 +164,7 @@ def test_anthropic_errors_and_refusal():
 # --- factory and settings -----------------------------------------------------------------------
 
 def test_factory_defaults_and_missing_keys():
-    assert DEFAULT_MODELS == {"nvidia": "nvidia/nemotron-3-super-120b-a12b", "anthropic": "claude-sonnet-5-5"}
+    assert DEFAULT_MODELS == {"nvidia": "nvidia/nemotron-3-ultra-550b-a55b", "anthropic": "claude-sonnet-5-5"}
     with pytest.raises(LLMError, match="NVIDIA_API_KEY"):
         build_llm(LLMConfig(provider="nvidia"))
     with pytest.raises(LLMError, match="ANTHROPIC_API_KEY"):
@@ -172,7 +172,7 @@ def test_factory_defaults_and_missing_keys():
     with pytest.raises(LLMError, match="unknown LLM_PROVIDER"):
         build_llm(LLMConfig(provider="hermes", nvidia_api_key="x"))
     nv = build_llm(LLMConfig(provider="nvidia", nvidia_api_key="nvapi-test"))
-    assert (nv.provider, nv.model) == ("nvidia", "nvidia/nemotron-3-super-120b-a12b")
+    assert (nv.provider, nv.model) == ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b")
     an = build_llm(LLMConfig(provider="anthropic", anthropic_api_key="sk-test", model="claude-opus-5-5"))
     assert (an.provider, an.model) == ("anthropic", "claude-opus-5-5")
 

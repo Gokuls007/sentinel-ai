@@ -74,7 +74,7 @@ def test_unconfigured_provider_is_503_and_status_explains(api):
     assert r.status_code == 503 and "NVIDIA_API_KEY" in r.json()["detail"]
     s = api.get("/api/search/status").json()
     assert s["enabled"] is False and s["provider"] == "nvidia" and "NVIDIA_API_KEY" in s["reason"]
-    assert s["model"] == "nvidia/nemotron-3-super-120b-a12b"
+    assert s["model"] == "nvidia/nemotron-3-ultra-550b-a55b"
 
 
 def test_status_when_configured_never_includes_keys(api):
