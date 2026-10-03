@@ -1,0 +1,773 @@
+{
+ "about": "Rule compiler eval (scripts/eval_rules.py). Zones: dock_1 Loading Dock (time_limited), lane Forklift Lane (one_way), chem Chemical Storage (restricted), gate Yard Gate (restricted). A case passes 'exact' when the compiled conditions (defaults filled in; 'loose' parameters ignored) and duration_s equal 'expect'; 'semantic' when they equal 'expect' or one of 'accept'. Refusal cases pass only if refused. Severity and notify are scored separately when given. Cases with source 'user' come from tests/rules/user_rules.md.",
+ "zones": {
+  "dock_1": [
+   "Loading Dock",
+   "time_limited"
+  ],
+  "lane": [
+   "Forklift Lane",
+   "one_way"
+  ],
+  "chem": [
+   "Chemical Storage",
+   "restricted"
+  ],
+  "gate": [
+   "Yard Gate",
+   "restricted"
+  ]
+ },
+ "cases": [
+  {
+   "id": "w01",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert if someone stays in the loading dock for more than 30 seconds",
+   "expect": {
+    "conditions": [
+     {
+      "type": "in_zone",
+      "zone": "dock_1"
+     }
+    ],
+    "duration_s": 30
+   }
+  },
+  {
+   "id": "w02",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "notify me if anyone enters chemical storage",
+   "expect": {
+    "conditions": [
+     {
+      "type": "in_zone",
+      "zone": "chem"
+     }
+    ],
+    "duration_s": 0,
+    "notify": true
+   }
+  },
+  {
+   "id": "w03",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "if a person falls, send a critical alert",
+   "expect": {
+    "conditions": [
+     {
+      "type": "fallen"
+     }
+    ],
+    "duration_s": 0,
+    "severity": "critical"
+   }
+  },
+  {
+   "id": "w04",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert if someone hasn't moved for 5 minutes",
+   "expect": {
+    "conditions": [
+     {
+      "type": "stationary_for",
+      "seconds": 300
+     }
+    ],
+    "duration_s": 0
+   },
+   "loose": [
+    "radius_body_heights"
+   ]
+  },
+  {
+   "id": "w05",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "more than 3 people in the loading dock",
+   "expect": {
+    "conditions": [
+     {
+      "type": "count_in_zone_greater_than",
+      "zone": "dock_1",
+      "n": 3
+     }
+    ],
+    "duration_s": 0
+   }
+  },
+  {
+   "id": "w06",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "flag anyone at the yard gate between 10pm and 6am",
+   "expect": {
+    "conditions": [
+     {
+      "type": "in_zone",
+      "zone": "gate"
+     },
+     {
+      "type": "time_window",
+      "start": "22:00",
+      "end": "06:00"
+     }
+    ],
+    "duration_s": 0
+   }
+  },
+  {
+   "id": "w07",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert if more than 10 people are in view for a minute",
+   "expect": {
+    "conditions": [
+     {
+      "type": "count_greater_than",
+      "n": 10
+     }
+    ],
+    "duration_s": 60
+   }
+  },
+  {
+   "id": "w08",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "warn when someone works in a high-risk posture for 20 seconds",
+   "expect": {
+    "conditions": [
+     {
+      "type": "posture_risk_at_least",
+      "level": 4
+     }
+    ],
+    "duration_s": 20
+   }
+  },
+  {
+   "id": "w09",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert on any very high ergonomic risk",
+   "expect": {
+    "conditions": [
+     {
+      "type": "posture_risk_at_least",
+      "level": 5
+     }
+    ],
+    "duration_s": 0
+   }
+  },
+  {
+   "id": "w10",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert if someone is on their phone in the forklift lane",
+   "expect": {
+    "conditions": [
+     {
+      "type": "holding_object",
+      "object": "cell phone"
+     },
+     {
+      "type": "in_zone",
+      "zone": "lane"
+     }
+    ],
+    "duration_s": 0
+   }
+  },
+  {
+   "id": "w11",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "anyone using a phone in chemical storage for more than 10 s, page the supervisor",
+   "expect": {
+    "conditions": [
+     {
+      "type": "holding_object",
+      "object": "cell phone"
+     },
+     {
+      "type": "in_zone",
+      "zone": "chem"
+     }
+    ],
+    "duration_s": 10,
+    "notify": true
+   }
+  },
+  {
+   "id": "w12",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "two or more people in chemical storage",
+   "expect": {
+    "conditions": [
+     {
+      "type": "count_in_zone_greater_than",
+      "zone": "chem",
+      "n": 1
+     }
+    ],
+    "duration_s": 0
+   }
+  },
+  {
+   "id": "w13",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert if anyone is here at the weekend",
+   "expect": {
+    "conditions": [
+     {
+      "type": "count_greater_than",
+      "n": 0
+     },
+     {
+      "type": "time_window",
+      "start": "00:00",
+      "end": "23:59",
+      "days": [
+       "sat",
+       "sun"
+      ]
+     }
+    ],
+    "duration_s": 0
+   },
+   "note": "whole-day window; 00:00-23:59 is the closest the format allows"
+  },
+  {
+   "id": "w14",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "between 6pm and 11pm on weekdays, alert if anyone is in the loading dock",
+   "expect": {
+    "conditions": [
+     {
+      "type": "in_zone",
+      "zone": "dock_1"
+     },
+     {
+      "type": "time_window",
+      "start": "18:00",
+      "end": "23:00",
+      "days": [
+       "mon",
+       "tue",
+       "wed",
+       "thu",
+       "fri"
+      ]
+     }
+    ],
+    "duration_s": 0
+   }
+  },
+  {
+   "id": "w15",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "a fallen person in the forklift lane is critical",
+   "expect": {
+    "conditions": [
+     {
+      "type": "fallen"
+     },
+     {
+      "type": "in_zone",
+      "zone": "lane"
+     }
+    ],
+    "duration_s": 0,
+    "severity": "critical"
+   }
+  },
+  {
+   "id": "w16",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "if someone stands still in the forklift lane for 15 seconds",
+   "expect": {
+    "conditions": [
+     {
+      "type": "in_zone",
+      "zone": "lane"
+     },
+     {
+      "type": "stationary_for",
+      "seconds": 15
+     }
+    ],
+    "duration_s": 0
+   },
+   "accept": [
+    {
+     "conditions": [
+      {
+       "type": "in_zone",
+       "zone": "lane"
+      },
+      {
+       "type": "stationary_for",
+       "seconds": 15
+      }
+     ],
+     "duration_s": 15
+    }
+   ],
+   "loose": [
+    "radius_body_heights"
+   ]
+  },
+  {
+   "id": "w17",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "anyone hanging around the yard gate for 2 minutes",
+   "expect": {
+    "conditions": [
+     {
+      "type": "in_zone",
+      "zone": "gate"
+     }
+    ],
+    "duration_s": 120
+   },
+   "accept": [
+    {
+     "conditions": [
+      {
+       "type": "in_zone",
+       "zone": "gate"
+      },
+      {
+       "type": "stationary_for",
+       "seconds": 120
+      }
+     ],
+     "duration_s": 0
+    }
+   ],
+   "loose": [
+    "radius_body_heights"
+   ]
+  },
+  {
+   "id": "w18",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "more than 5 people on site between midnight and 5am",
+   "expect": {
+    "conditions": [
+     {
+      "type": "count_greater_than",
+      "n": 5
+     },
+     {
+      "type": "time_window",
+      "start": "00:00",
+      "end": "05:00"
+     }
+    ],
+    "duration_s": 0
+   }
+  },
+  {
+   "id": "w19",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert if someone in the loading dock is on their phone for 5 seconds",
+   "expect": {
+    "conditions": [
+     {
+      "type": "in_zone",
+      "zone": "dock_1"
+     },
+     {
+      "type": "holding_object",
+      "object": "cell phone"
+     }
+    ],
+    "duration_s": 5
+   },
+   "accept": [
+    {
+     "conditions": [
+      {
+       "type": "in_zone",
+       "zone": "dock_1"
+      },
+      {
+       "type": "holding_object",
+       "object": "cell phone"
+      },
+      {
+       "type": "looking_down"
+      }
+     ],
+     "duration_s": 5
+    }
+   ]
+  },
+  {
+   "id": "w20",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "high posture risk in the loading dock for 1 minute, low severity",
+   "expect": {
+    "conditions": [
+     {
+      "type": "posture_risk_at_least",
+      "level": 4
+     },
+     {
+      "type": "in_zone",
+      "zone": "dock_1"
+     }
+    ],
+    "duration_s": 60,
+    "severity": "low"
+   }
+  },
+  {
+   "id": "w21",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "anyone carrying a laptop into chemical storage",
+   "expect": {
+    "conditions": [
+     {
+      "type": "holding_object",
+      "object": "laptop"
+     },
+     {
+      "type": "in_zone",
+      "zone": "chem"
+     }
+    ],
+    "duration_s": 0
+   }
+  },
+  {
+   "id": "w22",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "someone reading a book in the forklift lane",
+   "expect": {
+    "conditions": [
+     {
+      "type": "holding_object",
+      "object": "book"
+     },
+     {
+      "type": "in_zone",
+      "zone": "lane"
+     }
+    ],
+    "duration_s": 0
+   }
+  },
+  {
+   "id": "w23",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert immediately if anyone falls anywhere and message the team",
+   "expect": {
+    "conditions": [
+     {
+      "type": "fallen"
+     }
+    ],
+    "duration_s": 0,
+    "notify": true
+   }
+  },
+  {
+   "id": "w24",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "a person standing in chemical storage for over 45 seconds",
+   "expect": {
+    "conditions": [
+     {
+      "type": "in_zone",
+      "zone": "chem"
+     }
+    ],
+    "duration_s": 45
+   }
+  },
+  {
+   "id": "w25",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "more than one person in the forklift lane for 10 seconds",
+   "expect": {
+    "conditions": [
+     {
+      "type": "count_in_zone_greater_than",
+      "zone": "lane",
+      "n": 1
+     }
+    ],
+    "duration_s": 10
+   }
+  },
+  {
+   "id": "w26",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "someone who has been motionless for 3 minutes in the loading dock, high severity",
+   "expect": {
+    "conditions": [
+     {
+      "type": "stationary_for",
+      "seconds": 180
+     },
+     {
+      "type": "in_zone",
+      "zone": "dock_1"
+     }
+    ],
+    "duration_s": 0,
+    "severity": "high"
+   },
+   "loose": [
+    "radius_body_heights"
+   ]
+  },
+  {
+   "id": "e01",
+   "source": "claude",
+   "domain": "exam",
+   "text": "flag a student whose head is turned to the left for more than 5 seconds",
+   "expect": {
+    "conditions": [
+     {
+      "type": "head_turned",
+      "direction": "left"
+     }
+    ],
+    "duration_s": 5
+   },
+   "loose": [
+    "min_angle"
+   ]
+  },
+  {
+   "id": "e02",
+   "source": "claude",
+   "domain": "exam",
+   "text": "flag anyone looking down for 10 seconds",
+   "expect": {
+    "conditions": [
+     {
+      "type": "looking_down"
+     }
+    ],
+    "duration_s": 10
+   }
+  },
+  {
+   "id": "e03",
+   "source": "claude",
+   "domain": "exam",
+   "text": "flag someone holding a phone",
+   "expect": {
+    "conditions": [
+     {
+      "type": "holding_object",
+      "object": "cell phone"
+     }
+    ],
+    "duration_s": 0
+   }
+  },
+  {
+   "id": "e04",
+   "source": "claude",
+   "domain": "exam",
+   "text": "head turned more than 45 degrees either way for 3 seconds",
+   "expect": {
+    "conditions": [
+     {
+      "type": "head_turned",
+      "direction": "either",
+      "min_angle": 45
+     }
+    ],
+    "duration_s": 3
+   }
+  },
+  {
+   "id": "e05",
+   "source": "claude",
+   "domain": "exam",
+   "text": "flag if a student turns their head to the right for 4 s",
+   "expect": {
+    "conditions": [
+     {
+      "type": "head_turned",
+      "direction": "right"
+     }
+    ],
+    "duration_s": 4
+   },
+   "loose": [
+    "min_angle"
+   ]
+  },
+  {
+   "id": "e06",
+   "source": "claude",
+   "domain": "exam",
+   "text": "more than 30 people in the hall",
+   "expect": {
+    "conditions": [
+     {
+      "type": "count_greater_than",
+      "n": 30
+     }
+    ],
+    "duration_s": 0
+   }
+  },
+  {
+   "id": "e07",
+   "source": "claude",
+   "domain": "exam",
+   "text": "flag if someone is copying from their neighbour",
+   "expect": {
+    "refuse": true
+   }
+  },
+  {
+   "id": "e08",
+   "source": "claude",
+   "domain": "exam",
+   "text": "flag a student who is cheating",
+   "expect": {
+    "refuse": true
+   }
+  },
+  {
+   "id": "r01",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert if someone in the loading dock isn't wearing a helmet",
+   "expect": {
+    "refuse": true
+   }
+  },
+  {
+   "id": "r02",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "warn when a worker gets within 2 metres of a forklift",
+   "expect": {
+    "refuse": true
+   }
+  },
+  {
+   "id": "r03",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert if someone looks tired",
+   "expect": {
+    "refuse": true
+   }
+  },
+  {
+   "id": "r04",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "notify me if John enters the yard gate",
+   "expect": {
+    "refuse": true
+   }
+  },
+  {
+   "id": "r05",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert if someone is in the paint shop",
+   "expect": {
+    "refuse": true
+   }
+  },
+  {
+   "id": "r06",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert if anyone shouts",
+   "expect": {
+    "refuse": true
+   }
+  },
+  {
+   "id": "r07",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert when someone isn't wearing a safety vest",
+   "expect": {
+    "refuse": true
+   }
+  },
+  {
+   "id": "r08",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert if someone is acting suspicious near the gate",
+   "expect": {
+    "refuse": true
+   }
+  },
+  {
+   "id": "r09",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "after hours, alert if anyone is in the loading dock",
+   "expect": {
+    "refuse": true
+   },
+   "note": "no times given: the compiler must not guess"
+  },
+  {
+   "id": "r10",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert if the loading dock is empty",
+   "expect": {
+    "refuse": true
+   },
+   "note": "fewer-than isn't expressible"
+  },
+  {
+   "id": "r11",
+   "source": "claude",
+   "domain": "posture",
+   "text": "alert when someone slouches at their desk for 20 minutes",
+   "expect": {
+    "refuse": true
+   },
+   "note": "desk posture is the posture coach mode"
+  },
+  {
+   "id": "r12",
+   "source": "claude",
+   "domain": "warehouse",
+   "text": "alert if a forklift drives too fast",
+   "expect": {
+    "refuse": true
+   }
+  }
+ ]
+}

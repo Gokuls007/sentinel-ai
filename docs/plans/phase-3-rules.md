@@ -234,3 +234,25 @@ These are optional per rule and never delay an alert:
    section says so (see 3.6).
 5. **Distance units:** body heights are accepted until Phase 4, always shown with an
    approximate metre conversion marked as approximate (see 3.1).
+## Status: 3a built (branch `phase-3a-rules`, 2026-10-03)
+The gate was met by merging instead of waiving it: Phases 0–2, the laptop camera and the
+posture coach went to `main` on 2026-10-03, after CI passed. The checks still open are tracked
+as GitHub issues #1–#4. The fall confirmation sweep was done earlier (URFD and CAUCAFall).
+
+Built: the DSL, engine, compiler, the Warehouse safety preset, storage (schema v3), the API, the
+Rules page, the compiler eval, the built-in parity check and the rules cost benchmark.
+
+Deviations from the plan above, each small:
+- **Durations live on the rule.** `looking_down_for(duration)` became `looking_down`, an
+  instant condition. Its duration comes from the rule's `duration_s`, as for every other
+  condition, so "looks down for 10 s" is `looking_down` with `duration_s: 10`.
+- **One alert per episode.** A rule fires once while its conditions keep holding for a person,
+  then again only after they stop and the cooldown has passed. The original zone alerts
+  instead repeated every cooldown while someone stayed inside. The parity check reports any
+  difference this makes.
+- **Not in 3a, as planned for later phases:** `near_object`, `missing_object`,
+  `looking_at_seat` and `posture_deviation`. The compiler refuses them and names the phase.
+  The desk posture coach stays its own mode rather than a preset.
+- **The default NVIDIA model changed.** `nvidia/nemotron-3-super-120b-a12b` was retired on
+  2026-10-03 (HTTP 410). The default is now `nvidia/nemotron-3-ultra-550b-a55b`. This also
+  applies to search; its benchmark row still names the model it was measured with.

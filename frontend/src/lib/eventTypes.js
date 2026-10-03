@@ -7,5 +7,7 @@ const TYPE_LABELS = {
 
 export function eventTypeLabel(type) {
   if (!type) return '--';
+  // Plain-English rules: "rule:loading-dock-dwell" -> "Rule: loading dock dwell" (the event message has its name).
+  if (String(type).startsWith('rule:')) return `Rule: ${String(type).slice(5).replace(/[-_]/g, ' ')}`;
   return TYPE_LABELS[type] || String(type).replace(/_/g, ' ');
 }

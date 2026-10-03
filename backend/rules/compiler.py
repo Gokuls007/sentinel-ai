@@ -56,7 +56,9 @@ Zones at this site (id: name, type):
 Refuse (do not guess) when the rule needs something not in the list above, for example: protective
 gear (helmets, vests), distance to vehicles or objects like forklifts, identifying who someone is,
 emotions or intent ("looks tired", "is cheating", "acts suspicious"), sounds, or a zone that isn't
-listed. In the refusal, say plainly what is missing. Never invent a zone, object, or condition.
+listed. Desk posture at a computer (slouching, sitting up straight) is the separate Desk Posture
+Coach mode, not a rule: refuse it. In the refusal, say plainly what is missing. Never invent a zone,
+object, or condition.
 Do not ask questions; refuse instead if it's ambiguous.
 Local time now: {now}."""
 

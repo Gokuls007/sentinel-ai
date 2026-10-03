@@ -274,3 +274,66 @@ The target is ≥ 90%. With 30 or fewer questions, the confidence interval is wi
   - Two failures were real: the model got `this week` wrong, calling Wed 23 Sep a Monday. The agent now gets pre-computed date ranges.
   - One failure was a grader bug: a no-break space in `Loading Dock`.
 - Each fix generalises beyond these questions, but they were made after seeing these questions fail.
+
+## Rule compiler accuracy
+
+<!-- benchmark:rules:start -->
+_Measured 2026-10-03 with `python scripts/eval_rules.py` using **nvidia** `nvidia/nemotron-3-ultra-550b-a55b`._ Cases are in `tests/rules/compile_cases.json` (fixed zones: Loading Dock, Forklift Lane, Chemical Storage, Yard Gate). Grading is deterministic: the compiled conditions and duration must match the expected rule (or an accepted equivalent), and must-refuse cases must be refused.
+
+| Metric | Value |
+|---|---|
+| **Pass rate** (semantic match or correct refusal) | **43 / 46 (93.5%)**, 95% CI 82%–98% |
+| Exact match (no alternative needed) | 42 / 46 |
+| Rules compiled correctly | 29 / 32 |
+| Must-refuse cases refused | 14 / 14 |
+| **Rules compiled that should have been refused** | **0** |
+| Valid requests wrongly refused | 2 |
+| Errors (invalid after the repair turn, or provider errors) | 0 |
+| Needed the repair turn | 0 |
+| Severity as stated | 4 / 4 |
+| Notify when asked (and only then) | 3 / 3 |
+| Cases written by the user | 0 |
+| Latency p50 / tokens per case (mean) | 15.3 s / 3,152 |
+| Flaky cases (passed in some runs only) | none |
+
+| Domain | Passed |
+|---|---|
+| exam | 7 / 8 |
+| posture | 1 / 1 |
+| warehouse | 35 / 37 |
+
+Failures: `w13` (refusal: The rule needs a time window for the weekend, but the time_window condition requires explicit start and end times (e.g., "00:00" to "23:59"). Please provide the exact hours you want to cover on Saturday and Sunday.); `w22` (got in_zone(zone=lane), holding_object(object=book), looking_down() for 0 s); `e06` (refusal: The rule refers to "the hall" as a specific area, but the available zones are only: dock_1 (Loading Dock), lane (Forklift Lane), chem (Chemical Storage), and gate (Yard Gate). There is no "hall" zone defined, so I cannot limit the count to that area.)
+
+All cases so far were written by the developer (Claude); treat this as an upper bound until the user's own sentences (`tests/rules/user_rules.md`) are in.
+
+The target is ≥ 90%.
+<!-- benchmark:rules:end -->
+
+## Built-in rules vs original alerts (parity)
+
+<!-- benchmark:rules-parity:start -->
+_Measured 2026-10-03 with `python scripts/rules_parity.py` on cuda._ 91 clips, 15,067 frames. The same poses feed both paths; alerts match by type and track within 0.5 s.
+
+| Alert | Original | Built-in rules | Matched |
+|---|---|---|---|
+| fall | 11 | 11 | 11 |
+| zone_intrusion | 7 | 7 | 7 |
+
+**Parity: 18 of 18 alerts match.** No differences.
+
+RULES_BUILTINS stays off until this shows no differences that matter.
+<!-- benchmark:rules-parity:end -->
+
+## Cost of rules
+
+<!-- benchmark:rules-cost:start -->
+_Measured 2026-10-03 with `python scripts/benchmark_rules.py`_, 5 people in view, 2000 frames, real pipeline code on synthetic poses. FPS combines this with the measured pipeline total of 18.42 ms per frame (above).
+
+| Rules | Rules cost per frame | Pipeline FPS |
+|---|---|---|
+| 0 | 0.00 ms | 54.3 (-0.0%) |
+| 3 | 0.16 ms | 53.8 (-0.9%) |
+| 10 | 0.20 ms | 53.7 (-1.1%) |
+
+Rules that need objects (phone, laptop, book) add those classes to the detector's existing pass; any change in detector time from that is not included here.
+<!-- benchmark:rules-cost:end -->
