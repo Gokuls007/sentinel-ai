@@ -12,6 +12,7 @@ import contextlib
 import copy
 import json
 import logging
+import os
 import random
 import threading
 import time
@@ -507,6 +508,13 @@ APP_MODES = ("posture", "warehouse", "exam")
 APP_DEFAULTS = {"mode": "warehouse", "demo_footage": False}
 
 
+def _app_defaults() -> dict:
+    """Defaults until the settings are first saved. DEMO_FOOTAGE=true starts with the demo footage
+    running: the Docker image sets it, since a container has no webcam to show instead."""
+    flag = os.environ.get("DEMO_FOOTAGE", "").strip().lower() in ("1", "true", "yes", "on")
+    return {**APP_DEFAULTS, "demo_footage": flag}
+
+
 def _app_settings_path() -> Path:
     db_path = config.output.db_path if config else "data/events.db"
     return Path(db_path).resolve().parent / "app_settings.json"
@@ -517,7 +525,7 @@ def _load_app_settings() -> dict:
         data = json.loads(_app_settings_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {}
-    out = {**APP_DEFAULTS, **{k: v for k, v in data.items() if k in APP_DEFAULTS}}
+    out = {**_app_defaults(), **{k: v for k, v in data.items() if k in APP_DEFAULTS}}
     if out["mode"] not in APP_MODES:
         out["mode"] = APP_DEFAULTS["mode"]
     out["demo_footage"] = bool(out["demo_footage"])

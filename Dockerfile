@@ -49,6 +49,7 @@ USER sentinel
 # Defaults: run the corridor demo on loop. Override with VIDEO_SOURCE=0 / rtsp://... / file.
 ENV VIDEO_SOURCE=demo \
     LOOP_VIDEO=true \
+    DEMO_FOOTAGE=true \
     FORCE_CPU=true \
     HOST=0.0.0.0 \
     PORT=8000

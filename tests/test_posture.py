@@ -210,6 +210,14 @@ def test_app_settings_default_switch_and_persist(posture_api):
     assert posture_api.put("/api/app", json={"mode": "karaoke"}).status_code == 422
 
 
+def test_demo_footage_env_sets_the_default_until_saved(posture_api, monkeypatch):
+    """The Docker image has no webcam, so it starts with the demo footage running (CI smoke test)."""
+    monkeypatch.setenv("DEMO_FOOTAGE", "true")
+    assert posture_api.get("/api/app").json()["demo_footage"] is True
+    posture_api.put("/api/app", json={"demo_footage": False})
+    assert posture_api.get("/api/app").json()["demo_footage"] is False  # a saved choice wins
+
+
 def test_posture_endpoints(posture_api):
     coach = posture_api.primary.posture
     coach.update(UPRIGHT, 0.0)
