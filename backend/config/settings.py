@@ -143,6 +143,15 @@ class SearchConfig:
 
 
 @dataclass
+class RulesConfig:
+    # Fall and restricted-zone alerts as built-in rules instead of the hard-coded alerts. Off
+    # until the parity report (scripts/rules_parity.py) shows they match on the sample videos.
+    builtins: bool = False
+    # Rule compilations per minute, all clients together (each one costs an LLM call or two).
+    compile_rate_limit_per_min: int = 10
+
+
+@dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
     port: int = 8000
@@ -163,6 +172,7 @@ class SentinelConfig:
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
+    rules: RulesConfig = field(default_factory=RulesConfig)
     
     source: str = "0"
     camera_id: str = "cam-0"  # recorded on every event; one pipeline = one camera
@@ -259,6 +269,9 @@ class SentinelConfig:
         s.max_tokens_per_question = env("SEARCH_MAX_TOKENS", int, s.max_tokens_per_question)
         s.rate_limit_per_min = env("SEARCH_RATE_LIMIT_PER_MIN", int, s.rate_limit_per_min)
         s.allow_remote = env("ALLOW_REMOTE_SEARCH", bool, s.allow_remote)
+        cfg.rules.builtins = env("RULES_BUILTINS", bool, cfg.rules.builtins)
+        cfg.rules.compile_rate_limit_per_min = env("RULES_COMPILE_RATE_LIMIT_PER_MIN", int,
+                                                   cfg.rules.compile_rate_limit_per_min)
 
         cfg.server.host = env("HOST", str, cfg.server.host)
         cfg.server.port = env("PORT", int, cfg.server.port)

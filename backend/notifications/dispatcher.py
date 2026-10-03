@@ -52,6 +52,9 @@ class NotificationDispatcher:
 
     def should_notify(self, event: Event) -> bool:
         """Severity filter plus debounce; records the send time when it says yes."""
+        if event.attributes.get("notify") is False:  # a rule without the "notify" action
+            self.stats["rule_no_notify"] = self.stats.get("rule_no_notify", 0) + 1
+            return False
         if event.type in self.dashboard_only:
             self.stats["dashboard_only"] = self.stats.get("dashboard_only", 0) + 1
             return False

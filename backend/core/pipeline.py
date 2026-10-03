@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import ClassVar
@@ -8,13 +9,18 @@ from typing import ClassVar
 import cv2
 import numpy as np
 
-from anomaly.engine import AnomalyEngine
+from anomaly.engine import AnomalyAlert, AnomalyEngine
 from anomaly.fall_recovery import recover_pose
 from config.settings import SentinelConfig
 from events import Event, EventBus, EventStore
 from notifications import NotificationDispatcher, build_notifiers
 from output.clip_recorder import ClipRecorder
 from posture import PostureCoach, select_main_person
+from rules import PersonState, RuleEngine, SceneState
+from rules.dsl import OBJECT_CLASSES
+from rules.presets import builtin_event_type, builtin_rules
+from rules.signals import head_turn, holding, looking_down
+from rules.store import RuleStore
 
 from .detector import Detector, FrameDetections
 from .pose_estimator import PoseEstimator, PoseResult
@@ -103,6 +109,9 @@ class SentinelPipeline:
         )
         
         self.anomaly_engine = AnomalyEngine(config)
+        # Plain-English rules (compiled once, checked here every frame in warehouse mode).
+        self.rules = RuleEngine()
+        self.rule_store: RuleStore | None = None
         
         # Output layer. Every alert becomes an Event published on the bus; the store
         # subscribes first so later subscribers (notifications, WebSocket) see its id.
@@ -112,6 +121,8 @@ class SentinelPipeline:
             fps=config.target_fps
         )
         self.event_store = EventStore(config.output.db_path)
+        self.rule_store = RuleStore(config.output.db_path)
+        self.reload_rules()
         self.event_bus = EventBus()
         self.event_bus.subscribe("store", self.event_store.emit)
         self.notifier = NotificationDispatcher(
@@ -163,6 +174,9 @@ class SentinelPipeline:
         if self.mode == "warehouse":
             recovered = self._recover_fallen(frame, poses, all_features, timestamp)
             alerts = self.anomaly_engine.process(poses, all_features, timestamp, recovered=recovered)
+            if self.config.rules.builtins:  # the built-in rules replace these (no double alerts)
+                alerts = [a for a in alerts if a.alert_type not in ("fall", "zone_intrusion")]
+            alerts += self._evaluate_rules(poses, all_features, detections, timestamp)
             timings["ergonomics"] = self.anomaly_engine.last_ergo_ms  # included in "analytics"
             ergonomics = self.anomaly_engine.ergonomics_snapshot
             self._persist_ergo_time(timestamp)
@@ -196,15 +210,16 @@ class SentinelPipeline:
         for alert in alerts:
             self.total_alerts += 1
             # Forensic clip (pre + post alert) is encoded in the background.
-            clip_path = self.clip_recorder.save_clip(alert.alert_id, alert.timestamp,
-                                                     snapshot=annotated_frame)
+            want_clip = alert.details.get("record_clip", True)  # a rule can leave the clip out
+            clip_path = (self.clip_recorder.save_clip(alert.alert_id, alert.timestamp, snapshot=annotated_frame)
+                         if want_clip else None)
             clip_path = clip_path.replace("\\", "/") if clip_path else None
             alert.details = {**alert.details, "clip_path": clip_path}
             event = Event.from_alert(
                 alert,
                 camera_id=self.config.camera_id,
                 clip_path=clip_path,
-                thumbnail_path=self.clip_recorder.snapshot_path(alert.alert_id),
+                thumbnail_path=self.clip_recorder.snapshot_path(alert.alert_id) if want_clip else None,
             )
             events.append(self.event_bus.publish(event))
         self.clip_recorder.add_frame(annotated_frame, timestamp)
@@ -236,6 +251,66 @@ class SentinelPipeline:
             timings["stream"] = (time.perf_counter() - stream_start) * 1000
 
         return result
+
+    # --- rules ---------------------------------------------------------------------------------
+
+    def reload_rules(self) -> None:
+        """Load the confirmed rules (plus built-ins when RULES_BUILTINS is on) and tell the
+        detector which object classes they need (none: people only, no extra cost)."""
+        rules = self.rule_store.list() if self.rule_store else []
+        if self.config.rules.builtins:
+            zones = [{"id": z.id, "name": z.name, "zone_type": z.zone_type, "active": z.active}
+                     for z in self.anomaly_engine.zone_monitor.zones]
+            rules += builtin_rules(zones, fall_cooldown_s=self.config.fall.cooldown_seconds,
+                                   zone_cooldown_s=self.config.zone.alert_cooldown)
+        self.rules.set_rules(rules)
+        needed = set().union(*(r.objects() for r in self.rules.rules)) if self.rules.rules else set()
+        ids = [cid for cid, name in Detector.COCO_NAMES.items() if name in needed]
+        base = [c for c in self.config.detector.classes if Detector.COCO_NAMES.get(c) not in OBJECT_CLASSES]
+        self.detector.classes = sorted(set(base) | set(ids))
+
+    def _scene(self, poses, features, detections, timestamp) -> SceneState:
+        engine = self.anomaly_engine
+        fd, zm = engine.fall_detector, engine.zone_monitor
+        ergo = engine.ergonomics_snapshot
+        objects = [(d.class_name, tuple(float(v) for v in d.bbox)) for d in detections.detections
+                   if d.class_name in OBJECT_CLASSES]
+        persons = {}
+        for tid, pose in poses.items():
+            e = ergo.get(tid) or {}
+            persons[tid] = PersonState(
+                track_id=tid, point=(float(pose.mid_hip[0]), float(pose.mid_hip[1])),
+                body_height=float(pose.body_height), zones={z.id for z in zm.zones_of(tid)},
+                fallen=fd.state_of(tid) == fd.CONFIRMED,
+                reba_level=e.get("level") if e.get("reliable") else None,
+                holding=holding(pose.keypoints, float(pose.body_height), objects),
+                head=head_turn(pose.keypoints), looking_down=looking_down(pose.keypoints))
+        # A confirmed fall whose person the detector lost (lying down) is still a fall.
+        for tid in features:
+            if tid not in persons and fd.state_of(tid) == fd.CONFIRMED:
+                box = fd.last_bbox(tid)
+                if box is not None:
+                    persons[tid] = PersonState(track_id=tid, point=(float(box[0] + box[2]) / 2, float(box[3])),
+                                               body_height=float(box[3] - box[1]),
+                                               zones={z.id for z in zm.zones_of(tid)}, fallen=True)
+        return SceneState(ts=timestamp, camera_id=self.config.camera_id, persons=persons)
+
+    def _evaluate_rules(self, poses, features, detections, timestamp) -> list[AnomalyAlert]:
+        if not self.rules.rules:
+            return []
+        alerts = []
+        for f in self.rules.evaluate(self._scene(poses, features, detections, timestamp)):
+            r = f.rule
+            alerts.append(AnomalyAlert(
+                alert_id=f"ALT-{uuid.uuid4().hex[:6].upper()}",
+                alert_type=builtin_event_type(r) or f"rule:{r.id}",
+                track_id=f.track_id,  # None for scene rules (counts, time of day)
+                timestamp=f.ts, confidence=1.0, severity=r.severity,
+                message=r.name,
+                details={"rule_id": r.id, "rule_name": r.name, "duration": f.held_s, "zone_id": f.zone_id,
+                         "record_clip": "record_clip" in r.actions, "notify": "notify" in r.actions},
+            ))
+        return alerts
 
     def _recover_fallen(self, frame, poses, features, timestamp) -> dict:
         """Retry pose on the region around falling/fallen people the detector lost this frame

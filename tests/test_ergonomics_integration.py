@@ -74,7 +74,7 @@ def test_ergonomics_can_be_disabled(tmp_config):
 # --- store: schema v2 ------------------------------------------------------------------
 
 
-def test_v1_database_gains_the_ergo_table_without_a_backup(tmp_path):
+def test_v1_database_gains_the_ergo_and_rules_tables_after_a_backup(tmp_path):
     db = tmp_path / "events.db"
     with sqlite3.connect(db) as conn:  # a v1 database with one event
         conn.execute(
@@ -88,10 +88,13 @@ def test_v1_database_gains_the_ergo_table_without_a_backup(tmp_path):
         conn.execute("PRAGMA user_version = 1")
     store = EventStore(str(db))
     assert store.total() == 1
-    assert not list(tmp_path.glob("*.bak-*"))
+    assert len(list(tmp_path.glob("*.bak-*"))) == 1  # backed up before migrating (Phase 3 plan)
     with sqlite3.connect(db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 3
         assert conn.execute("SELECT COUNT(*) FROM ergo_time").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM rules").fetchone()[0] == 0
+    EventStore(str(db))  # already current: no second backup
+    assert len(list(tmp_path.glob("*.bak-*"))) == 1
 
 
 def test_ergo_time_accumulates_and_groups(tmp_path):

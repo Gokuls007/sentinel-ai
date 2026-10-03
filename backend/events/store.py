@@ -203,6 +203,15 @@ class EventStore:
             ).fetchall()
         return {str(k): n for k, n in rows}
 
+    def count_by_type_prefix(self, prefix: str) -> list[dict]:
+        """[{type, count, last}] for event types starting with ``prefix`` (e.g. "rule:")."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT type, COUNT(*), MAX(end_ts) FROM events WHERE type LIKE ? GROUP BY type",
+                (prefix + "%",),  # LIKE wildcards in the prefix are filtered out below
+            ).fetchall()
+        return [{"type": t, "count": n, "last": last} for t, n, last in rows if t.startswith(prefix)]
+
     def get(self, event_id: int) -> Event | None:
         with self._connect() as conn:
             row = conn.execute(f"SELECT {_COLUMNS} FROM events WHERE id = ?", (event_id,)).fetchone()

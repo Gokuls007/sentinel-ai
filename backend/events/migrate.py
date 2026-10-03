@@ -20,7 +20,7 @@ from pathlib import Path
 
 logger = logging.getLogger("sentinel.events.migrate")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _V1_TABLE = """
 CREATE TABLE IF NOT EXISTS events (
@@ -53,6 +53,16 @@ CREATE TABLE IF NOT EXISTS ergo_time (
     level INTEGER NOT NULL,
     seconds REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (day, camera_id, kind, key, level)
+)
+"""
+
+# v3: confirmed plain-English rules (rules/dsl.py), one JSON document per rule.
+_V3_RULES_TABLE = """
+CREATE TABLE IF NOT EXISTS rules (
+    id TEXT PRIMARY KEY,
+    body TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
 )
 """
 
@@ -153,10 +163,16 @@ def migrate(db_path: str | os.PathLike) -> int:
         legacy = version == 0 and _is_legacy(conn)
         if version >= SCHEMA_VERSION:
             return version
-        if version >= 1:  # v1 -> v2 only adds a table: no backup needed
+    if version >= 1:
+        # v1 -> v2 -> v3 only add tables, but back up first anyway (cheap, and promised).
+        if exists_with_data:
+            saved = backup(db_path)
+            logger.info("Backed up %s to %s before migrating to schema v%d", db_path, saved, SCHEMA_VERSION)
+        with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
             conn.execute(_V2_ERGO_TABLE)
+            conn.execute(_V3_RULES_TABLE)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            return SCHEMA_VERSION
+        return SCHEMA_VERSION
     if legacy and exists_with_data:
         saved = backup(db_path)
         logger.info("Backed up %s to %s before migrating the event schema", db_path, saved)
@@ -169,5 +185,6 @@ def migrate(db_path: str | os.PathLike) -> int:
         for statement in _V1_INDEXES:
             conn.execute(statement)
         conn.execute(_V2_ERGO_TABLE)
+        conn.execute(_V3_RULES_TABLE)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return SCHEMA_VERSION

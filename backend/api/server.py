@@ -839,6 +839,262 @@ def _search_rate_ok(limit_per_min: int) -> bool:
         return True
 
 
+# --- Plain-English rules (Phase 3a) --------------------------------------------------------------
+# Compile: the sentence goes to the LLM once with the zone list; nothing runs until confirmed.
+
+_compile_times: deque = deque()
+
+
+def _compile_rate_ok(limit_per_min: int) -> bool:
+    now = time.time()
+    with _cameras_lock:
+        while _compile_times and now - _compile_times[0] > 60:
+            _compile_times.popleft()
+        if len(_compile_times) >= max(1, limit_per_min):
+            return False
+        _compile_times.append(now)
+        return True
+
+
+def _pipelines() -> list:
+    with _cameras_lock:
+        return [p for p in (pipeline, *_cameras.values()) if p is not None]
+
+
+def _rule_store():
+    store = getattr(pipeline, "rule_store", None) if pipeline else None
+    if store is None:
+        raise HTTPException(status_code=503, detail="Rule store not initialized")
+    return store
+
+
+def _zones_by_camera() -> dict[str, dict[str, tuple[str, str]]]:
+    """camera id -> {zone id: (name, type)} for every running camera."""
+    out: dict[str, dict[str, tuple[str, str]]] = {}
+    for p in _pipelines():
+        engine = getattr(p, "anomaly_engine", None)
+        cam = getattr(getattr(p, "config", None), "camera_id", "cam-0")
+        out[cam] = {z["id"]: (z.get("name") or z["id"], z.get("type") or "")
+                    for z in (getattr(engine, "zone_overlay_data", None) or []) if z.get("id")}
+    return out
+
+
+def _all_zones() -> dict[str, tuple[str, str]]:
+    zones: dict[str, tuple[str, str]] = {}
+    for cam_zones in _zones_by_camera().values():
+        for zid, v in cam_zones.items():
+            zones.setdefault(zid, v)
+    return zones
+
+
+def _reload_rules() -> None:
+    for p in _pipelines():
+        if hasattr(p, "reload_rules"):
+            p.reload_rules()
+
+
+def _rule_json(rule, stats: dict | None = None) -> dict:
+    from rules.describe import describe
+
+    names = {zid: name for zid, (name, _t) in _all_zones().items()}
+    fired = (stats or {}).get(rule.id, {})
+    return {**rule.model_dump(mode="json"), "preview": describe(rule, names),
+            "fired": fired.get("count", 0), "last_fired": fired.get("last")}
+
+
+def _rule_stats() -> dict[str, dict]:
+    """Rule id -> {count, last} from the event store (survives restarts)."""
+    try:
+        store = _store()
+    except HTTPException:
+        return {}
+    out = {}
+    for row in store.count_by_type_prefix("rule:"):
+        out[row["type"][5:]] = {"count": row["count"], "last": row["last"]}
+    return out
+
+
+class RuleCompileIn(BaseModel):
+    text: str = Field(..., min_length=1, max_length=300)
+
+
+class RuleCreateIn(BaseModel):
+    text: str = Field("", max_length=500)
+    rule: dict
+    camera_ids: list[str] | None = None
+
+
+class RulePatchIn(BaseModel):
+    enabled: bool | None = None
+    name: str | None = Field(None, min_length=1, max_length=80)
+    severity: str | None = Field(None, pattern=r"^(low|medium|high|critical)$")
+    duration_s: float | None = Field(None, ge=0, le=3600)
+    cooldown_s: float | None = Field(None, ge=0, le=86400)
+    actions: list[str] | None = None
+
+
+class PresetApplyIn(BaseModel):
+    replace: bool = False
+
+
+@app.get("/api/rules/status")
+def rules_status():
+    """Whether compiling is available (LLM configured) and whether built-ins are on."""
+    from llm import DEFAULT_MODELS, LLMError, build_llm
+
+    cfg = _require_pipeline().config
+    try:
+        client = build_llm(cfg.llm)
+        compile_ok = {"enabled": True, "provider": client.provider, "model": client.model, "reason": None}
+    except LLMError as e:
+        compile_ok = {"enabled": False, "provider": cfg.llm.provider,
+                      "model": cfg.llm.model or DEFAULT_MODELS.get(cfg.llm.provider), "reason": str(e)}
+    return {"compile": compile_ok, "builtins": cfg.rules.builtins,
+            "zones": [{"id": zid, "name": n, "type": ty} for zid, (n, ty) in _all_zones().items()]}
+
+
+@app.post("/api/rules/compile")
+def compile_rule(body: RuleCompileIn, request: Request):
+    """Compile a sentence into a draft rule (or a refusal). Saves nothing: confirm with POST /api/rules.
+    Only the sentence and the zone names/types go to the LLM provider."""
+    from datetime import datetime
+
+    from llm import LLMError, build_llm
+    from rules.compiler import RuleCompiler
+
+    cfg = _require_pipeline().config
+    _check_local_json(request, cfg.search.allow_remote, "rule compiling")
+    try:
+        llm = build_llm(cfg.llm)
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    if not _compile_rate_ok(cfg.rules.compile_rate_limit_per_min):
+        raise HTTPException(status_code=429, detail="too many rules compiled; try again in a minute")
+    result = RuleCompiler(llm).compile(body.text, _all_zones(), now=datetime.now().strftime("%A %Y-%m-%d %H:%M"))
+    out = result.to_dict()
+    if result.body is not None:
+        out["camera_ids"] = _cameras_for(result.body)
+    return to_serializable(out)
+
+
+def _cameras_for(body) -> list[str]:
+    """The cameras that have every zone the rule names ([] = every camera)."""
+    zones = body.zones()
+    if not zones:
+        return []
+    return [cam for cam, zs in _zones_by_camera().items() if zones <= set(zs)]
+
+
+@app.get("/api/rules")
+def list_rules():
+    stats = _rule_stats()
+    out = [_rule_json(r, stats) for r in _rule_store().list()]
+    p = _require_pipeline()
+    builtins = [r for r in getattr(getattr(p, "rules", None), "rules", []) if r.builtin]
+    return to_serializable({"rules": out, "builtins": [_rule_json(r) for r in builtins]})
+
+
+@app.post("/api/rules")
+def create_rule(body: RuleCreateIn, request: Request):
+    """Save a rule the person confirmed (the draft from /compile, possibly adjusted)."""
+    from pydantic import ValidationError
+
+    from rules.dsl import Rule, RuleBody, check_references, format_errors, slugify
+
+    _check_camera_control(request)
+    store = _rule_store()
+    try:
+        draft = RuleBody.model_validate(body.rule)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail="; ".join(format_errors(e))) from e
+    problems = check_references(draft, {zid: n for zid, (n, _t) in _all_zones().items()})
+    if problems:
+        raise HTTPException(status_code=422, detail="; ".join(problems))
+    cams = body.camera_ids if body.camera_ids is not None else _cameras_for(draft)
+    if draft.zones() and not cams:
+        raise HTTPException(status_code=422, detail="no camera has all the zones this rule names")
+    rule = Rule(**draft.model_dump(), id=slugify(draft.name, store.ids()), camera_ids=cams,
+                source_text=body.text.strip())
+    store.save(rule)
+    _reload_rules()
+    return to_serializable(_rule_json(rule))
+
+
+@app.patch("/api/rules/{rule_id}")
+def update_rule(rule_id: str, body: RulePatchIn, request: Request):
+    from pydantic import ValidationError
+
+    from rules.dsl import Rule, format_errors
+
+    _check_camera_control(request)
+    store = _rule_store()
+    rule = store.get(rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail=f"no rule {rule_id!r}")
+    changes = body.model_dump(exclude_none=True)
+    try:
+        updated = Rule.model_validate({**rule.model_dump(), **changes, "version": rule.version + 1})
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail="; ".join(format_errors(e))) from e
+    store.save(updated)
+    _reload_rules()
+    return to_serializable(_rule_json(updated, _rule_stats()))
+
+
+@app.delete("/api/rules/{rule_id}")
+def delete_rule(rule_id: str, request: Request):
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "rule control")
+    if not _rule_store().delete(rule_id):
+        raise HTTPException(status_code=404, detail=f"no rule {rule_id!r}")
+    _reload_rules()
+    return {"deleted": rule_id}
+
+
+@app.get("/api/presets")
+def list_presets():
+    from rules.presets import PRESETS
+
+    return {"presets": [{"name": k, **v} for k, v in PRESETS.items()]}
+
+
+@app.post("/api/presets/{name}/apply")
+def apply_preset(name: str, body: PresetApplyIn, request: Request):
+    """Load a preset's rules. Replacing rules that came from a preset needs ``replace: true``;
+    rules you wrote yourself are never touched."""
+    from rules.presets import PRESETS, preset_rules
+
+    _check_camera_control(request)
+    if name not in PRESETS:
+        raise HTTPException(status_code=404, detail=f"no preset {name!r}")
+    store = _rule_store()
+    zones = []
+    for cam_zones in _zones_by_camera().values():
+        for zid, (zname, ztype) in cam_zones.items():
+            zones.append({"id": zid, "name": zname, "zone_type": ztype, "time_limit": _zone_time_limit(zid)})
+    try:
+        rules = preset_rules(name, zones)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    existing = [r for r in store.list() if r.preset and r.enabled]
+    if existing and not body.replace:
+        raise HTTPException(status_code=409, detail=f"{len(existing)} preset rule(s) are on; "
+                                                    "send replace: true to replace them")
+    for r in rules:
+        r.camera_ids = _cameras_for(r)
+    store.replace_preset(name, rules)
+    _reload_rules()
+    return to_serializable({"applied": name, "rules": [_rule_json(r) for r in rules]})
+
+
+def _zone_time_limit(zone_id: str) -> float | None:
+    for p in _pipelines():
+        zm = getattr(getattr(p, "anomaly_engine", None), "zone_monitor", None)
+        for z in getattr(zm, "zones", []) or []:
+            if z.id == zone_id:
+                return z.time_limit
+    return None
+
+
 @app.get("/api/search/status")
 def search_status():
     """Whether search is configured (provider, model); never returns keys."""

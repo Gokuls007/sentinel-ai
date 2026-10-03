@@ -70,7 +70,8 @@ TRACKER_MIN_CONF = 0.1
 class Detector:
     COCO_NAMES: ClassVar[dict[int, str]] = {
         0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 
-        5: "bus", 7: "truck", 24: "backpack", 26: "handbag", 27: "suitcase"
+        5: "bus", 7: "truck", 24: "backpack", 26: "handbag", 27: "suitcase",
+        63: "laptop", 67: "cell phone", 73: "book",  # only detected when a rule needs them
     }
 
     def __init__(self, model_path: str = "yolov8n.pt", confidence_threshold: float = 0.5, 
