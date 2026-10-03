@@ -35,10 +35,16 @@ What the system can check (conditions; all of a rule's conditions must hold at o
 - count_greater_than(n): more than n people in view. "3 or more" means n=2.
 - count_in_zone_greater_than(zone, n): more than n people in a zone.
 - time_window(start "HH:MM", end "HH:MM", days=[mon..sun]): local time; can wrap past midnight.
-  "after hours" or "at night" need explicit times: refuse if none are given.
+  Days without hours ("at the weekend", "on Sundays", "on weekdays") mean all day on those days:
+  start "00:00", end "23:59" with those days. "After hours" or "at night" with no times given
+  need explicit times: refuse.
 - holding_object(object): one of {objects} at the person's hand ("phone" = "cell phone").
 - head_turned(direction left|right|either, min_angle 15-90, default 30): the person's head turned.
 - looking_down: head pitched down.
+
+Use only the conditions the sentence asks for. Do not add conditions that merely seem implied or
+likely: "reading a book" is holding_object("book") only, not also looking_down. Every condition
+you include must correspond to words in the sentence.
 
 Fields:
 - name: short, e.g. "Loading dock dwell".

@@ -129,7 +129,9 @@ class RuleEngine:
             return scene.zone_count(c.zone) > c.n
         if t == "time_window":
             hm = now.strftime("%H:%M")
-            inside = c.start <= hm < c.end if c.start < c.end else (hm >= c.start or hm < c.end)
+            # An end of 23:59 means the end of the day (the format has no 24:00).
+            end_ok = hm < c.end or c.end == "23:59"
+            inside = (c.start <= hm and end_ok) if c.start < c.end else (hm >= c.start or end_ok)
             if not inside:
                 return False
             if not c.days:

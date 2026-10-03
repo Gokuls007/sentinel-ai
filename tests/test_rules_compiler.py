@@ -232,3 +232,38 @@ def test_rule_without_notify_is_not_sent():
     quiet = Event(type="rule:x", severity="critical", start_ts=1, end_ts=1, attributes={"notify": False})
     loud = Event(type="rule:y", severity="critical", start_ts=1, end_ts=1, attributes={"notify": True})
     assert d.should_notify(quiet) is False and d.should_notify(loud) is True
+
+
+# --- days without hours, and conditions nobody asked for ------------------------------------------
+
+def test_prompt_states_both_rules():
+    _, llm = compile_with(calls(("submit_rule", DWELL)))
+    system = llm.requests[0]["system"]
+    assert 'Days without hours ("at the weekend"' in system and 'start "00:00", end "23:59"' in system
+    assert "Use only the conditions the sentence asks for" in system and "not also looking_down" in system
+
+
+def test_weekend_without_hours_compiles_to_all_day():
+    weekend = {"name": "Weekend presence", "conditions": [
+        {"type": "count_greater_than", "n": 0},
+        {"type": "time_window", "start": "00:00", "end": "23:59", "days": ["sat", "sun"]}]}
+    res, _ = compile_with(calls(("submit_rule", weekend)), text="alert if anyone is here at the weekend")
+    assert res.status == "rule"
+    assert "all day on Sat, Sun" in res.preview
+    assert not any("doesn't seem to ask" in w for w in res.warnings)
+
+
+def test_a_condition_the_sentence_did_not_ask_for_is_flagged():
+    text = "someone reading a book in the forklift lane"
+    zones = {**ZONES, "lane": ("Forklift Lane", "one_way")}
+    extra = {"name": "Reading in lane", "conditions": [
+        {"type": "in_zone", "zone": "lane"}, {"type": "holding_object", "object": "book"}, {"type": "looking_down"}]}
+    res = RuleCompiler(ScriptedLLM(calls(("submit_rule", extra)))).compile(text, zones)
+    assert any("looking down" in w and "doesn't seem to ask" in w for w in res.warnings)
+    exact = {**extra, "conditions": extra["conditions"][:2]}
+    res = RuleCompiler(ScriptedLLM(calls(("submit_rule", exact)))).compile(text, zones)
+    assert not any("doesn't seem to ask" in w for w in res.warnings)
+    # Asked for explicitly: no warning.
+    asked = RuleCompiler(ScriptedLLM(calls(("submit_rule", extra)))).compile(
+        "someone in the forklift lane looking down at a book", zones)
+    assert not any("doesn't seem to ask" in w for w in asked.warnings)

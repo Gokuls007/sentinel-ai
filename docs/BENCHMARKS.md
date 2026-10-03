@@ -306,6 +306,13 @@ Failures: `w13` (refusal: The rule needs a time window for the weekend, but the 
 
 All cases so far were written by the developer (Claude); treat this as an upper bound until the user's own sentences (`tests/rules/user_rules.md`) are in.
 
+**Re-run after two prompt fixes (2026-10-03, affected cases only, one run each).** The fixes: days without hours mean all day on those days, and no conditions the sentence doesn't ask for.
+- `w13` and `w22` now pass.
+- Guard cases `r09` (must still refuse "after hours" with no times), `w10` and `w19` still pass.
+- `e06` is unchanged: "the hall" is not a zone at the eval site.
+
+On these 46 cases that is 45 / 46, but the full set hasn't been re-run with the fixes: the table above is from before them.
+
 The target is ≥ 90%.
 <!-- benchmark:rules:end -->
 

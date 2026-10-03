@@ -119,6 +119,18 @@ hour and one fall is 4 points of recall.
 - Detection quality is YOLOv8n's: small or heavily occluded people can be missed. Try a
   larger model with `DETECTION_MODEL=yolov8s.pt`.
 
+### Known dependency risks
+- **The hosted LLM can disappear.** Search and the rule compiler use a hosted model, and
+  providers retire models without notice: NVIDIA's `nemotron-3-super-120b-a12b`, the default
+  until 2026-10-03, started returning HTTP 410 that day. Switching is one setting in `.env`:
+  `LLM_MODEL=` for another model on the same provider, or `LLM_PROVIDER=anthropic` (with
+  `ANTHROPIC_API_KEY`).
+- **What keeps working without it.** Rules you've already confirmed keep running, because they
+  are checked by local code with no LLM. Only writing new rules and asking search questions
+  stop.
+- **After switching models,** re-run `python scripts/eval_rules.py` and
+  `python scripts/eval_search.py`. Accuracy is measured per model.
+
 ## Dashboard
 The React dashboard shows:
 - the annotated live feed;

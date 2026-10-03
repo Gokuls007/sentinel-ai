@@ -206,6 +206,9 @@ def test_scene_rules_fire_once_for_the_scene():
     ("22:00", "06:00", ["fri"], datetime(2026, 10, 10, 2, 0), True),   # Sat 02:00 belongs to Friday night
     ("22:00", "06:00", ["fri"], datetime(2026, 10, 9, 2, 0), False),   # Fri 02:00 is Thursday night
     ("09:00", "17:00", ["sat", "sun"], datetime(2026, 10, 5, 12, 0), False),  # a Monday
+    ("00:00", "23:59", ["sat", "sun"], datetime(2026, 10, 4, 23, 59, 30), True),  # all day: the last minute too
+    ("00:00", "23:59", ["sat", "sun"], datetime(2026, 10, 3, 0, 0), True),  # Saturday midnight
+    ("00:00", "23:59", ["sat", "sun"], datetime(2026, 10, 5, 0, 0), False),  # Monday midnight
 ])
 def test_time_window(start, end, days, when, inside):
     e = RuleEngine([rule([{"type": "time_window", "start": start, "end": end, "days": days},
