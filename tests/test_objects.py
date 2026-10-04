@@ -144,3 +144,31 @@ def test_object_classes_api(objects_api):
     assert objects_api.det.classes == ["pallet jack", "chair"]
     assert objects_api.put("/api/objects", json={"classes": ["<script>"]}).status_code == 422
     assert objects_api.put("/api/objects", json={"classes": []}).status_code == 422
+
+
+def test_feed_status_line_says_whether_objects_run_and_what_they_see():
+    from core.pipeline import SentinelPipeline
+
+    p = SentinelPipeline.__new__(SentinelPipeline)
+    p.object_detector = None
+    assert p.objects_status([]) == "Objects: off (OBJECTS_ENABLED=false)"
+    p.object_detector = SimpleNamespace(error="objects off: yolov8s-worldv2.pt not found")
+    assert p.objects_status([]) == "Objects off: yolov8s-worldv2.pt not found"
+    p.object_detector = SimpleNamespace(error=None)
+    found = [SimpleNamespace(class_name="chair"), SimpleNamespace(class_name="backpack"),
+             SimpleNamespace(class_name="chair")]
+    assert p.objects_status(found) == "Objects: 3 detected (backpack, chair)"
+    assert p.objects_status([]) == "Objects: 0 detected"
+
+
+def test_saved_zones_are_drawn_only_when_an_enabled_rule_uses_them():
+    from core.pipeline import SentinelPipeline
+    from rules.dsl import Rule
+
+    p = SentinelPipeline.__new__(SentinelPipeline)
+    rule = Rule.model_validate({"id": "r1", "name": "Dock", "severity": "high", "conditions": [
+        {"type": "in_zone", "zone": "dock"}], "duration_s": 0})
+    p.rules = SimpleNamespace(rules=[])
+    assert p.zones_in_rules() == set()
+    p.rules = SimpleNamespace(rules=[rule])
+    assert p.zones_in_rules() == {"dock"}

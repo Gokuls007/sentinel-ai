@@ -436,9 +436,31 @@ class SentinelPipeline:
                 cv2.putText(frame, line, (x1 + 4, top + h + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         return set(self._alert_labels)
 
+    def zones_in_rules(self) -> set[str]:
+        """Zone ids that an enabled rule uses (built-in zone rules included when they're on)."""
+        return {c.zone for r in self.rules.rules for c in r.conditions if getattr(c, "zone", None)}
+
+    def objects_status(self, objects) -> str:
+        """One line for the feed: is open-vocabulary detection running, and what it sees."""
+        det = self.object_detector
+        if det is None:
+            return "Objects: off (OBJECTS_ENABLED=false)"
+        if det.error:
+            return f"Objects off: {det.error.removeprefix('objects off: ')}"
+        if not objects:
+            return "Objects: 0 detected"
+        names = sorted({o.class_name for o in objects})
+        return f"Objects: {len(objects)} detected ({', '.join(names)})"
+
+    def _draw_status(self, frame, text: str) -> None:
+        (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        cv2.rectangle(frame, (8, 8), (8 + w + 10, 8 + h + 10), (20, 20, 20), -1)
+        cv2.putText(frame, text, (13, 8 + h + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1)
+
     def _annotate_frame(self, frame, detections, poses, alerts, objects=(), ts: float = 0.0) -> np.ndarray:
-        # 1. Draw Zone Overlays
-        zones = self.anomaly_engine.zone_overlay_data
+        # 1. Zones, only those an enabled rule uses (saved but unused zones aren't drawn)
+        used = self.zones_in_rules()
+        zones = [z for z in self.anomaly_engine.zone_overlay_data if z.get("id") in used]
         for zone in zones:
             poly = np.array(zone["polygon"])
             overlay = frame.copy()
@@ -460,6 +482,7 @@ class SentinelPipeline:
         # 2. Objects, then people (red while a rule's reason is showing for them)
         self._draw_objects(frame, objects)
         alerted_track_ids = self._draw_alert_reasons(frame, detections, alerts, ts)
+        self._draw_status(frame, self.objects_status(objects))
         
         for det in detections.detections:
             tid = det.track_id
