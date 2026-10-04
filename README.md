@@ -57,8 +57,11 @@ python backend/main.py --source 0                         # webcam
 python backend/main.py --source rtsp://user:pass@cam/stream
 docker compose --profile webcam up --build                # webcam in Docker (Linux)
 ```
-Zones are normalised polygons (0–1) in `backend/config/zones.json`, or in a scenario file
-like `config/demo/corridor_demo.json`. All settings can be set in `.env` (see
+Zones are normalised polygons (0–1). A live camera starts with **no zones**; draw your own
+on the Camera page (they're saved to `backend/config/zones.json` or `data/zones_<camera>.json`).
+The scenario demos keep their own zones in files like `config/demo/corridor_demo.json`. A zone
+whose edges cross is rejected, and the editor offers a one-click fix (the points reordered
+around the centre, or else the outline). All settings can be set in `.env` (see
 [`.env.example`](.env.example)), and CLI flags override them (`python backend/main.py --help`).
 
 ## What each detector does
@@ -71,6 +74,36 @@ like `config/demo/corridor_demo.json`. All settings can be set in `.env` (see
 | `time_exceeded` | Dwell in a `time_limited` zone passes its limit. | medium |
 | `wrong_direction` | Sustained movement against a `one_way` zone's direction. | medium |
 | `loitering` | Staying within a small radius for longer than a threshold (30 s by default). | low |
+
+### Live activity labels and the camera-view check
+Each person gets a live activity label, drawn above them together with their REBA score, e.g.
+`Bending · REBA 9 HIGH · back`. The labels are Standing, Walking, Sitting, Bending, Lifting,
+Carrying, Reaching overhead, Lying down and Fallen. They come from pose rules
+(`backend/activity/rules.py`): trunk and thigh angles, hip height against the person's own
+upright reference, wrist height and speed. They are smoothed over 1 s, except Fallen, Lifting
+and Bending, which show at once. Rules that need the legs are skipped when the legs aren't
+visible ("Upper body only"), and Carrying without a detected bag or suitcase is marked low
+confidence. The last two minutes of labels are kept per person.
+
+If, for 5 s, everyone in view shows only their upper body, the dashboard says so: *"Only upper
+body visible. Fall detection and ergonomics need a full-body view: place the camera 2–4 m away,
+ideally side-on."* When REBA can't be scored, the panel says why (shoulders, hips or legs not
+visible; too small or far away; facing the camera; keypoints unclear).
+
+The rules were tuned **only on CAUCAFall subjects 1–5**; subjects 6–10 stay held out (results
+in [docs/BENCHMARKS.md](docs/BENCHMARKS.md)). Lifting is **not yet validated**: the CAUCAFall
+pick-up clips are quick front-on squats, and the rules were tightened to keep false lifts down
+(1 / 20 clips), at the cost of catching none of those pick-ups.
+
+### Test with demo footage
+The Camera page has a **Test with demo footage** panel. It plays a clip on loop as a separate
+`test` camera in warehouse mode, so you can watch activity labels and REBA without moving your
+camera. The clips are:
+- your own recordings in `data/recordings` (a side view of lifting and carrying works best);
+- local CAUCAFall clips from subjects 1–5 (never bundled; fetch them with
+  `training/fetch_caucafall.py`).
+
+Test footage never sends notifications or webhooks and never enters the event history.
 
 Every alert type has a per-person cooldown, so one event never becomes a burst of alerts.
 [ARCHITECTURE.md](ARCHITECTURE.md) covers the threading model, the WebSocket protocol, and
@@ -269,6 +302,7 @@ involved. The webcam gives 2D estimates; this is not a medical or ergonomic asse
 | `POST /api/rules/compile {"text"}` | a draft rule with its preview and warnings, or a refusal (saves nothing) |
 | `POST /api/rules`, `GET /api/rules`, `PATCH /api/rules/{id}`, `DELETE /api/rules/{id}` | confirm, list (with fire counts), edit or turn off, delete |
 | `GET /api/presets`, `POST /api/presets/{name}/apply` | presets, and loading one (asks before replacing preset rules) |
+| `GET /api/demo/clips`, `POST /api/demo/play {"clip"}`, `POST /api/demo/stop` | demo-footage clips (no file paths), and playing or stopping one on the `test` camera |
 
 Set `WEBHOOK_URL` to get every alert POSTed as JSON.
 
@@ -290,6 +324,7 @@ CI runs both, plus the frontend lint and build, and a Docker build with a smoke 
 ```text
 backend/
   core/      video_source, detector (YOLOv8 + ByteTrack), pose_estimator, pipeline, samples
+  activity/  live activity labels (pose rules) and the camera-view check
   anomaly/   fall_detector, zone_monitor, engine (loitering, alert routing), temporal_model
   rules/     plain-English rules: dsl (format), compiler (LLM), engine (per frame), presets, store
   output/    clip_recorder, event_logger (SQLite), webhook
@@ -311,6 +346,10 @@ tests/       pytest suite
   the person once they are on the floor. Re-finding them around their last box, including
   with the image rotated 90°, is implemented (`anomaly/fall_recovery.py`) but off by default:
   on unseen subjects it added false alarms.
+- **Learned activity labels.** The pose-sequence ActionLSTM in `training/` could replace the
+  hand-written rules where they are weakest, such as lifting and carrying, once there is
+  side-view warehouse footage to train and test on. The rules would stay as the fallback.
+- **Suggested zones** from open-vocabulary detection (YOLO-World), in Phase 3b.
 - **More rule conditions:** helmets, vests and forklifts (Phase 3b, after the YOLO-World
   accuracy test), and the exam-hall preset with its review page (Phase 3d). See
   [docs/plans/phase-3-rules.md](docs/plans/phase-3-rules.md).

@@ -9,6 +9,7 @@ import AlertPanel from '../components/AlertPanel';
 import AlertTimeline from '../components/AlertTimeline';
 import ZonePanel from '../components/ZonePanel';
 import ErgonomicsPanel from '../components/ErgonomicsPanel';
+import { ActivityPanel, ViewBanner } from '../components/ActivityPanel';
 
 const PANELS_KEY = 'sentinel.live.panels';
 const PANEL_OPTIONS = [
@@ -67,6 +68,16 @@ const LiveErgonomics = ({ connected }) => {
   return <ErgonomicsPanel connected={connected} ergonomics={frameData ? frameData.ergonomics : null} />;
 };
 
+const LiveActivity = ({ connected }) => {
+  const { frameData } = useFrame();
+  return <ActivityPanel connected={connected} activity={frameData?.activity} ergonomics={frameData?.ergonomics} />;
+};
+
+const LiveViewBanner = () => {
+  const { frameData } = useFrame();
+  return <ViewBanner view={frameData?.view} />;
+};
+
 const EngineMs = () => {
   const { frameData } = useFrame();
   if (frameData?.processing_time_ms == null) return null;
@@ -122,6 +133,7 @@ const LivePage = () => {
       <div className="flex-1 grid grid-cols-12 gap-4 min-h-0">
         {/* CENTER COLUMN: FEED & CHART */}
         <div className={`col-span-12 ${sideVisible ? 'lg:col-span-8' : ''} flex flex-col gap-4 min-h-0`}>
+          <LiveViewBanner />
           <div className="flex-[3] min-h-[320px] lg:min-h-0">
             <LiveVideo
               status={status}
@@ -155,7 +167,8 @@ const LivePage = () => {
               </div>
             )}
             {panels.ergonomics && (
-              <div className="flex-none border-t border-cyan-500/5 pt-2">
+              <div className="flex-none border-t border-cyan-500/5 pt-2 space-y-3">
+                <LiveActivity connected={connected} />
                 <LiveErgonomics connected={connected} />
               </div>
             )}

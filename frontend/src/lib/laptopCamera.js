@@ -53,6 +53,11 @@ export function useLaptopCamera() {
 /** Frames from `/ws/feed?camera=laptop`, local to the component that renders them.
  * `onFrame(frameData)` (optional) is called for every frame, outside React rendering. */
 export function useLaptopFrames(onFrame) {
+  return useCameraFrames(LAPTOP, onFrame);
+}
+
+/** Frames from any extra camera's socket (`/ws/feed?camera=<id>`), e.g. the "test" footage. */
+export function useCameraFrames(camera, onFrame) {
   const [state, setState] = useState({ status: 'connecting', frame: null, frameData: null });
   const onFrameRef = useRef(onFrame);
   useEffect(() => {
@@ -60,7 +65,7 @@ export function useLaptopFrames(onFrame) {
   }, [onFrame]);
   useEffect(
     () =>
-      connectFeed(wsUrl(LAPTOP), {
+      connectFeed(wsUrl(camera), {
         onStatus: (status) => setState((prev) => ({ ...prev, status })),
         onClose: () => setState((prev) => ({ ...prev, frame: null, frameData: null })),
         onMessage: (msg) => {
@@ -71,7 +76,7 @@ export function useLaptopFrames(onFrame) {
           }
         },
       }),
-    [],
+    [camera],
   );
   return state;
 }

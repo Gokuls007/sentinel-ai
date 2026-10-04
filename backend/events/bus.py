@@ -27,6 +27,10 @@ class EventBus:
         with self._lock:
             self._subscribers.append((name, callback))
 
+    def unsubscribe(self, name: str) -> None:
+        with self._lock:
+            self._subscribers = [(n, cb) for n, cb in self._subscribers if n != name]
+
     def publish(self, event: Event) -> Event:
         with self._lock:
             subscribers = list(self._subscribers)
