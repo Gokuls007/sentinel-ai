@@ -129,6 +129,23 @@ const PrivacyPanel = () => {
             </table>
           </div>
           <p className="text-[10px] mono text-white/40">Last automatic run: {lastRunText(data.last_run)}</p>
+          <div className="flex items-start justify-between gap-4 border-t border-white/10 pt-3">
+            <div>
+              <div className="text-[12px] font-bold text-white outfit">Skeleton-only mode</div>
+              <p className="text-[10px] text-white/50 outfit max-w-md">
+                Never store video or images: no incident clips, no snapshots, no camera recordings. Each event keeps
+                the keypoints from 10 s before to 5 s after instead, played back as a stick figure, and notifications
+                are sent as text only. The live view still shows the camera.
+              </p>
+            </div>
+            <button type="button" role="switch" aria-checked={data.skeleton_only} disabled={busy}
+              onClick={() => save({ skeleton_only: !data.skeleton_only })}
+              className={`relative flex-none w-11 h-6 border transition-colors disabled:opacity-40 ${data.skeleton_only ? 'bg-cyan-400 border-cyan-200' : 'bg-black/60 border-white/20'}`}>
+              <span className="sr-only">Skeleton-only mode</span>
+              <span className={`absolute top-0.5 bg-white transition-all ${data.skeleton_only ? 'left-[22px]' : 'left-0.5'}`}
+                style={{ width: 18, height: 18 }} aria-hidden="true" />
+            </button>
+          </div>
           {would && would.count > 0 && !confirming && (
             <button type="button" disabled={busy} onClick={() => setConfirming(true)} className={chipClass(false)}>
               Delete now...

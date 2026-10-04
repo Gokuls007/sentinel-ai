@@ -21,7 +21,6 @@ import contextlib
 import glob
 import json
 import logging
-import os
 import shutil
 import sqlite3
 import threading

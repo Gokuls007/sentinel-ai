@@ -296,6 +296,7 @@ def _laptop_config(index: int) -> SentinelConfig:
 def _run_camera(camera_id: str, cfg: SentinelConfig, mode: str | None = None) -> None:
     try:
         p = SentinelPipeline(cfg)  # loads the models: a few seconds
+        p.skeleton_only = _load_app_settings()["skeleton_only"]
         if camera_id == TEST_CAMERA:
             p.event_bus.unsubscribe("store")  # test footage never enters the event history or analytics
             p.save_clips = False  # ... and never writes clips or snapshots
@@ -489,6 +490,9 @@ def start_recording(request: Request):
         p = _cameras.get(LAPTOP_CAMERA)
     if p is None:
         raise HTTPException(status_code=409, detail="start the camera first")
+    if _load_app_settings()["skeleton_only"]:
+        raise HTTPException(status_code=409, detail="Skeleton-only mode is on: no video is recorded "
+                                                    "(turn it off in Settings > Privacy to record).")
     rec = _recorders.get(LAPTOP_CAMERA)
     if rec is None:
         rec = _recorders[LAPTOP_CAMERA] = Recorder(str(_recordings_dir()), prefix="laptop")
@@ -521,6 +525,7 @@ def get_alerts(limit: int = Query(50, ge=1, le=1000), severity: str | None = Non
         for e in events:
             item = to_serializable(e.to_alert_dict())
             item["has_clip"] = bool(e.alert_id) and _clip_path(e.alert_id) is not None
+            item["has_skeleton"] = bool(e.alert_id) and _incident_file(e.alert_id, "skeleton", "json") is not None
             out.append(item)
         return out
     with history_lock:
@@ -551,6 +556,8 @@ def _event_json(event: Event) -> dict:
     has_thumb = bool(event.alert_id) and _incident_file(event.alert_id, "snapshot", "jpg") is not None
     item["clip_url"] = f"/api/clips/{event.alert_id}" if has_clip else None
     item["thumbnail_url"] = f"/api/snapshots/{event.alert_id}" if has_thumb else None
+    has_skeleton = bool(event.alert_id) and _incident_file(event.alert_id, "skeleton", "json") is not None
+    item["skeleton_url"] = f"/api/skeletons/{event.alert_id}" if has_skeleton else None
     return item
 
 
@@ -672,6 +679,7 @@ def _apply_app_settings(primary, settings: dict) -> None:
             p.mode = settings["mode"]
     if primary is not None and hasattr(primary, "paused"):
         primary.paused = not settings["demo_footage"]
+    _apply_privacy(settings, pipelines)
 
 
 # --- Privacy: retention ------------------------------------------------------------------
@@ -767,13 +775,18 @@ def privacy_delete_now(body: DeleteNowIn, request: Request):
     return _retention_runner().delete_now(body.retention_days)
 
 
-def _apply_privacy(settings: dict) -> None:
-    """Skeleton-only mode on every running pipeline (no clips, snapshots or images)."""
-    with _cameras_lock:
-        pipelines = [p for p in (pipeline, *_cameras.values()) if p is not None]
+def _apply_privacy(settings: dict, pipelines: list | None = None) -> None:
+    """Skeleton-only mode on every running pipeline (no clips, snapshots or images), and no
+    camera recording while it's on."""
+    if pipelines is None:
+        with _cameras_lock:
+            pipelines = [p for p in (pipeline, *_cameras.values()) if p is not None]
     for p in pipelines:
         if hasattr(p, "skeleton_only"):
             p.skeleton_only = settings["skeleton_only"]
+    if settings["skeleton_only"]:
+        for camera_id in list(_recorders):
+            _stop_recorder(camera_id)
 
 
 class AppSettingsIn(BaseModel):
@@ -1542,6 +1555,15 @@ def get_clip(alert_id: str):
     if path is None:
         raise HTTPException(status_code=404, detail="Clip not found (it may still be recording)")
     return FileResponse(path, media_type="video/mp4")
+
+
+@app.get("/api/skeletons/{alert_id}")
+def get_skeleton(alert_id: str):
+    """Skeleton-only mode's incident record: keypoints around the alert (no pixels)."""
+    path = _incident_file(alert_id, "skeleton", "json")
+    if path is None:
+        raise HTTPException(status_code=404, detail="Skeleton not found (it is written 5 s after the alert)")
+    return FileResponse(path, media_type="application/json")
 
 
 @app.get("/api/snapshots/{alert_id}")
