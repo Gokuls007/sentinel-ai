@@ -58,7 +58,20 @@ const ObjectsPanel = () => {
           </div>
           {saved && <p className="text-[11px] text-emerald-300 outfit">Saved.</p>}
           {saveError && <p className="text-[11px] text-red-300 break-words">{saveError}</p>}
-          <p className="text-[10px] mono text-white/40">Confidence threshold {data.confidence} · model {data.model}</p>
+          {Object.keys(data.synonyms || {}).length > 0 && (
+            <ul className="text-[10px] mono text-white/50 space-y-0.5">
+              {Object.entries(data.synonyms).map(([cls, words]) => (
+                <li key={cls}>
+                  <span className="text-white/70">{cls}</span> &larr; {words.join(', ')}
+                  {data.floors?.[cls] != null && <span className="text-white/40"> (floor {data.floors[cls]})</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="text-[10px] mono text-white/40">
+            Other classes: confidence {data.confidence} · model {data.model} · each object shows its most frequent
+            label over the last 15 frames
+          </p>
         </div>
       )}
     </DashboardPanel>

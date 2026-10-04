@@ -140,7 +140,9 @@ class SentinelPipeline:
         o = config.objects
         self.object_detector = (OpenVocabDetector(o.model_path, o.classes, confidence=o.confidence, imgsz=o.imgsz,
                                                   device=config.detector.device, cache_dir=o.cache_dir,
-                                                  every_n_frames=o.every_n_frames) if o.enabled else None)
+                                                  every_n_frames=o.every_n_frames, synonyms=o.synonyms,
+                                                  floors=o.floors, vote_window=o.vote_window, min_hits=o.min_hits)
+                                if o.enabled else None)
         self._alert_labels: dict = {}  # track id -> (reason text, show until), drawn next to the person
         self.event_store = EventStore(config.output.db_path)
         self.rule_store = RuleStore(config.output.db_path)

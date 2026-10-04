@@ -918,6 +918,7 @@ def get_objects():
         (o.classes if o else DEFAULT_OBJECT_CLASSES)
     return {"enabled": bool(o and o.enabled), "classes": classes, "defaults": DEFAULT_OBJECT_CLASSES,
             "confidence": o.confidence if o else None, "model": o.model_path if o else None,
+            "synonyms": o.synonyms if o else {}, "floors": o.floors if o else {},
             "error": det.error if det else None}
 
 

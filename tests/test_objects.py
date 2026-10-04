@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import torch
 
-from core.object_detector import OpenVocabDetector, cache_key
+from core.object_detector import ObjectDetection, ObjectTracker, OpenVocabDetector, cache_key
 
 
 class FakeWorld:
@@ -29,7 +29,9 @@ class FakeWorld:
         self.model.names = list(classes)
 
     def predict(self, frame, **kw):
-        boxes = SimpleNamespace(cls=torch.tensor([1.0, 0.0]), conf=torch.tensor([0.8, 0.4]),
+        FakeWorld.kwargs = kw
+        # prompt 5 = "gaming chair" (canonical: chair); prompt 0 = "cardboard box", under its 0.25 floor
+        boxes = SimpleNamespace(cls=torch.tensor([5.0, 0.0]), conf=torch.tensor([0.8, 0.2]),
                                 xyxy=torch.tensor([[10.0, 20.0, 110.0, 220.0], [300.0, 300.0, 380.0, 360.0]]))
         return [SimpleNamespace(boxes=boxes)]
 
@@ -43,24 +45,48 @@ def fake_world(monkeypatch, tmp_path):
     return str(weights)
 
 
-def test_class_names_are_encoded_once_then_loaded_from_the_cache(fake_world, tmp_path):
+def test_prompts_are_encoded_once_then_loaded_from_the_cache(fake_world, tmp_path):
     classes = ["cardboard box", "chair"]
     d1 = OpenVocabDetector(fake_world, classes, cache_dir=str(tmp_path / "cache"))
+    assert d1.prompts == ["cardboard box", "shipping box", "carton", "chair", "office chair", "gaming chair",
+                          "wooden chair"]  # several prompts per class
     assert d1.available and FakeWorld.encodings == 1
     d2 = OpenVocabDetector(fake_world, classes, cache_dir=str(tmp_path / "cache"))
     assert d2.available and FakeWorld.encodings == 1  # CLIP not run again
-    assert d2._model.model.names == classes and d2._model.model.model[-1].nc == 2
+    assert d2._model.model.names == d1.prompts and d2._model.model.model[-1].nc == 7
     d2.set_classes(["chair", "ladder", "forklift"])  # a new list: encoded once more
-    assert FakeWorld.encodings == 2 and cache_key(fake_world, classes) != cache_key(fake_world, d2.classes)
+    assert FakeWorld.encodings == 2 and cache_key(fake_world, d1.prompts) != cache_key(fake_world, d2.prompts)
 
 
-def test_detections_and_frame_skipping(fake_world, tmp_path):
-    d = OpenVocabDetector(fake_world, ["cardboard box", "chair"], cache_dir=str(tmp_path), every_n_frames=3)
+def test_synonyms_map_to_their_class_floors_apply_and_frames_can_be_skipped(fake_world, tmp_path):
+    d = OpenVocabDetector(fake_world, ["cardboard box", "chair"], cache_dir=str(tmp_path), every_n_frames=3,
+                          floors={"cardboard box": 0.25, "chair": 0.25}, min_hits=1)
     frame = np.zeros((480, 640, 3), np.uint8)
     first = d.detect(frame)
-    assert [(o.class_name, round(o.confidence, 1)) for o in first] == [("chair", 0.8), ("cardboard box", 0.4)]
+    assert FakeWorld.kwargs["agnostic_nms"] and FakeWorld.kwargs["conf"] == 0.25  # one box per object
+    assert [(o.class_name, o.prompt, round(o.confidence, 1)) for o in first] == [("chair", "gaming chair", 0.8)]
     assert d.detect(frame) is first and d.detect(frame) is first  # skipped frames reuse the last result
-    assert first[0].to_dict() == {"class_name": "chair", "confidence": 0.8, "bbox": [10.0, 20.0, 110.0, 220.0]}
+    assert first[0].to_dict() == {"class_name": "chair", "confidence": 0.8, "bbox": [10.0, 20.0, 110.0, 220.0],
+                                  "track_id": 1}
+
+
+def obj(name, conf=0.6, x=0.0):
+    return ObjectDetection(name, conf, (100.0 + x, 100.0, 200.0 + x, 300.0))
+
+
+def test_voting_stops_label_flicker_and_one_frame_hits():
+    tr = ObjectTracker(window=15, min_hits=3)
+    shown = []
+    for i, name in enumerate(["chair", "backpack", "chair", "chair", "backpack", "chair", "chair"]):
+        shown = tr.update([obj(name, x=i)])  # one object, its label flickering
+        if i < 2:
+            assert shown == []  # not shown until seen 3 times
+    assert [(o.class_name, o.track_id) for o in shown] == [("chair", 1)]
+    lone = ObjectDetection("chair", 0.9, (500.0, 100.0, 560.0, 200.0))  # a one-frame false hit elsewhere
+    assert [o.track_id for o in tr.update([obj("chair", x=8), lone])] == [1]
+    for _ in range(6):  # the real object leaves: dropped after max_missed frames
+        tr.update([])
+    assert tr.tracks == []
 
 
 def test_missing_weights_turn_objects_off_without_breaking_anything(tmp_path):

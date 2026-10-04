@@ -162,6 +162,15 @@ class ObjectsConfig:
     classes: list[str] = field(default_factory=lambda: list(DEFAULT_OBJECT_CLASSES))
     confidence: float = 0.3  # open-vocabulary scores run low; below ~0.3 a soft bag can read as a box
     every_n_frames: int = 1  # run on every Nth frame (the last result is reused in between)
+    # Several prompts per class (YOLO-World is sensitive to wording); the best one wins per object.
+    synonyms: dict[str, list[str]] = field(default_factory=lambda: {
+        "chair": ["chair", "office chair", "gaming chair", "wooden chair"],
+        "cardboard box": ["cardboard box", "shipping box", "carton"],
+    })
+    # Per-class confidence floors (others use ``confidence``); set from the smoke test.
+    floors: dict[str, float] = field(default_factory=lambda: {"chair": 0.25, "cardboard box": 0.25})
+    vote_window: int = 15  # frames: the class shown is the one given most often over this window
+    min_hits: int = 3      # sightings before an object is shown (drops one-frame false hits)
     imgsz: int = 640
     cache_dir: str = "data/cache"  # encoded class names (CLIP runs only when the list changes)
 
@@ -244,6 +253,13 @@ class SentinelConfig:
         cfg.objects.model_path = env("OBJECT_MODEL", str, cfg.objects.model_path)
         cfg.objects.confidence = env("OBJECT_CONFIDENCE", float, cfg.objects.confidence)
         cfg.objects.every_n_frames = max(1, env("OBJECT_EVERY_N_FRAMES", int, cfg.objects.every_n_frames))
+        raw_syn = env("OBJECT_SYNONYMS", str, "")  # JSON, e.g. {"chair": ["chair", "stool"]}
+        if raw_syn:
+            cfg.objects.synonyms = {str(k): [str(x) for x in v] for k, v in json.loads(raw_syn).items()}
+        raw_floors = env("OBJECT_FLOORS", str, "")  # e.g. chair=0.25,cardboard box=0.25
+        if raw_floors:
+            cfg.objects.floors = {k.strip(): float(v) for k, v in
+                                  (pair.split("=", 1) for pair in raw_floors.split(",") if "=" in pair)}
         raw_classes = env("OBJECT_CLASSES", str, "")
         if raw_classes:
             cfg.objects.classes = [c.strip() for c in raw_classes.split(",") if c.strip()]
