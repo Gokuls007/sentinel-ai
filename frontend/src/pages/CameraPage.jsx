@@ -6,6 +6,8 @@ import VideoFeed from '../components/VideoFeed';
 import AlertPanel from '../components/AlertPanel';
 import ZoneEditor from '../components/ZoneEditor';
 import ErgonomicsPanel from '../components/ErgonomicsPanel';
+import { ActivityPanel, ViewBanner } from '../components/ActivityPanel';
+import DemoFootagePanel from '../components/DemoFootagePanel';
 import { useFeed } from '../context/liveFeed';
 import {
   BACKEND_START_HINT, describeError, formatDuration, isOfflineError, postJson, saveStored, useNow,
@@ -137,6 +139,7 @@ const CameraFeed = ({ cam }) => {
         <StatTile icon={Users} label="Persons" value={show(stats?.person_count)} />
         <StatTile icon={Crosshair} label="Tracks" value={show(stats?.active_tracks)} />
       </div>
+      {!drawing && <ViewBanner view={frameData?.view} />}
       <div className={drawing ? 'hidden' : 'h-[min(62vh,640px)] min-h-[320px]'}>
         <VideoFeed
           title="Laptop Camera"
@@ -152,7 +155,10 @@ const CameraFeed = ({ cam }) => {
       </div>
       {!drawing && (
         // Frames (and their `ergonomics`) come from this camera's own socket.
-        <ErgonomicsPanel connected={status === 'live'} ergonomics={frameData ? frameData.ergonomics : null} />
+        <div className="grid md:grid-cols-2 gap-3">
+          <ActivityPanel connected={status === 'live'} activity={frameData?.activity} ergonomics={frameData?.ergonomics} />
+          <ErgonomicsPanel connected={status === 'live'} ergonomics={frameData ? frameData.ergonomics : null} />
+        </div>
       )}
       <ZoneEditor camera={LAPTOP} frame={frame} onDrawingChange={setDrawing} />
     </div>
@@ -319,6 +325,7 @@ const CameraPage = () => {
       {actionMessage && <Message tone={actionError?.status === 403 ? 'amber' : 'red'}>{actionMessage}</Message>}
       {pollError && !isOfflineError(pollError) && <Message>{describeError(pollError)}</Message>}
       {body}
+      <DemoFootagePanel />
     </div>
   );
 };

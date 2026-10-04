@@ -16,10 +16,10 @@ const RiskBadge = ({ t }) => {
     return (
       <span
         className={`inline-flex items-center gap-1 px-1.5 py-px border text-[8px] mono uppercase ${levelBadge(null, false)}`}
-        title="The view is not reliable enough to score (best seen from the side)"
+        title="Not scored: REBA needs the whole body, ideally seen from the side"
       >
         <span className="italic">REBA {t.score ?? '?'}</span>
-        <span>// low confidence</span>
+        <span>// {t.reason || 'not scored'}</span>
       </span>
     );
   }

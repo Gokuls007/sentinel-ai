@@ -208,6 +208,17 @@ class ZoneIn(BaseModel):
             raise HTTPException(status_code=422, detail=f"zone {self.id!r}: time_limited needs time_limit > 0")
         if self.zone_type == "one_way" and not self.direction:
             raise HTTPException(status_code=422, detail=f"zone {self.id!r}: one_way needs a direction")
+        from anomaly.geometry import fix_polygon, self_intersections
+
+        crossings = self_intersections(self.polygon)
+        if crossings:
+            fixed, method = fix_polygon(self.polygon)
+            raise HTTPException(status_code=422, detail={
+                "message": f"zone {self.name!r}: its edges cross ({len(crossings)} crossing"
+                           f"{'s' if len(crossings) > 1 else ''}), so it has no clear inside. Use the suggested fix "
+                           "or redraw it.",
+                "zone_id": self.id, "crossings": crossings, "fix": {
+                    "method": method, "polygon": [[round(x, 4), round(y, 4)] for x, y in fixed]}})
         return self
 
 
@@ -279,16 +290,19 @@ def _laptop_config(index: int) -> SentinelConfig:
     return cfg
 
 
-def _run_camera(camera_id: str, cfg: SentinelConfig) -> None:
+def _run_camera(camera_id: str, cfg: SentinelConfig, mode: str | None = None) -> None:
     try:
         p = SentinelPipeline(cfg)  # loads the models: a few seconds
+        if camera_id == TEST_CAMERA:
+            p.event_bus.unsubscribe("store")  # test footage never enters the event history or analytics
         _attach(p, primary=False)
-        p.mode = _load_app_settings()["mode"]
+        p.mode = mode or _load_app_settings()["mode"]
         with _cameras_lock:
-            stopped_meanwhile = _camera_state.get(camera_id, {}).get("status") != "starting"
+            state = _camera_state.get(camera_id, {})
+            stopped_meanwhile = state.get("status") != "starting"
             if not stopped_meanwhile:
                 _cameras[camera_id] = p
-                _camera_state[camera_id] = {"status": "running", "source": cfg.source,
+                _camera_state[camera_id] = {"status": "running", "source": state.get("source", cfg.source),
                                             "started_at": time.time()}
         if stopped_meanwhile:  # Stop was pressed while the models were loading
             p.stop()
@@ -305,6 +319,98 @@ def _run_camera(camera_id: str, cfg: SentinelConfig) -> None:
             _camera_frames.pop(camera_id, None)
             if _camera_state.get(camera_id, {}).get("status") in ("running", "stopping"):
                 _camera_state[camera_id] = {"status": "stopped"}
+
+
+# --- "Test with demo footage" (warehouse) ---------------------------------------------------------
+# Plays a local clip as an extra camera ("test") in warehouse mode, so activity labels, REBA and
+# falls can be seen working without moving the real camera. Clips come only from a server-built
+# list: CAUCAFall subjects 1-5 (if the dataset is present locally; never bundled) and your own
+# recordings in data/recordings.
+
+TEST_CAMERA = "test"
+DEMO_CLIP_ACTIVITIES = ("Pick up object", "Kneel", "Sit down", "Walk", "Fall forward", "Fall backwards",
+                        "Fall left", "Fall right")
+
+
+def _demo_clips() -> list[dict]:
+    root = Path(__file__).resolve().parents[2]
+    clips = []
+    cauca = root / "data" / "datasets" / "caucafall" / "CAUCAFall"
+    for subject in range(1, 6):  # 6-10 are the held-out test set
+        for activity in DEMO_CLIP_ACTIVITIES:
+            folder = cauca / f"Subject.{subject}" / activity
+            avis = sorted(folder.glob("*.avi")) if folder.is_dir() else []
+            if avis:
+                clips.append({"id": f"cauca-{subject}-{activity.lower().replace(' ', '-')}",
+                              "label": f"{activity} (CAUCAFall subject {subject})", "source": "caucafall",
+                              "path": str(avis[0])})
+    for f in sorted(_recordings_dir().glob("*.mp4"), key=lambda x: x.stat().st_mtime, reverse=True):
+        clips.append({"id": f"rec-{f.stem}", "label": f"{f.name} (your recording)", "source": "recording",
+                      "path": str(f)})
+    return clips
+
+
+class DemoPlay(BaseModel):
+    clip: str = Field(..., max_length=120)
+
+
+@app.get("/api/demo/clips")
+def demo_clips():
+    """Clips for "Test with demo footage" (paths stay on the server)."""
+    return {"clips": [{k: v for k, v in c.items() if k != "path"} for c in _demo_clips()],
+            "test_camera": _camera_info(TEST_CAMERA)}
+
+
+@app.post("/api/demo/play", status_code=202)
+def demo_play(body: DemoPlay, request: Request):
+    """Play one listed clip on loop as camera "test", in warehouse mode, without notifications."""
+    _check_camera_control(request)
+    _require_pipeline()
+    clip = next((c for c in _demo_clips() if c["id"] == body.clip), None)
+    if clip is None:
+        raise HTTPException(status_code=404, detail=f"no clip {body.clip!r}")
+    _stop_camera(TEST_CAMERA)
+    cfg = copy.deepcopy(config)
+    cfg.source, cfg.loop, cfg.camera_id = clip["path"], True, TEST_CAMERA
+    cfg.frame_width, cfg.frame_height = 1280, 720
+    # A test run never sends notifications or webhooks.
+    n = cfg.notifications
+    n.telegram_bot_token = n.telegram_chat_id = n.smtp_host = ""
+    cfg.output.webhook_url = ""
+    zones = Path(cfg.output.db_path).resolve().parent / "zones_test.json"
+    zones.parent.mkdir(parents=True, exist_ok=True)
+    if not zones.exists():
+        zones.write_text(json.dumps({"zones": []}), encoding="utf-8")
+    cfg.zone.zones_file = str(zones)
+    with _cameras_lock:
+        _camera_state[TEST_CAMERA] = {"status": "starting", "source": clip["label"]}
+        thread = threading.Thread(target=_run_camera, args=(TEST_CAMERA, cfg, "warehouse"), daemon=True,
+                                  name="camera-test")
+        _camera_threads[TEST_CAMERA] = thread
+    thread.start()
+    return {"id": TEST_CAMERA, "status": "starting", "clip": clip["id"], "label": clip["label"]}
+
+
+@app.post("/api/demo/stop")
+def demo_stop(request: Request):
+    _check_camera_control(request)
+    _stop_camera(TEST_CAMERA)
+    return _camera_info(TEST_CAMERA)
+
+
+def _stop_camera(camera_id: str) -> None:
+    with _cameras_lock:
+        p = _cameras.get(camera_id)
+        thread = _camera_threads.get(camera_id)
+        if camera_id in _camera_state:
+            _camera_state[camera_id] = {"status": "stopping" if p else "stopped"}
+    if p is not None:
+        p.video_source.stop()
+    if thread is not None:
+        thread.join(timeout=15)
+    with _cameras_lock:
+        if _camera_state.get(camera_id, {}).get("status") == "stopping":
+            _camera_state[camera_id] = {"status": "stopped"}
 
 
 @app.post("/api/cameras/laptop/start", status_code=202)
@@ -537,7 +643,8 @@ def _apply_app_settings(primary, settings: dict) -> None:
     with _cameras_lock:
         pipelines = [p for p in (primary, *_cameras.values()) if p is not None]
     for p in pipelines:
-        p.mode = settings["mode"]
+        if getattr(getattr(p, "config", None), "camera_id", None) != TEST_CAMERA:  # test footage stays warehouse
+            p.mode = settings["mode"]
     if primary is not None and hasattr(primary, "paused"):
         primary.paused = not settings["demo_footage"]
 

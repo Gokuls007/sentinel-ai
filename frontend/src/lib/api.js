@@ -70,12 +70,15 @@ async function sendJson(method, path, body) {
     // FastAPI sends a string for HTTPException and a list of issues for validation errors.
     const detail = typeof data?.detail === 'string'
       ? data.detail
+      : typeof data?.detail?.message === 'string'
+        ? data.detail.message
       : Array.isArray(data?.detail)
         ? data.detail.map((d) => `${(d.loc || []).slice(1).join('.')}: ${d.msg}`).join('; ')
         : null;
     const err = new Error(detail || `${path}: HTTP ${res.status}`);
     err.status = res.status;
     err.detail = detail;
+    err.data = data?.detail;
     throw err;
   }
   return data;

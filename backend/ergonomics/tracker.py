@@ -11,6 +11,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from activity.visibility import ergo_reason
 from ergonomics.angles import PostureAngles, compute_angles
 from ergonomics.config import ErgonomicsConfig
 from ergonomics.reba import RISK_LEVELS, RebaResult, assess, risk_level
@@ -32,6 +33,7 @@ class TrackErgo:
     level_name: str | None = None
     confidence: float = 0.0
     reliable: bool = False           # confident enough to show normally and to alert
+    reason: str | None = None        # why not reliable, in plain words (e.g. "legs not visible")
     dominant: str | None = None
     raw: RebaResult | None = None
     angles: PostureAngles | None = None
@@ -40,7 +42,7 @@ class TrackErgo:
         return {
             "track_id": self.track_id, "score": self.score, "level": self.level,
             "level_name": self.level_name, "confidence": round(self.confidence, 2),
-            "reliable": self.reliable, "dominant": self.dominant,
+            "reliable": self.reliable, "dominant": self.dominant, "reason": self.reason,
             "angles": self.angles.as_dict() if self.angles else None,
             "estimated_parts": self.raw.estimated_parts if self.raw else [],
         }
@@ -97,7 +99,8 @@ class ErgoTracker:
         return span >= self.cfg.static_after_s * 0.95 and steady
 
     def update(self, track_id: int, keypoints, ts: float, *, load: int = 0,
-               zone_ids: list[str] | None = None) -> tuple[TrackErgo, ErgoAlert | None]:
+               zone_ids: list[str] | None = None,
+               box_height_frac: float | None = None) -> tuple[TrackErgo, ErgoAlert | None]:
         cfg = self.cfg
         st = self.tracks.setdefault(track_id, _State())
         angles = compute_angles(keypoints, cfg)
@@ -118,6 +121,9 @@ class ErgoTracker:
             view.score, view.level, view.level_name = score, level, name
             view.reliable = bool(confident) and angles.confidence >= cfg.min_confidence
             view.dominant = max((h[3] for h in window), key=[h[3] for h in window].count)
+        if not view.reliable:
+            view.reason = ergo_reason(keypoints, angles.confidence, cfg.min_confidence, box_height_frac,
+                                      min_conf=cfg.keypoint_min_conf)
 
         # Time at risk (per track ID, per zone, per hour), using the gap since the last frame.
         if st.last_ts is not None:

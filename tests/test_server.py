@@ -101,6 +101,9 @@ def test_tracks_stats_zones_with_numpy_values(client, monkeypatch, tmp_path):
     feat = make_features(track_id=4)
     feat.centroid_history.extend([np.array([1.0, 2.0], np.float32), np.array([4.0, 6.0], np.float32)])
     feat.timestamps.extend([np.float32(1.0), np.float32(2.0)])
+    (tmp_path / "z.json").write_text(json.dumps({"zones": [
+        {"id": f"z{i}", "name": f"Z{i}", "zone_type": "restricted",
+         "polygon": [[0.1 * i, 0.1], [0.1 * i + 0.05, 0.1], [0.1 * i + 0.05, 0.2]]} for i in range(3)]}))
     zones = ZoneMonitor(zones_file=str(tmp_path / "z.json"))
     fake = SimpleNamespace(
         pose_estimator=SimpleNamespace(get_all_features=lambda: {4: feat}),

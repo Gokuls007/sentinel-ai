@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Plus, Trash2, Undo2, X, Save } from 'lucide-react';
 import DashboardPanel from './DashboardPanel';
 import { describeError, fetchJson, putJson } from '../lib/api';
+import { FIX_LABELS, fixPolygon, selfIntersections } from '../lib/geometry';
 import { inputClass, labelClass } from '../lib/ui';
 
 const TYPES = {
@@ -74,6 +75,7 @@ const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
   const [error, setError] = useState(null);
   const [saved, setSaved] = useState(false);
   const [deleted, setDeleted] = useState(null); // { zone, index } of the last deleted zone, for Undo
+  const [fixed, setFixed] = useState(null); // id of the zone just fixed
 
   useEffect(() => {
     let cancelled = false;
@@ -158,7 +160,15 @@ const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
 
   const drawing = draft != null;
   const image = drawing ? still : null;
-  const canFinish = drawing && draft.points.length >= 3 && (draft.zone_type !== 'time_limited' || Number(draft.time_limit) > 0);
+  const draftCrossings = drawing ? selfIntersections(draft.points) : [];
+  const canFinish = drawing && draft.points.length >= 3 && !draftCrossings.length
+    && (draft.zone_type !== 'time_limited' || Number(draft.time_limit) > 0);
+  const fixDraft = () => setDraft((d) => ({ ...d, points: fixPolygon(d.points).points }));
+  // Fix a saved zone whose edges cross (e.g. drawn before this check existed), and save.
+  const fixZone = async (zoneId) => {
+    const next = zones.map((z) => (z.id === zoneId ? { ...z, polygon: fixPolygon(z.polygon).points } : z));
+    if (await persist(next)) setFixed(zoneId);
+  };
 
   return (
     <DashboardPanel title="Danger zones" headerAction={zones ? `${zones.length} zone${zones.length === 1 ? '' : 's'}` : null}>
@@ -222,6 +232,14 @@ const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
                 </button>
               </div>
             </div>
+            {draftCrossings.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 p-2 border border-red-400/50 bg-red-950/30 text-[11px] text-red-200" role="alert">
+                Edges cross ({draftCrossings.length}), so this zone has no clear inside.
+                <button type="button" className={`${button} border-red-300/60 text-red-100`} onClick={fixDraft}>
+                  Fix it: {FIX_LABELS[fixPolygon(draft.points).method]?.toLowerCase()}
+                </button>
+              </div>
+            )}
             <p className="text-[11px] mono text-cyan-300" role="status">
               {draft.points.length < 3
                 ? `Click the corners of the area on the image (${draft.points.length} of at least 3). The video is paused while you draw.`
@@ -266,6 +284,15 @@ const ZoneEditor = ({ camera, frame, onDrawingChange = () => {} }) => {
                   <span className="text-[10px] mono uppercase text-white/50">
                     {z.zone_type === 'time_limited' ? `time limit ${z.time_limit}s` : z.zone_type === 'one_way' ? `one-way (${z.direction})` : 'restricted'}
                   </span>
+                  {selfIntersections(z.polygon).length > 0 && (
+                    <span className="flex items-center gap-1.5">
+                      <span className="text-[10px] mono uppercase text-red-300">edges cross</span>
+                      <button type="button" disabled={busy} onClick={() => fixZone(z.id)}
+                        title={FIX_LABELS[fixPolygon(z.polygon).method]}
+                        className={`${button} border-red-300/60 text-red-100`}>Fix it</button>
+                    </span>
+                  )}
+                  {fixed === z.id && <span className="text-[10px] mono text-emerald-300">fixed and saved</span>}
                   {z.load_score > 0 && (
                     <span className="text-[10px] mono uppercase text-amber-300/80" title="REBA load/force score for work in this zone">
                       load {z.load_score} ({LOAD_SHORT[z.load_score]})

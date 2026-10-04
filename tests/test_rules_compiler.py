@@ -198,7 +198,8 @@ def test_rules_turn_into_alerts_with_their_actions(bare_pipeline):
                                                                           "object": "cell phone"}],
                            severity="high", actions=["alert"]))
     p.reload_rules()
-    assert p.detector.classes == [0, 67]  # the phone class is detected only because a rule needs it
+    # The phone class only because a rule needs it (24/26/28: backpack, handbag, suitcase for "Carrying").
+    assert p.detector.classes == [0, 24, 26, 28, 67]
     pose = make_pose(track_id=7)
     pose.keypoints[9] = (330, 300, 0.9)  # a hand at waist height (make_pose has no wrists)
     wrist = pose.keypoints[9, :2]
@@ -210,7 +211,7 @@ def test_rules_turn_into_alerts_with_their_actions(bare_pipeline):
     assert p._evaluate_rules({7: pose}, {}, dets, 100.1) == []  # same episode
     p.rule_store.delete("phone")
     p.reload_rules()
-    assert p.detector.classes == [0]
+    assert p.detector.classes == [0, 24, 26, 28]
 
 
 def test_builtins_follow_the_flag(bare_pipeline):

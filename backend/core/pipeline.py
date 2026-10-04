@@ -9,6 +9,7 @@ from typing import ClassVar
 import cv2
 import numpy as np
 
+from activity import CARRY_CLASSES, ActivityTracker, ViewCheck
 from anomaly.engine import AnomalyAlert, AnomalyEngine
 from anomaly.fall_recovery import recover_pose
 from config.settings import SentinelConfig
@@ -46,6 +47,8 @@ class FrameResult:
     timings_ms: dict[str, float] = field(default_factory=dict)
     events: list = field(default_factory=list)  # the Event published for each alert
     ergonomics: dict = field(default_factory=dict)  # track_id -> current REBA (TrackErgo.as_dict)
+    activity: dict = field(default_factory=dict)  # track_id -> live activity label and history
+    view: dict = field(default_factory=dict)  # the camera-view check (upper body only?)
     posture: dict | None = None  # desk posture coach snapshot (posture mode)
     mode: str = "warehouse"
 
@@ -64,6 +67,8 @@ class FrameResult:
             },
             "timings_ms": self.timings_ms,
             "ergonomics": {str(k): v for k, v in self.ergonomics.items()},
+            "activity": {str(k): v for k, v in self.activity.items()},
+            "view": self.view,
             "posture": self.posture,
             "mode": self.mode,
         }
@@ -112,6 +117,9 @@ class SentinelPipeline:
         # Plain-English rules (compiled once, checked here every frame in warehouse mode).
         self.rules = RuleEngine()
         self.rule_store: RuleStore | None = None
+        # Live activity labels and the camera-view check (warehouse mode).
+        self.activity = ActivityTracker()
+        self.view_check = ViewCheck()
         
         # Output layer. Every alert becomes an Event published on the bus; the store
         # subscribes first so later subscribers (notifications, WebSocket) see its id.
@@ -180,8 +188,10 @@ class SentinelPipeline:
             timings["ergonomics"] = self.anomaly_engine.last_ergo_ms  # included in "analytics"
             ergonomics = self.anomaly_engine.ergonomics_snapshot
             self._persist_ergo_time(timestamp)
+            activity, view = self._activity(poses, detections, timestamp), self.view_check.snapshot()
         else:
             alerts, ergonomics = [], {}
+            activity, view = {}, {}
             if self.mode == "posture":
                 # Only the person at the desk: the largest, most central face-and-shoulder area
                 # (someone or something on the couch behind is ignored).
@@ -200,7 +210,7 @@ class SentinelPipeline:
         # 4. Annotation (clips and snapshots use the annotated frame)
         if self.mode == "warehouse":
             annotated_frame = self._annotate_frame(frame.copy(), detections, poses, alerts)
-            self._draw_ergo_badges(annotated_frame, detections, ergonomics)
+            self._draw_person_tags(annotated_frame, detections, ergonomics, activity)
         else:
             annotated_frame = frame.copy()
             shown = ([poses[self._posture_id]] if self.mode == "posture" and self._posture_id in poses
@@ -246,6 +256,8 @@ class SentinelPipeline:
             timings_ms=timings,
             events=events,
             ergonomics=ergonomics,
+            activity=activity,
+            view=view,
             posture=posture,
             mode=self.mode,
         )
@@ -273,7 +285,9 @@ class SentinelPipeline:
         needed = set().union(*(r.objects() for r in self.rules.rules)) if self.rules.rules else set()
         ids = [cid for cid, name in Detector.COCO_NAMES.items() if name in needed]
         base = [c for c in self.config.detector.classes if Detector.COCO_NAMES.get(c) not in OBJECT_CLASSES]
-        self.detector.classes = sorted(set(base) | set(ids))
+        # Objects people carry (for the "Carrying" activity label), from the same detector pass.
+        carry = [cid for cid, name in Detector.COCO_NAMES.items() if name in CARRY_CLASSES]
+        self.detector.classes = sorted(set(base) | set(ids) | set(carry))
 
     def _scene(self, poses, features, detections, timestamp) -> SceneState:
         engine = self.anomaly_engine
@@ -403,17 +417,37 @@ class SentinelPipeline:
         1: (80, 200, 80), 2: (80, 200, 80), 3: (0, 215, 255), 4: (0, 140, 255), 5: (0, 0, 230),
     }  # BGR: negligible/low green, medium yellow, high orange, very high red
 
-    def _draw_ergo_badges(self, frame: np.ndarray, detections, ergonomics: dict) -> None:
-        """A REBA badge above each scored person; grey when the view can't be trusted."""
+    def _activity(self, poses, detections, timestamp: float) -> dict:
+        """Live activity per tracked person, and the scene view check."""
+        fd = self.anomaly_engine.fall_detector
+        objects = [(d.class_name, tuple(float(v) for v in d.bbox)) for d in detections.detections
+                   if d.class_name in CARRY_CLASSES]
+        self.view_check.update({tid: p.keypoints for tid, p in poses.items()}, timestamp)
+        self.activity.prune(poses.keys())
+        return {tid: self.activity.update(tid, p.keypoints, timestamp, float(p.body_height),
+                                          fallen=fd.state_of(tid) == fd.CONFIRMED, objects=objects)
+                for tid, p in poses.items()}
+
+    @staticmethod
+    def person_tag(act: dict | None, info: dict | None) -> str:
+        """e.g. "Bending · REBA 9 HIGH · back" (REBA only when it can be trusted)."""
+        parts = [act["label"]] if act else []
+        if info and info.get("score") is not None and info.get("reliable"):
+            parts.append(f"REBA {info['score']} {info['level_name'].replace('_', ' ').upper()}")
+            if info.get("dominant"):
+                parts.append(info["dominant"].replace("_", " "))
+        return " · ".join(parts)
+
+    def _draw_person_tags(self, frame: np.ndarray, detections, ergonomics: dict, activity: dict) -> None:
+        """A tag above each person: what they're doing, plus REBA when it can be trusted."""
         for det in detections.detections:
-            info = ergonomics.get(det.track_id)
-            if not info or info.get("score") is None:
+            info, act = ergonomics.get(det.track_id), activity.get(det.track_id)
+            text = self.person_tag(act, info)
+            if not text:
                 continue
             x1, y1 = int(det.bbox[0]), int(det.bbox[1])
-            color = self.ERGO_COLORS.get(info["level"], (160, 160, 160)) if info["reliable"] else (130, 130, 130)
-            text = f"REBA {info['score']} {info['level_name'].replace('_', ' ').upper()}"
-            if not info["reliable"]:
-                text += " ?"
+            reliable = bool(info and info.get("reliable") and info.get("level"))
+            color = self.ERGO_COLORS.get(info["level"], (160, 160, 160)) if reliable else (200, 200, 200)
             (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             top = max(0, y1 - 24 - h)
             cv2.rectangle(frame, (x1, top), (x1 + w + 8, top + h + 8), color, -1)
