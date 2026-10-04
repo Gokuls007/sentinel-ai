@@ -151,7 +151,9 @@ class RulesConfig:
     compile_rate_limit_per_min: int = 10
 
 
-DEFAULT_OBJECT_CLASSES = ["cardboard box", "chair", "ladder", "backpack", "hard hat", "safety vest", "forklift"]
+# "couch" is its own class so a sofa competes for its box instead of reading as a chair.
+DEFAULT_OBJECT_CLASSES = ["cardboard box", "chair", "couch", "ladder", "backpack", "hard hat", "safety vest",
+                          "forklift"]
 
 
 @dataclass
@@ -166,6 +168,7 @@ class ObjectsConfig:
     synonyms: dict[str, list[str]] = field(default_factory=lambda: {
         "chair": ["chair", "office chair", "gaming chair", "wooden chair"],
         "cardboard box": ["cardboard box", "shipping box", "carton"],
+        "couch": ["couch", "sofa"],
     })
     # Per-class confidence floors (others use ``confidence``); set from the smoke test.
     floors: dict[str, float] = field(default_factory=lambda: {"chair": 0.25, "cardboard box": 0.25})

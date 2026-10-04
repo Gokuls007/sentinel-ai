@@ -394,7 +394,7 @@ class SentinelPipeline:
     OBJECT_COLORS: ClassVar[dict[str, tuple[int, int, int]]] = {  # BGR
         "cardboard box": (60, 140, 220), "chair": (200, 160, 60), "ladder": (40, 200, 240),
         "backpack": (180, 90, 200), "hard hat": (0, 215, 255), "safety vest": (0, 240, 160),
-        "forklift": (50, 110, 255),
+        "forklift": (50, 110, 255), "couch": (150, 150, 150),
     }
     ALERT_LABEL_S = 4.0  # how long a rule's reason stays next to the person
 
@@ -436,10 +436,6 @@ class SentinelPipeline:
                 cv2.putText(frame, line, (x1 + 4, top + h + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         return set(self._alert_labels)
 
-    def zones_in_rules(self) -> set[str]:
-        """Zone ids that an enabled rule uses (built-in zone rules included when they're on)."""
-        return {c.zone for r in self.rules.rules for c in r.conditions if getattr(c, "zone", None)}
-
     def objects_status(self, objects) -> str:
         """One line for the feed: is open-vocabulary detection running, and what it sees."""
         det = self.object_detector
@@ -458,10 +454,8 @@ class SentinelPipeline:
         cv2.putText(frame, text, (13, 8 + h + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1)
 
     def _annotate_frame(self, frame, detections, poses, alerts, objects=(), ts: float = 0.0) -> np.ndarray:
-        # 1. Zones, only those an enabled rule uses (saved but unused zones aren't drawn)
-        used = self.zones_in_rules()
-        zones = [z for z in self.anomaly_engine.zone_overlay_data if z.get("id") in used]
-        for zone in zones:
+        # 1. Zones: every active zone (any of them can alert), none when there are none
+        for zone in self.anomaly_engine.zone_overlay_data:
             poly = np.array(zone["polygon"])
             overlay = frame.copy()
             

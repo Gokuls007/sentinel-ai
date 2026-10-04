@@ -161,14 +161,15 @@ def test_feed_status_line_says_whether_objects_run_and_what_they_see():
     assert p.objects_status([]) == "Objects: 0 detected"
 
 
-def test_saved_zones_are_drawn_only_when_an_enabled_rule_uses_them():
+def test_every_active_zone_is_drawn_and_none_without_zones():
     from core.pipeline import SentinelPipeline
-    from rules.dsl import Rule
 
     p = SentinelPipeline.__new__(SentinelPipeline)
-    rule = Rule.model_validate({"id": "r1", "name": "Dock", "severity": "high", "conditions": [
-        {"type": "in_zone", "zone": "dock"}], "duration_s": 0})
-    p.rules = SimpleNamespace(rules=[])
-    assert p.zones_in_rules() == set()
-    p.rules = SimpleNamespace(rules=[rule])
-    assert p.zones_in_rules() == {"dock"}
+    p._alert_labels = {}
+    p.object_detector = None
+    zone = {"id": "dock", "name": "Dock", "type": "restricted", "polygon": [(50, 50), (300, 50), (300, 300), (50, 300)]}
+    detections = SimpleNamespace(detections=[])
+    for zones, drawn in (([zone], True), ([], False)):
+        p.anomaly_engine = SimpleNamespace(zone_overlay_data=zones)
+        frame = p._annotate_frame(np.zeros((480, 640, 3), np.uint8), detections, {}, [])
+        assert bool(frame[100:250, 100:250].any()) is drawn  # the zone's fill

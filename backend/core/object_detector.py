@@ -36,6 +36,7 @@ logger = logging.getLogger("sentinel.objects")
 DEFAULT_SYNONYMS = {
     "chair": ["chair", "office chair", "gaming chair", "wooden chair"],
     "cardboard box": ["cardboard box", "shipping box", "carton"],
+    "couch": ["couch", "sofa"],
 }
 
 
