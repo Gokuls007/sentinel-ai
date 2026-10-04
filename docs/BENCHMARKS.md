@@ -348,7 +348,7 @@ Rules that need objects (phone, laptop, book) add those classes to the detector'
 ## Activity labels (CAUCAFall subjects 1-5, tuning set)
 
 <!-- benchmark:activity-1-5:start -->
-_Measured 2026-10-03 with `python scripts/eval_activity.py --subjects 1-5`._ CAUCAFall subjects 1-5 (the tuning set), 50 clips. The rules were tuned **only on subjects 1-5**; subjects 6-10 are held out (they are also the fall test set). A clip passes when its expected label shows for at least 1 s (main person, smoothed labels).
+_Measured 2026-10-03 with `python scripts/eval_activity.py --subjects 1-5`._ CAUCAFall subjects 1-5 (the tuning set), 50 clips. The rules were tuned **only on subjects 1-5** (plus one own lift-and-carry recording, below); subjects 6-10 are held out (they are also the fall test set). A clip passes when its expected label shows for at least 1 s (main person, smoothed labels).
 
 | Clip type | Expected | Passed |
 |---|---|---|
@@ -359,9 +359,11 @@ _Measured 2026-10-03 with `python scripts/eval_activity.py --subjects 1-5`._ CAU
 | Sit down | Sitting | 4 / 5 |
 | Walk | Walking | 5 / 5 |
 
-False "Lifting" (shown for 1 s or more in Walk, Sit down, Hop or Kneel clips): 1 / 20 clips.
+False "Lifting" (shown for 1 s or more in Walk, Sit down, Hop or Kneel clips): 0 / 20 clips.
 
-Failures: `Subject.1/Fall forward` (no Fallen or Lying down); `Subject.1/Fall left` (no Fallen or Lying down); `Subject.1/Fall right` (no Fallen or Lying down); `Subject.1/Fall sitting` (no Fallen or Lying down); `Subject.1/Pick up object` (no Bending, no Lifting); `Subject.2/Pick up object` (no Bending, no Lifting); `Subject.3/Fall backwards` (no Fallen or Lying down); `Subject.3/Fall forward` (no Fallen or Lying down); `Subject.3/Fall left` (no Fallen or Lying down); `Subject.3/Fall sitting` (no Fallen or Lying down); `Subject.3/Pick up object` (no Bending, no Lifting); `Subject.4/Fall sitting` (no Fallen or Lying down); `Subject.4/Pick up object` (no Bending, no Lifting); `Subject.5/Fall forward` (no Fallen or Lying down); `Subject.5/Pick up object` (no Lifting); `Subject.5/Sit down` (no Sitting)
+False "Carrying" (shown for 1 s or more; nobody carries anything in these clips): 1 / 50 clips.
+
+Failures: `Subject.1/Fall forward` (no Fallen or Lying down); `Subject.1/Fall left` (no Fallen or Lying down); `Subject.1/Fall right` (no Fallen or Lying down); `Subject.1/Fall sitting` (no Fallen or Lying down); `Subject.1/Pick up object` (no Bending, no Lifting); `Subject.2/Pick up object` (no Bending, no Lifting); `Subject.3/Fall backwards` (no Fallen or Lying down); `Subject.3/Fall forward` (no Fallen or Lying down); `Subject.3/Fall left` (no Fallen or Lying down); `Subject.3/Fall sitting` (no Fallen or Lying down); `Subject.3/Pick up object` (no Bending, no Lifting); `Subject.4/Fall sitting` (no Fallen or Lying down); `Subject.4/Pick up object` (no Lifting); `Subject.5/Fall forward` (no Fallen or Lying down); `Subject.5/Pick up object` (no Lifting); `Subject.5/Sit down` (no Sitting)
 
 Front-on room-scale clips, not warehouse footage: this checks the rules end to end, not field accuracy.
 <!-- benchmark:activity-1-5:end -->
@@ -369,7 +371,7 @@ Front-on room-scale clips, not warehouse footage: this checks the rules end to e
 ## Activity labels (CAUCAFall subjects 6-10, held out)
 
 <!-- benchmark:activity-6-10:start -->
-_Measured 2026-10-03 with `python scripts/eval_activity.py --subjects 6-10`._ CAUCAFall subjects 6-10 (held out: never used for tuning), 50 clips. The rules were tuned **only on subjects 1-5**; subjects 6-10 are held out (they are also the fall test set). A clip passes when its expected label shows for at least 1 s (main person, smoothed labels).
+_Measured 2026-10-03 with `python scripts/eval_activity.py --subjects 6-10`._ CAUCAFall subjects 6-10 (held out: never used for tuning), 50 clips. The rules were tuned **only on subjects 1-5** (plus one own lift-and-carry recording, below); subjects 6-10 are held out (they are also the fall test set). A clip passes when its expected label shows for at least 1 s (main person, smoothed labels).
 
 | Clip type | Expected | Passed |
 |---|---|---|
@@ -378,11 +380,33 @@ _Measured 2026-10-03 with `python scripts/eval_activity.py --subjects 6-10`._ CA
 | Kneel | no false Fallen | 5 / 5 |
 | Pick up object | Bending, then Lifting | 0 / 5 |
 | Sit down | Sitting | 4 / 5 |
-| Walk | Walking | 4 / 5 |
+| Walk | Walking | 5 / 5 |
 
 False "Lifting" (shown for 1 s or more in Walk, Sit down, Hop or Kneel clips): 0 / 20 clips.
 
-Failures: `Subject.10/Pick up object` (no Bending, no Lifting); `Subject.10/Walk` (no Walking); `Subject.6/Fall backwards` (no Fallen or Lying down); `Subject.6/Fall left` (no Fallen or Lying down); `Subject.6/Fall right` (no Fallen or Lying down); `Subject.6/Fall sitting` (no Fallen or Lying down); `Subject.6/Pick up object` (no Lifting); `Subject.6/Sit down` (no Sitting); `Subject.7/Fall forward` (no Fallen or Lying down); `Subject.7/Pick up object` (no Lifting); `Subject.8/Fall backwards` (no Fallen or Lying down); `Subject.8/Fall forward` (no Fallen or Lying down); `Subject.8/Fall right` (no Fallen or Lying down); `Subject.8/Pick up object` (no Lifting); `Subject.9/Pick up object` (no Lifting)
+False "Carrying" (shown for 1 s or more; nobody carries anything in these clips): 0 / 50 clips.
+
+Failures: `Subject.10/Pick up object` (no Bending, no Lifting); `Subject.6/Fall backwards` (no Fallen or Lying down); `Subject.6/Fall left` (no Fallen or Lying down); `Subject.6/Fall right` (no Fallen or Lying down); `Subject.6/Fall sitting` (no Fallen or Lying down); `Subject.6/Pick up object` (no Lifting); `Subject.6/Sit down` (no Sitting); `Subject.7/Fall forward` (no Fallen or Lying down); `Subject.7/Pick up object` (no Lifting); `Subject.8/Fall backwards` (no Fallen or Lying down); `Subject.8/Fall forward` (no Fallen or Lying down); `Subject.8/Fall right` (no Fallen or Lying down); `Subject.8/Pick up object` (no Lifting); `Subject.9/Pick up object` (no Lifting)
 
 Front-on room-scale clips, not warehouse footage: this checks the rules end to end, not field accuracy.
 <!-- benchmark:activity-6-10:end -->
+
+## Activity labels (own lift-and-carry recording)
+
+<!-- benchmark:activity-own-laptop_20261003_215620:start -->
+_Measured 2026-10-03 with `python scripts/eval_activity_own.py data/recordings/laptop_20261003_215620.mp4`._ One hand-labelled webcam recording (not committed), side/oblique view; it was used for tuning together with CAUCAFall subjects 1-5, so these are training-set numbers, not an accuracy estimate.
+
+| Action | Time (s) | Expected | Result | Labels shown (frames) |
+|---|---|---|---|---|
+| walk | 8.5-9.3 | Walking | pass | Walking 15, Bending 8 |
+| bend to pick up | 9.4-10.9 | Bending | pass | Bending 23, Lifting 9, Walking 2 |
+| lift | 10.9-11.8 | Lifting | pass | Lifting 22, Bending 2 |
+| carry | 11.8-22.2 | Carrying | pass | Carrying 155, Lifting 12 |
+| put down | 22.3-23.7 | (reported only) | pass | Carrying 32 |
+| walk back | 24.0-26.0 | Walking | pass | Walking 15, Standing 14, Carrying 11, Upper body only 1 |
+<!-- benchmark:activity-own-laptop_20261003_215620:end -->
+
+Not covered yet: the clip has no reach overhead, squat, or bend without lifting, so those are
+untested on real footage (the bend-without-lift case is covered by unit tests only). "Put down"
+has no label of its own: Carrying ends about 1 s after both arms drop (0.5 s hang plus
+smoothing). The view is side/oblique and partly front-on, with a soft bag rather than a box.

@@ -39,6 +39,8 @@ def person(x=300.0, top=100.0, trunk_deg=0.0, sitting=False, wrists="side", conf
         w = o(head, 0, -60)
     elif wrists == "low":  # down at the feet
         w = o(hip, np.sin(a) * 150, 120)
+    elif wrists == "held":  # holding something in front, at chest height
+        w = o(sh, 25, 35)
     else:
         w = None
     if w is not None:
@@ -46,11 +48,18 @@ def person(x=300.0, top=100.0, trunk_deg=0.0, sitting=False, wrists="side", conf
     return k
 
 
-def run(tracker, make, t, seconds, fps=10, tid=1, **kw):
+def scaled(k, s, x=300.0, y=400.0):
+    """The same pose s times as big around (x, y): walking toward (s > 1) or away (s < 1)."""
+    k = k.copy()
+    k[:, :2] = (k[:, :2] - (x, y)) * s + (x, y)
+    return k
+
+
+def run(tracker, make, t, seconds, fps=10, tid=1, body_height=BH, **kw):
     out = None
     for _ in range(round(seconds * fps)):
         t += 1 / fps
-        out = tracker.update(tid, make(t), t, BH, **kw)
+        out = tracker.update(tid, make(t), t, body_height, **kw)
     return t, out
 
 
@@ -64,25 +73,65 @@ def test_standing_walking_sitting():
     assert out["label"] == SITTING
 
 
-def test_bending_then_lifting():
+def test_lift_then_carry_then_put_down():
+    from activity.rules import CARRYING
+
     a = ActivityTracker()
     t, _ = run(a, lambda _t: person(), 0.0, 2)
     t, out = run(a, lambda _t: person(trunk_deg=70, wrists="low"), t, 1.5)
     assert out["label"] == BENDING
-    t, out = run(a, lambda _t: person(), t, 0.5)
+    t, out = run(a, lambda _t: person(wrists="held"), t, 0.5)
     assert out["label"] == LIFTING
-    t, out = run(a, lambda _t: person(), t, 3)
+    t, out = run(a, lambda _t: person(wrists="held"), t, 3)  # standing still, holding it
+    assert out["label"] == CARRYING
+    t, out = run(a, lambda _t: person(trunk_deg=60, wrists="low"), t, 1)  # bends to put it down
+    assert out["label"] == BENDING
+    t, out = run(a, lambda _t: person(), t, 2)
     assert out["label"] == STANDING
     labels = [h["label"] for h in out["history"]]
-    assert labels[-3:] == [BENDING, LIFTING, STANDING]
+    assert labels[-5:] == [BENDING, LIFTING, CARRYING, BENDING, STANDING]
 
 
-def test_a_bend_without_hands_low_is_not_a_lift():
+def test_carrying_ends_when_both_arms_hang():
+    from activity.rules import CARRYING
+
     a = ActivityTracker()
     t, _ = run(a, lambda _t: person(), 0.0, 2)
-    t, out = run(a, lambda _t: person(trunk_deg=60, wrists="side"), t, 1.5)
+    t, _ = run(a, lambda _t: person(trunk_deg=70, wrists="low"), t, 1.5)
+    t, out = run(a, lambda _t: person(wrists="held"), t, 2)
+    assert out["label"] == CARRYING
+    t, out = run(a, lambda _t: person(), t, 2)  # dropped it: arms by the sides
+    assert out["label"] == STANDING
+
+
+def test_a_bend_without_lifting_anything_is_not_a_lift():
+    a = ActivityTracker()
+    t, _ = run(a, lambda _t: person(), 0.0, 2)
+    t, out = run(a, lambda _t: person(trunk_deg=60, wrists="side"), t, 1.5)  # hands not low
     t, out = run(a, lambda _t: person(), t, 1)
     assert out["label"] == STANDING and LIFTING not in [h["label"] for h in out["history"]]
+    t, out = run(a, lambda _t: person(trunk_deg=70, wrists="low"), t, 1.5)  # hands low, then arms hang
+    t, out = run(a, lambda _t: person(), t, 2)
+    labels = [h["label"] for h in out["history"]]
+    assert out["label"] == STANDING and LIFTING not in labels and "Carrying" not in labels
+
+
+def test_walking_away_from_the_camera_is_not_bending():
+    a = ActivityTracker()
+    t, _ = run(a, lambda _t: person(), 0.0, 2)
+    # Shrinks to 55% over 2 s (walking straight away), the hips barely move sideways.
+    t0 = t
+    t, out = run(a, lambda tt: scaled(person(), 1 - 0.225 * (tt - t0)), t, 2)
+    labels = {h["label"] for h in out["history"]}
+    assert BENDING not in labels and out["label"] == WALKING
+
+
+def test_no_ankles_uses_the_box_for_body_height():
+    a = ActivityTracker()
+    box = (270, 70, 330, 400)  # 330 px tall
+    # 50 px/s sideways is 0.15 body heights per second: standing (swaying), not walking.
+    _, out = run(a, lambda tt: person(x=300 + 50 * tt), 0.0, 2, body_height=0.0, box=box)
+    assert out["label"] == STANDING
 
 
 def test_reaching_lying_fallen_and_upper_body_only():

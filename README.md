@@ -90,10 +90,14 @@ body visible. Fall detection and ergonomics need a full-body view: place the cam
 ideally side-on."* When REBA can't be scored, the panel says why (shoulders, hips or legs not
 visible; too small or far away; facing the camera; keypoints unclear).
 
-The rules were tuned **only on CAUCAFall subjects 1–5**; subjects 6–10 stay held out (results
-in [docs/BENCHMARKS.md](docs/BENCHMARKS.md)). Lifting is **not yet validated**: the CAUCAFall
-pick-up clips are quick front-on squats, and the rules were tightened to keep false lifts down
-(1 / 20 clips), at the cost of catching none of those pick-ups.
+The rules were tuned **only on CAUCAFall subjects 1–5** and one hand-labelled webcam recording
+of a lift and carry; subjects 6–10 stay held out (results in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md)). A lift is a bend with the hands low followed by
+rising **with the hands up in front**; Carrying then lasts while the hands stay up, so a bend
+without picking anything up (arms hang afterwards) isn't a lift. Lifting and Carrying are
+validated on that one recording only (every action caught), with no false lifts and 1 false
+carry in 50 CAUCAFall clips; the CAUCAFall pick-ups (a quick squat for a small object, front-on)
+are still missed.
 
 ### Test with demo footage
 The Camera page has a **Test with demo footage** panel. It plays a clip on loop as a separate
