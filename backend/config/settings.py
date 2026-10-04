@@ -171,9 +171,11 @@ DEFAULT_HAZARD_CLASSES = ["tv", "knife", "scissors", "oven", "laptop"]
 
 @dataclass
 class ObjectsConfig:
-    """Open-vocabulary objects (YOLO-World) in Warehouse mode, next to the person tracker and pose."""
+    """Objects in Warehouse mode, next to the person tracker and pose: COCO classes from a
+    COCO-trained detector, the rest (pillow, cardboard box...) from YOLO-World."""
     enabled: bool = True
-    model_path: str = "yolov8s-worldv2.pt"
+    model_path: str = "yolov8s-worldv2.pt"  # YOLO-World, for the classes COCO doesn't have
+    coco_model_path: str = "yolo11m.pt"     # the 80 COCO classes (better on small handheld things)
     classes: list[str] = field(default_factory=lambda: list(DEFAULT_OBJECT_CLASSES))
     confidence: float = 0.3  # open-vocabulary scores run low; below ~0.3 a soft bag can read as a box
     every_n_frames: int = 1  # run on every Nth frame (the last result is reused in between)
@@ -269,6 +271,7 @@ class SentinelConfig:
         cfg.detector.iou_threshold = env("IOU_THRESHOLD", float, cfg.detector.iou_threshold)
         cfg.objects.enabled = env("OBJECTS_ENABLED", bool, cfg.objects.enabled)
         cfg.objects.model_path = env("OBJECT_MODEL", str, cfg.objects.model_path)
+        cfg.objects.coco_model_path = env("OBJECT_COCO_MODEL", str, cfg.objects.coco_model_path)
         cfg.objects.confidence = env("OBJECT_CONFIDENCE", float, cfg.objects.confidence)
         cfg.objects.every_n_frames = max(1, env("OBJECT_EVERY_N_FRAMES", int, cfg.objects.every_n_frames))
         raw_syn = env("OBJECT_SYNONYMS", str, "")  # JSON, e.g. {"chair": ["chair", "stool"]}

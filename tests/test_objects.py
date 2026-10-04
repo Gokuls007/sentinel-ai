@@ -173,3 +173,63 @@ def test_every_active_zone_is_drawn_and_none_without_zones():
         p.anomaly_engine = SimpleNamespace(zone_overlay_data=zones)
         frame = p._annotate_frame(np.zeros((480, 640, 3), np.uint8), detections, {}, [])
         assert bool(frame[100:250, 100:250].any()) is drawn  # the zone's fill
+
+
+class FakeCoco:
+    """Stands in for ultralytics.YOLO (a COCO model): a mouse, and a chair overlapping YOLO-World's."""
+
+    def __init__(self, path):
+        self.names = {0: "person", 56: "chair", 64: "mouse", 67: "cell phone"}
+
+    def predict(self, frame, **kw):
+        FakeCoco.kwargs = kw
+        boxes = SimpleNamespace(cls=torch.tensor([64.0, 56.0]), conf=torch.tensor([0.7, 0.5]),
+                                xyxy=torch.tensor([[400.0, 400.0, 430.0, 420.0], [12.0, 22.0, 108.0, 218.0]]))
+        return [SimpleNamespace(boxes=boxes)]
+
+
+@pytest.fixture
+def hybrid(monkeypatch, tmp_path):
+    from config.settings import COCO_OBJECTS
+    from core.object_detector import ObjectDetector
+
+    FakeWorld.encodings = 0
+    monkeypatch.setitem(sys.modules, "ultralytics", types.SimpleNamespace(YOLOWorld=FakeWorld, YOLO=FakeCoco))
+    world, coco = tmp_path / "world.pt", tmp_path / "coco.pt"
+    world.write_bytes(b"x")
+    coco.write_bytes(b"x")
+
+    def make(classes, coco_path=str(coco)):
+        return ObjectDetector(classes, str(world), coco_path, COCO_OBJECTS, cache_dir=str(tmp_path / "cache"),
+                              floors={"chair": 0.25, "cardboard box": 0.25}, min_hits=1)
+    return make
+
+
+def test_coco_classes_go_to_the_coco_model_and_extras_to_yolo_world(hybrid):
+    d = hybrid(["mouse", "cell phone", "chair", "pillow", "cardboard box"])
+    assert d.coco.classes == ["mouse", "cell phone", "chair"] and d.world.classes == ["pillow", "cardboard box"]
+    assert "chair" not in d.world.prompts and "pillow" in d.world.prompts
+
+
+def test_both_models_merge_and_the_more_confident_label_wins(hybrid, monkeypatch):
+    def world_box(self, frame, **kw):  # YOLO-World: "cardboard box" (prompt 0) on the chair's box, 0.8
+        boxes = SimpleNamespace(cls=torch.tensor([0.0]), conf=torch.tensor([0.8]),
+                                xyxy=torch.tensor([[10.0, 20.0, 110.0, 220.0]]))
+        return [SimpleNamespace(boxes=boxes)]
+
+    monkeypatch.setattr(FakeWorld, "predict", world_box)
+    d = hybrid(["mouse", "chair", "cardboard box"])
+    found = d.detect(np.zeros((480, 640, 3), np.uint8))
+    assert sorted(FakeCoco.kwargs["classes"]) == [56, 64]  # only the wanted COCO classes, never person
+    # Same object from both (IoU > 0.5): YOLO-World's box 0.8 beats YOLO11m's chair 0.5.
+    assert sorted((o.class_name, round(o.confidence, 1)) for o in found) == [("cardboard box", 0.8), ("mouse", 0.7)]
+
+
+def test_one_model_missing_leaves_the_other_running(hybrid, tmp_path):
+    from core.pipeline import SentinelPipeline
+
+    d = hybrid(["mouse", "pillow"], coco_path=str(tmp_path / "nope.pt"))
+    assert d.available and d.error is None and "nope.pt off" in d.errors[0]
+    p = SentinelPipeline.__new__(SentinelPipeline)
+    p.object_detector = d
+    assert p.objects_status([]).startswith("Objects: 0 detected · nope.pt off")

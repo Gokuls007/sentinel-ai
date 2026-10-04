@@ -1,4 +1,4 @@
-"""Smoke test for YOLO-World on your own clips: is each class detected consistently?
+"""Smoke test for the object detectors (YOLO11m + YOLO-World) on your own clips: is each class detected consistently?
 
     python scripts/smoke_yolo_world.py data/recordings/*.mp4
     python scripts/smoke_yolo_world.py clip.mp4 --classes "cardboard box,chair" --every 2
@@ -26,12 +26,13 @@ sys.path.append(os.path.join(ROOT, "backend"))
 
 
 def main() -> int:
-    from config.settings import DEFAULT_OBJECT_CLASSES, ObjectsConfig
+    from config.settings import COCO_OBJECTS, DEFAULT_OBJECT_CLASSES, ObjectsConfig
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("clips", nargs="+")
     ap.add_argument("--classes", default=",".join(DEFAULT_OBJECT_CLASSES))
     ap.add_argument("--model", default=os.path.join(ROOT, "yolov8s-worldv2.pt"))
+    ap.add_argument("--coco-model", default=os.path.join(ROOT, "yolo11m.pt"))
     ap.add_argument("--every", type=int, default=1, help="use every Nth frame")
     ap.add_argument("--floor", type=float, default=None, help="one floor for every class (default: the config's)")
     args = ap.parse_args()
@@ -40,18 +41,21 @@ def main() -> int:
 
     import cv2
 
-    from core.object_detector import OpenVocabDetector
+    from core.object_detector import ObjectDetector
 
     cfg = ObjectsConfig()
     classes = [c.strip() for c in args.classes.split(",") if c.strip()]
     floors = {c: args.floor for c in classes} if args.floor is not None else cfg.floors
     for clip in args.clips:
-        det = OpenVocabDetector(args.model, classes, confidence=args.floor or cfg.confidence,
-                                cache_dir=os.path.join(ROOT, cfg.cache_dir), synonyms=cfg.synonyms, floors=floors,
-                                vote_window=cfg.vote_window, min_hits=cfg.min_hits)
+        det = ObjectDetector(classes, args.model, args.coco_model, COCO_OBJECTS,
+                             confidence=args.floor or cfg.confidence,
+                             cache_dir=os.path.join(ROOT, cfg.cache_dir), synonyms=cfg.synonyms, floors=floors,
+                             vote_window=cfg.vote_window, min_hits=cfg.min_hits)
         if not det.available:
             print(det.error)
             return 1
+        for e in det.errors:
+            print("warning:", e)
         cap = cv2.VideoCapture(clip)
         raw = {c: [] for c in classes}
         steady = {c: [] for c in classes}

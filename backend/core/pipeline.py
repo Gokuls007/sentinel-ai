@@ -13,8 +13,8 @@ from activity import CARRY_CLASSES, ActivityTracker, ViewCheck
 from activity.object_rules import ObjectRules
 from anomaly.engine import AnomalyAlert, AnomalyEngine
 from anomaly.fall_recovery import recover_pose
-from config.settings import SentinelConfig
-from core.object_detector import OpenVocabDetector
+from config.settings import COCO_OBJECTS, SentinelConfig
+from core.object_detector import ObjectDetector
 from events import Event, EventBus, EventStore
 from exam import ExamMonitor
 from notifications import NotificationDispatcher, build_notifiers
@@ -139,10 +139,11 @@ class SentinelPipeline:
         )
         self.skeleton_recorder = SkeletonRecorder(config.output.clips_dir)
         o = config.objects
-        self.object_detector = (OpenVocabDetector(o.model_path, o.classes, confidence=o.confidence, imgsz=o.imgsz,
-                                                  device=config.detector.device, cache_dir=o.cache_dir,
-                                                  every_n_frames=o.every_n_frames, synonyms=o.synonyms,
-                                                  floors=o.floors, vote_window=o.vote_window, min_hits=o.min_hits)
+        self.object_detector = (ObjectDetector(o.classes, o.model_path, o.coco_model_path, COCO_OBJECTS,
+                                               confidence=o.confidence, imgsz=o.imgsz, device=config.detector.device,
+                                               cache_dir=o.cache_dir, every_n_frames=o.every_n_frames,
+                                               synonyms=o.synonyms, floors=o.floors, vote_window=o.vote_window,
+                                               min_hits=o.min_hits)
                                 if o.enabled else None)
         self._alert_labels: dict = {}  # track id -> (reason text, show until), drawn next to the person
         self.object_rules = ObjectRules(hazard_classes=o.hazards)  # unsafe lift, on a chair, hand on a hazard
@@ -446,10 +447,11 @@ class SentinelPipeline:
             return "Objects: off (OBJECTS_ENABLED=false)"
         if det.error:
             return f"Objects off: {det.error.removeprefix('objects off: ')}"
+        partial = " · " + "; ".join(getattr(det, "errors", [])) if getattr(det, "errors", None) else ""
         if not objects:
-            return "Objects: 0 detected"
+            return "Objects: 0 detected" + partial
         names = sorted({o.class_name for o in objects})
-        return f"Objects: {len(objects)} detected ({', '.join(names)})"
+        return f"Objects: {len(objects)} detected ({', '.join(names)})" + partial
 
     def _draw_status(self, frame, text: str) -> None:
         (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)

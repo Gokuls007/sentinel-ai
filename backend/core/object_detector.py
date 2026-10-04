@@ -1,8 +1,13 @@
-"""Open-vocabulary objects (YOLO-World) for Warehouse mode.
+"""Objects for Warehouse mode: a COCO detector plus open-vocabulary extras, merged.
 
-Runs next to the YOLOv8 person tracker and the pose model; it adds objects only (people keep
-their stable track ids from ByteTrack). Three things make its output steady enough to build
-rules on:
+Detection is split by class: the 80 COCO classes come from a COCO-trained detector (YOLO11m,
+much better on small handheld things: a mouse no longer reads as a cell phone), and only the
+classes COCO doesn't have (pillow, cardboard box, ladder, hard hat, safety vest, forklift) come
+from YOLO-World. Both feed one tracker with class voting; where both find the same object
+(IoU > 0.5), the higher-confidence label wins. People keep their own tracker (YOLOv8 +
+ByteTrack) and are never part of this.
+
+Three things make the open-vocabulary output steady enough to build rules on:
 
 1. **Several prompts per class.** YOLO-World is sensitive to wording, so each canonical class
    has synonyms (``chair`` <- "chair", "office chair", "gaming chair", "wooden chair"). All
@@ -116,6 +121,80 @@ class ObjectTracker:
         return out
 
 
+def merge(dets: list[ObjectDetection], min_iou: float = 0.5) -> list[ObjectDetection]:
+    """One detection per object across sources: where boxes overlap (IoU > ``min_iou``), keep
+    the higher-confidence one."""
+    kept: list[ObjectDetection] = []
+    for d in sorted(dets, key=lambda d: -d.confidence):
+        if all(iou(d.bbox, k.bbox) <= min_iou for k in kept):
+            kept.append(d)
+    return kept
+
+
+class CocoDetector:
+    """The COCO classes from a COCO-trained ultralytics model (YOLO11m by default)."""
+
+    def __init__(self, model_path: str, classes: list[str], confidence: float = 0.3, imgsz: int = 640,
+                 device: str = "auto", floors: dict[str, float] | None = None):
+        self.model_path = model_path
+        self.classes = list(classes)
+        self.confidence = confidence
+        self.imgsz = imgsz
+        self.device = None if device == "auto" else device
+        self.floors = dict(floors or {})
+        self.error: str | None = None
+        self._model = None
+        self._ids: list[int] = []
+
+    def floor(self, class_name: str) -> float:
+        return self.floors.get(class_name, self.confidence)
+
+    def _load(self):
+        if self._model is not None or self.error:
+            return self._model
+        try:
+            from ultralytics import YOLO
+
+            if not os.path.isfile(self.model_path):
+                raise FileNotFoundError(f"{self.model_path} not found")
+            self._model = YOLO(self.model_path)
+            self._set_ids()
+            logger.info("COCO objects ready (%s): %d classes", os.path.basename(self.model_path), len(self._ids))
+        except Exception as e:
+            self.error = f"{os.path.basename(self.model_path)} off: {e}"
+            logger.warning("COCO object detector unavailable (%s)", e)
+        return self._model
+
+    def _set_ids(self) -> None:
+        names = self._model.names if self._model is not None else {}
+        wanted = set(self.classes)
+        self._ids = [i for i, n in names.items() if n in wanted]
+
+    def set_classes(self, classes: list[str]) -> None:
+        self.classes = list(classes)
+        self._set_ids()
+
+    @property
+    def available(self) -> bool:
+        return self._load() is not None
+
+    def raw(self, frame: np.ndarray) -> list[ObjectDetection]:
+        model = self._load()
+        if model is None or not self._ids:
+            return []
+        lowest = min([self.confidence, *(self.floor(c) for c in self.classes)])
+        res = model.predict(frame, conf=lowest, classes=self._ids, imgsz=self.imgsz, device=self.device,
+                            agnostic_nms=True, verbose=False)[0]
+        names = model.names
+        out = []
+        boxes = res.boxes
+        for cls, conf, box in zip(boxes.cls.tolist(), boxes.conf.tolist(), boxes.xyxy.tolist(), strict=True):
+            name = names.get(int(cls))
+            if name and conf >= self.floor(name):
+                out.append(ObjectDetection(name, float(conf), tuple(float(v) for v in box), prompt=name))
+        return out
+
+
 class OpenVocabDetector:
     def __init__(self, model_path: str, classes: list[str], confidence: float = 0.3, imgsz: int = 640,
                  device: str = "auto", cache_dir: str = "data/cache", every_n_frames: int = 1,
@@ -210,6 +289,13 @@ class OpenVocabDetector:
         self._frame += 1
         if (self._frame - 1) % self.every_n_frames:
             return self.last
+        raw = self.raw(frame)
+        self.last_raw = raw
+        self.last = self.tracker.update(raw)
+        return self.last
+
+    def raw(self, frame: np.ndarray) -> list[ObjectDetection]:
+        """This frame's detections (best prompt per object, floors applied), before voting."""
         model = self._load()
         if model is None or not self.classes:
             return []
@@ -225,6 +311,74 @@ class OpenVocabDetector:
             i = int(cls)
             if 0 <= i < len(canonical) and conf >= self.floor(canonical[i]):
                 raw.append(ObjectDetection(canonical[i], float(conf), tuple(float(v) for v in box), prompt=prompts[i]))
-        self.last_raw = raw
-        self.last = self.tracker.update(raw)
+        return raw
+
+
+class ObjectDetector:
+    """COCO classes from ``coco_model_path``, the rest from YOLO-World, one tracker for both."""
+
+    def __init__(self, classes: list[str], world_model_path: str, coco_model_path: str,
+                 coco_names: set[str] | list[str], confidence: float = 0.3, imgsz: int = 640, device: str = "auto",
+                 cache_dir: str = "data/cache", every_n_frames: int = 1,
+                 synonyms: dict[str, list[str]] | None = None, floors: dict[str, float] | None = None,
+                 vote_window: int = 15, min_hits: int = 3):
+        self.coco_names = set(coco_names)
+        self.every_n_frames = max(1, every_n_frames)
+        self.tracker = ObjectTracker(window=vote_window, min_hits=min_hits)
+        self.last: list[ObjectDetection] = []
+        self.last_raw: list[ObjectDetection] = []
+        self._frame = 0
+        self._lock = threading.Lock()
+        self.floors = dict(floors or {})
+        self.confidence = confidence
+        coco, extra = self._split(classes)
+        self.coco = CocoDetector(coco_model_path, coco, confidence=confidence, imgsz=imgsz, device=device,
+                                 floors=floors)
+        self.world = OpenVocabDetector(world_model_path, extra, confidence=confidence, imgsz=imgsz, device=device,
+                                       cache_dir=cache_dir, synonyms=synonyms, floors=floors)
+
+    def _split(self, classes) -> tuple[list[str], list[str]]:
+        classes = [c.strip() for c in classes if c.strip()]
+        self.classes = classes
+        return [c for c in classes if c in self.coco_names], [c for c in classes if c not in self.coco_names]
+
+    def floor(self, class_name: str) -> float:
+        return self.floors.get(class_name, self.confidence)
+
+    def set_classes(self, classes: list[str]) -> None:
+        with self._lock:
+            coco, extra = self._split(classes)
+            self.coco.set_classes(coco)
+            self.world.set_classes(extra)
+            self.last, self.last_raw = [], []
+            self.tracker = ObjectTracker(window=self.tracker.window, min_hits=self.tracker.min_hits)
+
+    def _sources(self):
+        return [s for s in (self.coco, self.world) if s.classes]
+
+    @property
+    def errors(self) -> list[str]:
+        return [s.error for s in self._sources() if s.error]
+
+    @property
+    def error(self) -> str | None:
+        """Set only when no source is running at all."""
+        srcs = self._sources()
+        if srcs and all(not s.available for s in srcs):
+            return "; ".join(self.errors)
+        return None
+
+    @property
+    def available(self) -> bool:
+        return any(s.available for s in self._sources())
+
+    def detect(self, frame: np.ndarray) -> list[ObjectDetection]:
+        self._frame += 1
+        if (self._frame - 1) % self.every_n_frames:
+            return self.last
+        with self._lock:
+            raw = [d for s in self._sources() for d in s.raw(frame)]
+            merged = merge(raw)
+            self.last_raw = merged
+            self.last = self.tracker.update(merged)
         return self.last
