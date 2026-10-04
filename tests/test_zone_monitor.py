@@ -30,11 +30,13 @@ def run(monitor, positions, t0=0.0, dt=0.1, track_id=1):
     return out, t
 
 
-def test_missing_zone_file_creates_defaults(tmp_path):
+def test_missing_zone_file_means_no_zones(tmp_path):
+    """Zones are optional: no default zones are invented (draw your own, or a demo scenario
+    brings its own file)."""
     path = tmp_path / "sub" / "zones.json"
     m = ZoneMonitor(zones_file=str(path))
-    assert path.is_file()
-    assert {z.zone_type for z in m.zones} == {"restricted", "time_limited", "one_way"}
+    assert path.is_file() and m.zones == []
+    assert m.check(1, np.array([10.0, 10.0]), 0.0) == []
 
 
 def test_from_dict_ignores_unknown_keys_and_normalises_polygon():

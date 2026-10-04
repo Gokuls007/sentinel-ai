@@ -208,6 +208,17 @@ class ZoneIn(BaseModel):
             raise HTTPException(status_code=422, detail=f"zone {self.id!r}: time_limited needs time_limit > 0")
         if self.zone_type == "one_way" and not self.direction:
             raise HTTPException(status_code=422, detail=f"zone {self.id!r}: one_way needs a direction")
+        from anomaly.geometry import fix_polygon, self_intersections
+
+        crossings = self_intersections(self.polygon)
+        if crossings:
+            fixed, method = fix_polygon(self.polygon)
+            raise HTTPException(status_code=422, detail={
+                "message": f"zone {self.name!r}: its edges cross ({len(crossings)} crossing"
+                           f"{'s' if len(crossings) > 1 else ''}), so it has no clear inside. Use the suggested fix "
+                           "or redraw it.",
+                "zone_id": self.id, "crossings": crossings, "fix": {
+                    "method": method, "polygon": [[round(x, 4), round(y, 4)] for x, y in fixed]}})
         return self
 
 

@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+from anomaly.geometry import fix_polygon, self_intersections
+
 
 @dataclass
 class Zone:
@@ -101,15 +103,10 @@ class ZoneMonitor:
 
     def _load_or_create_zones(self):
         if not os.path.exists(self.zones_file):
-            os.makedirs(os.path.dirname(self.zones_file), exist_ok=True)
-            self.zones = [
-                Zone("restricted_1", "Restricted Area",
-                     [(0.0, 0.0), (0.25, 0.0), (0.25, 1.0), (0.0, 1.0)], "restricted"),
-                Zone("dock_1", "Loading Dock",
-                     [(0.75, 0.0), (1.0, 0.0), (1.0, 1.0), (0.75, 1.0)], "time_limited", time_limit=10.0),
-                Zone("exit_1", "One-Way Exit",
-                     [(0.4, 0.8), (0.6, 0.8), (0.6, 1.0), (0.4, 1.0)], "one_way", direction="down"),
-            ]
+            # No zones by default: every warehouse feature works without them (draw your own in
+            # the zone editor; the demo scenarios bring their own zone files).
+            os.makedirs(os.path.dirname(self.zones_file) or ".", exist_ok=True)
+            self.zones = []
             self._save_zones()
         else:
             with open(self.zones_file) as f:
@@ -219,7 +216,14 @@ class ZoneMonitor:
             for px, py in zone.polygon:
                 poly.append((int(px * self.frame_width), int(py * self.frame_height)))
             
+            crossings = self_intersections(zone.polygon)
+            fix = None
+            if crossings:
+                fixed, method = fix_polygon(zone.polygon)
+                fix = {"method": method, "polygon_normalized": [[round(x, 4), round(y, 4)] for x, y in fixed]}
             overlay_zones.append({
+                "self_intersecting": bool(crossings),
+                "fix": fix,
                 "id": zone.id,
                 "name": zone.name,
                 "type": zone.zone_type,
