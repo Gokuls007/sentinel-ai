@@ -312,3 +312,21 @@ Each stage: short plan first, own branch from main, tests, CI green, then merge.
 - Session B results are reported honestly in BENCHMARKS.md.
 - The word "cheating" appears nowhere in the product (test enforced).
 - All existing tests still pass; warehouse and posture modes are unaffected.
+
+---
+
+## Status
+
+### E1 built (branch `exam-e1-sessions`)
+Sessions, the live setup check, the seat map (detect, drag/resize/add/delete/relabel, copy from
+another session), the neighbour graph, seat assignment with staff excluded, and per-seat
+calibration with late arrivals. Schema v5 adds all five exam tables in one migration (backup
+first). Small deviations, all following the repo's conventions:
+- `exam_sessions` has a `calibration_s` column (per-session calibration length, 30-600 s) and
+  `exam_unblur_log` an `actor` column for the "who" of section 1.4.
+- Seats are rectangles in the UI, stored as 4-point polygons (`polygon_json`).
+- Head pose sits behind `exam.head_pose.HeadPoseEstimator`; the default is a 2D estimate from
+  the face keypoints (`KeypointHeadPose`). A dedicated model can replace it without other changes.
+- Seats are drawn by the Exam page over the video (labels at the desk corner, never over a
+  face), not burned into the live feed; drawing into saved clips comes with E2.
+- Only one open (not ended) session per camera at a time.
