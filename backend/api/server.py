@@ -297,6 +297,7 @@ def _run_camera(camera_id: str, cfg: SentinelConfig, mode: str | None = None) ->
         p = SentinelPipeline(cfg)  # loads the models: a few seconds
         if camera_id == TEST_CAMERA:
             p.event_bus.unsubscribe("store")  # test footage never enters the event history or analytics
+            p.save_clips = False  # ... and never writes clips or snapshots
         _attach(p, primary=False)
         p.mode = mode or _load_app_settings()["mode"]
         with _cameras_lock:

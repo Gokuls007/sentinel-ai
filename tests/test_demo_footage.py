@@ -77,3 +77,30 @@ def test_test_footage_alerts_are_flagged(camera, flagged):
     p.event_bus.publish(event)
     assert server.alert_history[-1].get("test", False) is flagged
     server.alert_history.clear()
+
+
+def test_test_camera_stores_no_events_or_clips(monkeypatch, tmp_config):
+    from api import server
+    from events.bus import EventBus
+
+    made = []
+
+    class FakePipeline:
+        def __init__(self, cfg):
+            self.config, self.event_bus, self.save_clips, self.mode = cfg, EventBus(), True, None
+            self.event_bus.subscribe("store", lambda e: None)
+            made.append(self)
+
+        def on_frame(self, f):
+            return f
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(server, "SentinelPipeline", FakePipeline)
+    tmp_config.camera_id = server.TEST_CAMERA
+    server._camera_state[server.TEST_CAMERA] = {"status": "starting", "source": "clip"}
+    server._run_camera(server.TEST_CAMERA, tmp_config, "warehouse")
+    p = made[0]
+    assert p.save_clips is False and "store" not in [n for n, _cb in p.event_bus._subscribers]
+    assert p.mode == "warehouse"
