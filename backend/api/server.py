@@ -24,7 +24,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from config.settings import SentinelConfig
 from core.pipeline import FrameResult, SentinelPipeline
@@ -89,6 +89,7 @@ def start_pipeline(cfg: SentinelConfig) -> SentinelPipeline:
     pipeline = SentinelPipeline(cfg)
     _attach(pipeline, primary=True)
     _apply_app_settings(pipeline, _load_app_settings())
+    _exam_attach(pipeline)
     _start_retention()
     thread = threading.Thread(target=pipeline.run, daemon=True, name="sentinel-pipeline")
     thread.start()
@@ -297,6 +298,7 @@ def _run_camera(camera_id: str, cfg: SentinelConfig, mode: str | None = None) ->
     try:
         p = SentinelPipeline(cfg)  # loads the models: a few seconds
         p.skeleton_only = _load_app_settings()["skeleton_only"]
+        _exam_attach(p)
         if camera_id == TEST_CAMERA:
             p.event_bus.unsubscribe("store")  # test footage never enters the event history or analytics
             p.save_clips = False  # ... and never writes clips or snapshots
@@ -680,6 +682,200 @@ def _apply_app_settings(primary, settings: dict) -> None:
     if primary is not None and hasattr(primary, "paused"):
         primary.paused = not settings["demo_footage"]
     _apply_privacy(settings, pipelines)
+
+
+# --- Exam Hall (docs/plans/exam-hall.md, stage E1) -------------------------------------------
+# Sessions, seats and per-seat calibration. Seats are labels (A1, B2...): no identities.
+
+_exam_store_obj = None
+SEAT_LABEL = r"^[A-Za-z]{1,2}[0-9]{1,2}$"
+
+
+def _exam_store():
+    global _exam_store_obj
+    from exam.store import ExamStore
+
+    db = config.output.db_path if config else "data/events.db"
+    if _exam_store_obj is None or _exam_store_obj.db_path != db:
+        _exam_store_obj = ExamStore(db)
+    return _exam_store_obj
+
+
+def _pipelines_for_camera(camera_id: str) -> list:
+    return [p for p in _all_pipelines() if getattr(getattr(p, "config", None), "camera_id", None) == camera_id]
+
+
+def _exam_attach(p) -> None:
+    """Load the camera's open exam session (if any) into its pipeline's exam monitor."""
+    monitor = getattr(p, "exam", None)
+    if monitor is None or not config:
+        return
+    store = _exam_store()
+    camera_id = p.config.camera_id
+    session = store.open_session_for(camera_id)
+    if session is None:
+        monitor.load(None)
+        return
+    monitor.load(session, store.seats(session["id"]), store.baselines(session["id"]))
+    monitor.on_baseline = lambda sid, label, b: _exam_store().save_baseline(sid, label, b)
+    monitor.on_status = lambda sid, status: _exam_store().update_session(sid, status=status)
+
+
+def _exam_reload(camera_id: str) -> None:
+    for p in _pipelines_for_camera(camera_id):
+        _exam_attach(p)
+
+
+def _exam_session_or_404(session_id: int) -> dict:
+    s = _exam_store().get_session(session_id)
+    if s is None:
+        raise HTTPException(status_code=404, detail=f"no exam session {session_id}")
+    return s
+
+
+def _exam_live(session: dict) -> dict | None:
+    """The monitor's latest snapshot for this session, if its camera is running it."""
+    for p in _pipelines_for_camera(session["camera_id"]):
+        snap = p.exam.snapshot() if getattr(p, "exam", None) else None
+        if snap and snap.get("session_id") == session["id"]:
+            return snap
+    return None
+
+
+class ExamSessionIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    room: str = Field("", max_length=80)
+    camera_id: str = Field(..., pattern=r"^[A-Za-z0-9_-]{1,32}$")
+    calibration_s: float = Field(120, ge=30, le=600)
+
+
+class SeatIn(BaseModel):
+    label: str = Field(..., pattern=SEAT_LABEL)
+    rect: tuple[float, float, float, float]
+
+    @field_validator("rect")
+    @classmethod
+    def _rect(cls, r):
+        x1, y1, x2, y2 = r
+        if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1) or x2 - x1 < 0.02 or y2 - y1 < 0.02:
+            raise ValueError("rect must be x1 < x2, y1 < y2 inside 0-1, at least 0.02 across")
+        return r
+
+
+class SeatsIn(BaseModel):
+    seats: list[SeatIn] = Field(..., max_length=60)
+
+    @field_validator("seats")
+    @classmethod
+    def _unique(cls, seats):
+        labels = [s.label.upper() for s in seats]
+        if len(labels) != len(set(labels)):
+            raise ValueError("seat labels must be unique")
+        return seats
+
+
+class CopySeatsIn(BaseModel):
+    from_session_id: int
+
+
+def _exam_json(session: dict) -> dict:
+    store = _exam_store()
+    return {**session, "seats": [s.to_dict() for s in store.seats(session["id"])],
+            "baselines": {k: b.to_dict() for k, b in store.baselines(session["id"]).items()},
+            "live": _exam_live(session)}
+
+
+@app.get("/api/exam/sessions")
+def exam_sessions():
+    return {"sessions": _exam_store().list_sessions()}
+
+
+@app.post("/api/exam/sessions", status_code=201)
+def exam_create(body: ExamSessionIn, request: Request):
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "exam sessions")
+    store = _exam_store()
+    other = store.open_session_for(body.camera_id)
+    if other is not None:
+        raise HTTPException(status_code=409, detail=f"End the open session \"{other['name']}\" on this camera first.")
+    s = store.create_session(body.name, body.camera_id, room=body.room, calibration_s=body.calibration_s)
+    _exam_reload(body.camera_id)
+    return _exam_json(s)
+
+
+@app.get("/api/exam/sessions/{session_id}")
+def exam_get(session_id: int):
+    return _exam_json(_exam_session_or_404(session_id))
+
+
+@app.put("/api/exam/sessions/{session_id}/seats")
+def exam_put_seats(session_id: int, body: SeatsIn, request: Request):
+    """Replace the seats (setup only): rows, columns and neighbours are recomputed; labels kept."""
+    from exam import Seat, relabel
+
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "exam sessions")
+    s = _exam_session_or_404(session_id)
+    if s["status"] != "setup":
+        raise HTTPException(status_code=409, detail="Seats can only be changed before the exam starts.")
+    seats = relabel([Seat(label=x.label.upper(), rect=tuple(float(v) for v in x.rect)) for x in body.seats])
+    _exam_store().save_seats(session_id, seats)
+    _exam_reload(s["camera_id"])
+    return _exam_json(s)
+
+
+@app.post("/api/exam/sessions/{session_id}/detect-seats")
+def exam_detect_seats(session_id: int, request: Request):
+    """Proposed seats from people sitting still right now (not saved: edit, then PUT them)."""
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "exam sessions")
+    s = _exam_session_or_404(session_id)
+    pipes = [p for p in _pipelines_for_camera(s["camera_id"]) if getattr(p, "exam", None)]
+    if not pipes:
+        raise HTTPException(status_code=409, detail=f"Camera {s['camera_id']!r} isn't running.")
+    if getattr(pipes[0], "mode", None) != "exam":
+        raise HTTPException(status_code=409, detail="Switch the app to Exam Hall mode first.")
+    seats = pipes[0].exam.detect_seats()
+    return {"seats": [x.to_dict() for x in seats],
+            "message": None if seats else "Nobody has been sitting still for 5 s yet."}
+
+
+@app.post("/api/exam/sessions/{session_id}/copy-seats")
+def exam_copy_seats(session_id: int, body: CopySeatsIn, request: Request):
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "exam sessions")
+    s = _exam_session_or_404(session_id)
+    _exam_session_or_404(body.from_session_id)
+    if s["status"] != "setup":
+        raise HTTPException(status_code=409, detail="Seats can only be changed before the exam starts.")
+    from exam import Seat
+
+    seats = [Seat(label=x.label, rect=x.rect, row=x.row, col=x.col, neighbours=x.neighbours)
+             for x in _exam_store().seats(body.from_session_id)]
+    _exam_store().save_seats(session_id, seats)
+    _exam_reload(s["camera_id"])
+    return _exam_json(s)
+
+
+@app.post("/api/exam/sessions/{session_id}/start")
+def exam_start(session_id: int, request: Request):
+    """Start the exam: calibration first (no flags), then live."""
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "exam sessions")
+    s = _exam_session_or_404(session_id)
+    if s["status"] != "setup":
+        raise HTTPException(status_code=409, detail=f"The session is already {s['status']}.")
+    if not _exam_store().seats(session_id):
+        raise HTTPException(status_code=409, detail="Add seats first.")
+    _exam_store().update_session(session_id, status="calibrating", started_at=time.time())
+    _exam_reload(s["camera_id"])
+    return _exam_json(_exam_session_or_404(session_id))
+
+
+@app.post("/api/exam/sessions/{session_id}/end")
+def exam_end(session_id: int, request: Request):
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "exam sessions")
+    s = _exam_session_or_404(session_id)
+    if s["status"] in ("ended", "reviewed"):
+        return _exam_json(s)
+    _exam_store().update_session(session_id, status="ended", ended_at=time.time())
+    _exam_reload(s["camera_id"])
+    return _exam_json(_exam_session_or_404(session_id))
 
 
 # --- Privacy: retention ------------------------------------------------------------------

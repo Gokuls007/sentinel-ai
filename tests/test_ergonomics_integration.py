@@ -90,7 +90,7 @@ def test_v1_database_gains_the_ergo_and_rules_tables_after_a_backup(tmp_path):
     assert store.total() == 1
     assert len(list(tmp_path.glob("*.bak-*"))) == 1  # backed up before migrating (Phase 3 plan)
     with sqlite3.connect(db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 5
         assert conn.execute("SELECT COUNT(*) FROM ergo_time").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM rules").fetchone()[0] == 0
     EventStore(str(db))  # already current: no second backup
@@ -106,7 +106,7 @@ def test_v4_deletes_stored_per_track_time_after_a_backup(tmp_path):
         conn.execute("INSERT INTO ergo_time VALUES ('2026-10-01', 'cam-0', 'track', '7', 4, 12.0)")
         conn.execute("INSERT INTO ergo_time VALUES ('2026-10-01', 'cam-0', 'zone', 'dock', 4, 12.0)")
         conn.execute("PRAGMA user_version = 3")
-    assert migrate(db) == 4
+    assert migrate(db) == 5
     assert len(list(tmp_path.glob("*.bak-*"))) == 1
     with sqlite3.connect(db) as conn:
         kinds = [r[0] for r in conn.execute("SELECT kind FROM ergo_time")]

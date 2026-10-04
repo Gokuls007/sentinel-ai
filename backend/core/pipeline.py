@@ -14,6 +14,7 @@ from anomaly.engine import AnomalyAlert, AnomalyEngine
 from anomaly.fall_recovery import recover_pose
 from config.settings import SentinelConfig
 from events import Event, EventBus, EventStore
+from exam import ExamMonitor
 from notifications import NotificationDispatcher, build_notifiers
 from output.clip_recorder import ClipRecorder
 from output.skeleton_recorder import SkeletonRecorder
@@ -51,6 +52,7 @@ class FrameResult:
     activity: dict = field(default_factory=dict)  # track_id -> live activity label and history
     view: dict = field(default_factory=dict)  # the camera-view check (upper body only?)
     posture: dict | None = None  # desk posture coach snapshot (posture mode)
+    exam: dict | None = None  # Exam Hall: seats, setup check, calibration (exam mode)
     mode: str = "warehouse"
 
     def to_dict(self) -> dict:
@@ -71,6 +73,7 @@ class FrameResult:
             "activity": {str(k): v for k, v in self.activity.items()},
             "view": self.view,
             "posture": self.posture,
+            "exam": self.exam,
             "mode": self.mode,
         }
         # The JPEG is sent once, as the top-level "image" field of the WebSocket message.
@@ -147,6 +150,7 @@ class SentinelPipeline:
         self.mode = getattr(config, "mode", "warehouse")
         data_dir = os.path.dirname(os.path.abspath(config.output.db_path))
         self.posture = PostureCoach(baseline_path=os.path.join(data_dir, f"posture_baseline_{config.camera_id}.json"))
+        self.exam = ExamMonitor()  # Exam Hall: seats and calibration; sessions are loaded by the server
         self.save_clips = True  # forensic clips and snapshots (off for "Test with demo footage")
         # Skeleton-only (privacy): never write video or images; events keep keypoints instead.
         self.skeleton_only = False
@@ -187,7 +191,7 @@ class SentinelPipeline:
         # 3. Analytics. The mode decides what runs: warehouse = falls, zones, loitering,
         #    ergonomics; posture = the desk posture coach only (no alerts); exam = nothing yet.
         all_features = self.pose_estimator.get_all_features()
-        posture = None
+        posture = exam = None
         if self.mode == "warehouse":
             recovered = self._recover_fallen(frame, poses, all_features, timestamp)
             alerts = self.anomaly_engine.process(poses, all_features, timestamp, recovered=recovered)
@@ -201,6 +205,8 @@ class SentinelPipeline:
         else:
             alerts, ergonomics = [], {}
             activity, view = {}, {}
+            if self.mode == "exam":
+                exam = self.exam.update(poses, timestamp, frame.shape[1], frame.shape[0], frame)
             if self.mode == "posture":
                 # Only the person at the desk: the largest, most central face-and-shoulder area
                 # (someone or something on the couch behind is ignored).
@@ -274,6 +280,7 @@ class SentinelPipeline:
             ergonomics=ergonomics,
             activity=activity,
             view=view,
+            exam=exam,
             posture=posture,
             mode=self.mode,
         )
@@ -491,6 +498,19 @@ class SentinelPipeline:
         an existing track alive)."""
         return any(d.track_id == track_id and d.class_name == "person" and d.confidence >= threshold
                    for d in detections.detections)
+
+    @staticmethod
+    def _draw_seats(frame: np.ndarray, exam: dict) -> None:
+        """Seat outlines with their labels at the bottom-left corner (the desk), never over a
+        face. Grey = empty, cyan = occupied, green once calibrated. Not drawn on the live feed
+        (the Exam page overlays its own seat map); for saved exam clips (stage E2)."""
+        h, w = frame.shape[:2]
+        for s in exam.get("seats", []):
+            x1, y1, x2, y2 = s["rect"]
+            p1, p2 = (int(x1 * w), int(y1 * h)), (int(x2 * w), int(y2 * h))
+            colour = (120, 120, 120) if not s["occupied"] else (94, 197, 34) if s["calibrated"] else (238, 211, 34)
+            cv2.rectangle(frame, p1, p2, colour, 2)
+            cv2.putText(frame, s["label"], (p1[0] + 4, p2[1] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2)
 
     @staticmethod
     def _draw_ghost(frame: np.ndarray, ghost: dict | None) -> None:

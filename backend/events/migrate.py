@@ -20,7 +20,7 @@ from pathlib import Path
 
 logger = logging.getLogger("sentinel.events.migrate")
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _V1_TABLE = """
 CREATE TABLE IF NOT EXISTS events (
@@ -66,6 +66,62 @@ CREATE TABLE IF NOT EXISTS rules (
     updated_at REAL NOT NULL
 )
 """
+
+# v5: Exam Hall (docs/plans/exam-hall.md section 8). Seats are keyed by label within a session;
+# nothing here identifies a person (no names, no student ids, no face data).
+_V5_EXAM_TABLES = (
+    """CREATE TABLE IF NOT EXISTS exam_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        room TEXT NOT NULL DEFAULT '',
+        camera_id TEXT NOT NULL,
+        preset TEXT NOT NULL DEFAULT 'medium',
+        status TEXT NOT NULL DEFAULT 'setup',
+        calibration_s REAL NOT NULL DEFAULT 120,
+        started_at REAL,
+        ended_at REAL,
+        created_at REAL NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS exam_seats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL REFERENCES exam_sessions(id) ON DELETE CASCADE,
+        label TEXT NOT NULL,
+        polygon_json TEXT NOT NULL,
+        row INTEGER NOT NULL DEFAULT 0,
+        col INTEGER NOT NULL DEFAULT 0,
+        neighbours_json TEXT NOT NULL DEFAULT '{}',
+        UNIQUE (session_id, label)
+    )""",
+    """CREATE TABLE IF NOT EXISTS exam_seat_baselines (
+        seat_id INTEGER PRIMARY KEY REFERENCES exam_seats(id) ON DELETE CASCADE,
+        yaw_med REAL, yaw_spread REAL, pitch_med REAL, pitch_spread REAL,
+        hand_height_med REAL, samples INTEGER NOT NULL DEFAULT 0, calibrated_at REAL
+    )""",
+    """CREATE TABLE IF NOT EXISTS exam_flags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL REFERENCES exam_sessions(id) ON DELETE CASCADE,
+        seat_id INTEGER REFERENCES exam_seats(id) ON DELETE SET NULL,
+        signal TEXT NOT NULL,
+        start_ts REAL NOT NULL,
+        end_ts REAL NOT NULL,
+        confidence REAL,
+        priority TEXT NOT NULL DEFAULT 'medium',
+        measurements_json TEXT NOT NULL DEFAULT '{}',
+        clip_path TEXT,
+        status TEXT NOT NULL DEFAULT 'open',
+        reviewer_note TEXT,
+        dismissed_reason TEXT,
+        reviewed_at REAL
+    )""",
+    """CREATE TABLE IF NOT EXISTS exam_unblur_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        flag_id INTEGER NOT NULL REFERENCES exam_flags(id) ON DELETE CASCADE,
+        reason TEXT NOT NULL,
+        actor TEXT NOT NULL DEFAULT '',
+        at REAL NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_exam_flags_session ON exam_flags (session_id, start_ts)",
+)
 
 _V1_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_events_start ON events (start_ts)",
@@ -165,13 +221,15 @@ def migrate(db_path: str | os.PathLike) -> int:
         if version >= SCHEMA_VERSION:
             return version
     if version >= 1:
-        # v1 -> v2 -> v3 only add tables, but back up first anyway (cheap, and promised).
+        # v2, v3 and v5 add tables, v4 deletes per-track rows: always back up first (promised).
         if exists_with_data:
             saved = backup(db_path)
             logger.info("Backed up %s to %s before migrating to schema v%d", db_path, saved, SCHEMA_VERSION)
         with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
             conn.execute(_V2_ERGO_TABLE)
             conn.execute(_V3_RULES_TABLE)
+            for statement in _V5_EXAM_TABLES:
+                conn.execute(statement)
             dropped = conn.execute("DELETE FROM ergo_time WHERE kind = 'track'").rowcount
             if dropped:
                 logger.info("Deleted %d per-track time-at-risk row(s) (schema v4)", dropped)
@@ -190,5 +248,7 @@ def migrate(db_path: str | os.PathLike) -> int:
             conn.execute(statement)
         conn.execute(_V2_ERGO_TABLE)
         conn.execute(_V3_RULES_TABLE)
+        for statement in _V5_EXAM_TABLES:
+            conn.execute(statement)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return SCHEMA_VERSION
