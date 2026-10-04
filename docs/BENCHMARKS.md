@@ -344,3 +344,45 @@ _Measured 2026-10-03 with `python scripts/benchmark_rules.py`_, 5 people in view
 
 Rules that need objects (phone, laptop, book) add those classes to the detector's existing pass; any change in detector time from that is not included here.
 <!-- benchmark:rules-cost:end -->
+
+## Activity labels (CAUCAFall subjects 1-5, tuning set)
+
+<!-- benchmark:activity-1-5:start -->
+_Measured 2026-10-03 with `python scripts/eval_activity.py --subjects 1-5`._ CAUCAFall subjects 1-5 (the tuning set), 50 clips. The rules were tuned **only on subjects 1-5**; subjects 6-10 are held out (they are also the fall test set). A clip passes when its expected label shows for at least 1 s (main person, smoothed labels).
+
+| Clip type | Expected | Passed |
+|---|---|---|
+| Fall (any direction) | Fallen or Lying down | 15 / 25 |
+| Hop | no false Fallen | 5 / 5 |
+| Kneel | no false Fallen | 5 / 5 |
+| Pick up object | Bending, then Lifting | 0 / 5 |
+| Sit down | Sitting | 4 / 5 |
+| Walk | Walking | 5 / 5 |
+
+False "Lifting" (shown for 1 s or more in Walk, Sit down, Hop or Kneel clips): 1 / 20 clips.
+
+Failures: `Subject.1/Fall forward` (no Fallen or Lying down); `Subject.1/Fall left` (no Fallen or Lying down); `Subject.1/Fall right` (no Fallen or Lying down); `Subject.1/Fall sitting` (no Fallen or Lying down); `Subject.1/Pick up object` (no Bending, no Lifting); `Subject.2/Pick up object` (no Bending, no Lifting); `Subject.3/Fall backwards` (no Fallen or Lying down); `Subject.3/Fall forward` (no Fallen or Lying down); `Subject.3/Fall left` (no Fallen or Lying down); `Subject.3/Fall sitting` (no Fallen or Lying down); `Subject.3/Pick up object` (no Bending, no Lifting); `Subject.4/Fall sitting` (no Fallen or Lying down); `Subject.4/Pick up object` (no Bending, no Lifting); `Subject.5/Fall forward` (no Fallen or Lying down); `Subject.5/Pick up object` (no Lifting); `Subject.5/Sit down` (no Sitting)
+
+Front-on room-scale clips, not warehouse footage: this checks the rules end to end, not field accuracy.
+<!-- benchmark:activity-1-5:end -->
+
+## Activity labels (CAUCAFall subjects 6-10, held out)
+
+<!-- benchmark:activity-6-10:start -->
+_Measured 2026-10-03 with `python scripts/eval_activity.py --subjects 6-10`._ CAUCAFall subjects 6-10 (held out: never used for tuning), 50 clips. The rules were tuned **only on subjects 1-5**; subjects 6-10 are held out (they are also the fall test set). A clip passes when its expected label shows for at least 1 s (main person, smoothed labels).
+
+| Clip type | Expected | Passed |
+|---|---|---|
+| Fall (any direction) | Fallen or Lying down | 17 / 25 |
+| Hop | no false Fallen | 5 / 5 |
+| Kneel | no false Fallen | 5 / 5 |
+| Pick up object | Bending, then Lifting | 0 / 5 |
+| Sit down | Sitting | 4 / 5 |
+| Walk | Walking | 4 / 5 |
+
+False "Lifting" (shown for 1 s or more in Walk, Sit down, Hop or Kneel clips): 0 / 20 clips.
+
+Failures: `Subject.10/Pick up object` (no Bending, no Lifting); `Subject.10/Walk` (no Walking); `Subject.6/Fall backwards` (no Fallen or Lying down); `Subject.6/Fall left` (no Fallen or Lying down); `Subject.6/Fall right` (no Fallen or Lying down); `Subject.6/Fall sitting` (no Fallen or Lying down); `Subject.6/Pick up object` (no Lifting); `Subject.6/Sit down` (no Sitting); `Subject.7/Fall forward` (no Fallen or Lying down); `Subject.7/Pick up object` (no Lifting); `Subject.8/Fall backwards` (no Fallen or Lying down); `Subject.8/Fall forward` (no Fallen or Lying down); `Subject.8/Fall right` (no Fallen or Lying down); `Subject.8/Pick up object` (no Lifting); `Subject.9/Pick up object` (no Lifting)
+
+Front-on room-scale clips, not warehouse footage: this checks the rules end to end, not field accuracy.
+<!-- benchmark:activity-6-10:end -->

@@ -158,8 +158,10 @@ class AnomalyEngine:
                 started = time.perf_counter()
                 zones = self.zone_monitor.zones_of(tid)
                 load = max((z.load_score for z in zones), default=0)
+                box_h = float(pose.bbox[3] - pose.bbox[1]) / max(1, self.config.frame_height)
                 _, ergo_alert = self.ergo.update(
-                    tid, pose.keypoints, timestamp, load=load, zone_ids=[z.id for z in zones])
+                    tid, pose.keypoints, timestamp, load=load, zone_ids=[z.id for z in zones],
+                    box_height_frac=box_h)
                 ergo_ms += (time.perf_counter() - started) * 1000
                 if ergo_alert:
                     alerts.append(self._ergo_alert(ergo_alert))
