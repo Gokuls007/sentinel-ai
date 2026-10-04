@@ -292,6 +292,44 @@ problem is staying still too long.
 Everything runs on this computer. No video, posture or movement data leaves it, and no LLM is
 involved. The webcam gives 2D estimates; this is not a medical or ergonomic assessment.
 
+## Privacy by design
+Sentinel watches people, so it is built to keep as little about them as it can.
+
+- **Video stays on this computer.** Detection, pose, falls, zones, activity labels, REBA and
+  the posture coach all run locally. Frames are never uploaded.
+- **The LLM sees metadata, never pixels or keypoints.** Search sends event fields to the
+  configured LLM provider: id, type, severity, camera, start and end time, weekday,
+  duration, zone name, track id, message, verified, and for one event its attributes and
+  confidence (e.g. REBA scores, dwell time). The rule compiler sends your rule text, the zone
+  names and types, and the object classes. Nothing is sent unless you configure a provider.
+- **No face recognition, no identities.** People are anonymous track ids that change when
+  someone leaves the view and comes back.
+- **No rankings of individuals.** Analytics are per zone, per hour and per posture, never per
+  person: there is no time-at-risk or event count per track id (schema v4 deleted the old
+  per-track totals, after a backup). Each event still records its track id, and the live
+  view shows the people in frame right now.
+- **Retention.** History is kept for 30 days by default (Settings > Privacy: 7 days to a
+  year, or forever). After that, events with their clips, snapshots and skeletons,
+  recordings, time-at-risk totals, posture history, the movement-coach log and database
+  backups are deleted, at startup and then hourly. Until you first open the Privacy panel,
+  retention only does dry runs and logs what it would delete. The panel shows what is stored
+  and has a confirmed **Delete now**.
+- **Skeleton-only mode.** A switch in Settings > Privacy. When it's on, no clip, snapshot or
+  recording is ever written. Each event keeps the keypoints from 10 s before to 5 s after
+  (normalised, no pixels), played back as a stick figure, and notifications are text only.
+- **Notifications send images off this computer.** Telegram and email alerts include the
+  event snapshot, unless skeleton-only mode is on.
+- **The exception: the desk posture coach.** It tracks one person, you, at your own desk,
+  and keeps your own history (minutes, corrections, breaks, the movement log). It is for
+  self-tracking only, stays on this computer, and follows the same retention.
+- **Planned, not built:** privacy zones that blur part of the frame (Phase 3b) and face blur
+  for exam-hall review (Phase 3d).
+
+**Real deployments.** Watching employees or the public needs more than software settings:
+tell people (notices at the camera), get consent or a lawful basis, limit who can see the
+dashboard, and have the setup reviewed for your jurisdiction (e.g. GDPR, workplace
+monitoring and works-council rules) before using it.
+
 ## API
 | Endpoint | Returns |
 |---|---|
@@ -307,6 +345,8 @@ involved. The webcam gives 2D estimates; this is not a medical or ergonomic asse
 | `POST /api/rules`, `GET /api/rules`, `PATCH /api/rules/{id}`, `DELETE /api/rules/{id}` | confirm, list (with fire counts), edit or turn off, delete |
 | `GET /api/presets`, `POST /api/presets/{name}/apply` | presets, and loading one (asks before replacing preset rules) |
 | `GET /api/demo/clips`, `POST /api/demo/play {"clip"}`, `POST /api/demo/stop` | demo-footage clips (no file paths), and playing or stopping one on the `test` camera |
+| `GET /api/privacy`, `PUT /api/privacy`, `POST /api/privacy/delete-now` | what's stored, retention and skeleton-only settings, and deleting past the retention now |
+| `GET /api/skeletons/{alert_id}` | skeleton-only mode's keypoints around an event (JSON) |
 
 Set `WEBHOOK_URL` to get every alert POSTed as JSON.
 
@@ -331,7 +371,8 @@ backend/
   activity/  live activity labels (pose rules) and the camera-view check
   anomaly/   fall_detector, zone_monitor, engine (loitering, alert routing), temporal_model
   rules/     plain-English rules: dsl (format), compiler (LLM), engine (per frame), presets, store
-  output/    clip_recorder, event_logger (SQLite), webhook
+  output/    clip_recorder, skeleton_recorder, event_logger (SQLite), webhook
+  privacy/   retention (what's kept, for how long)
   api/       FastAPI server (REST, WebSocket, serves the dashboard)
 config/demo/ scenario zone files
 frontend/    React + Vite + Tailwind dashboard

@@ -16,6 +16,7 @@ from config.settings import SentinelConfig
 from events import Event, EventBus, EventStore
 from notifications import NotificationDispatcher, build_notifiers
 from output.clip_recorder import ClipRecorder
+from output.skeleton_recorder import SkeletonRecorder
 from posture import PostureCoach, select_main_person
 from rules import PersonState, RuleEngine, SceneState
 from rules.dsl import OBJECT_CLASSES
@@ -76,6 +77,7 @@ class FrameResult:
         return to_serializable(data)
 
 class SentinelPipeline:
+    skeleton_only: bool = False  # set per instance in __init__; a default for partly built test pipelines
     SKELETON: ClassVar[list[tuple[int, int]]] = [
         (0, 1), (0, 2), (1, 3), (2, 4), (5, 6), (5, 7), (7, 9), (6, 8), 
         (8, 10), (5, 11), (6, 12), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16)
@@ -128,6 +130,7 @@ class SentinelPipeline:
             buffer_seconds=config.output.clip_duration,
             fps=config.target_fps
         )
+        self.skeleton_recorder = SkeletonRecorder(config.output.clips_dir)
         self.event_store = EventStore(config.output.db_path)
         self.rule_store = RuleStore(config.output.db_path)
         self.reload_rules()
@@ -145,6 +148,8 @@ class SentinelPipeline:
         data_dir = os.path.dirname(os.path.abspath(config.output.db_path))
         self.posture = PostureCoach(baseline_path=os.path.join(data_dir, f"posture_baseline_{config.camera_id}.json"))
         self.save_clips = True  # forensic clips and snapshots (off for "Test with demo footage")
+        # Skeleton-only (privacy): never write video or images; events keep keypoints instead.
+        self.skeleton_only = False
         self.paused = False  # demo footage off: the loop idles without reading frames
         self._posture_id = None  # track id of the person the posture coach follows
 
@@ -174,6 +179,9 @@ class SentinelPipeline:
         track_ids = [d.track_id for d in person_detections]
         bboxes = [d.bbox for d in person_detections]
         poses = self.pose_estimator.estimate(frame, track_ids, bboxes, timestamp)
+        if self.skeleton_only and self.save_clips:  # keypoints only, in memory until an event
+            self.skeleton_recorder.add_frame(
+                timestamp, SkeletonRecorder.frame_people(poses, frame.shape[1], frame.shape[0]))
         lap("pose")
 
         # 3. Analytics. The mode decides what runs: warehouse = falls, zones, loitering,
@@ -227,12 +235,18 @@ class SentinelPipeline:
         for alert in alerts:
             self.total_alerts += 1
             # Forensic clip (pre + post alert) is encoded in the background.
-            # A rule can leave the clip out; test footage never saves one.
-            want_clip = self.save_clips and alert.details.get("record_clip", True)
+            # A rule can leave the clip out; test footage never saves one; skeleton-only mode
+            # saves keypoints instead of video and images.
+            want_clip = self.save_clips and alert.details.get("record_clip", True) and not self.skeleton_only
             clip_path = (self.clip_recorder.save_clip(alert.alert_id, alert.timestamp, snapshot=annotated_frame)
                          if want_clip else None)
             clip_path = clip_path.replace("\\", "/") if clip_path else None
             alert.details = {**alert.details, "clip_path": clip_path}
+            if self.skeleton_only and self.save_clips:
+                skeleton = self.skeleton_recorder.save(
+                    alert.alert_id, alert.timestamp, track_id=alert.track_id,
+                    meta={"type": alert.alert_type, "camera_id": self.config.camera_id})
+                alert.details["skeleton_path"] = skeleton.replace("\\", "/")
             event = Event.from_alert(
                 alert,
                 camera_id=self.config.camera_id,
@@ -545,6 +559,7 @@ class SentinelPipeline:
     def stop(self):
         self.video_source.stop()
         self.clip_recorder.flush()
+        self.skeleton_recorder.flush()
         self.flush_ergo_time()
         self.notifier.close()
         uptime = time.time() - self.start_time

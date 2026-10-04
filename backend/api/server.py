@@ -89,6 +89,7 @@ def start_pipeline(cfg: SentinelConfig) -> SentinelPipeline:
     pipeline = SentinelPipeline(cfg)
     _attach(pipeline, primary=True)
     _apply_app_settings(pipeline, _load_app_settings())
+    _start_retention()
     thread = threading.Thread(target=pipeline.run, daemon=True, name="sentinel-pipeline")
     thread.start()
     logger.info("Sentinel Pipeline started in background thread.")
@@ -295,6 +296,7 @@ def _laptop_config(index: int) -> SentinelConfig:
 def _run_camera(camera_id: str, cfg: SentinelConfig, mode: str | None = None) -> None:
     try:
         p = SentinelPipeline(cfg)  # loads the models: a few seconds
+        p.skeleton_only = _load_app_settings()["skeleton_only"]
         if camera_id == TEST_CAMERA:
             p.event_bus.unsubscribe("store")  # test footage never enters the event history or analytics
             p.save_clips = False  # ... and never writes clips or snapshots
@@ -488,6 +490,9 @@ def start_recording(request: Request):
         p = _cameras.get(LAPTOP_CAMERA)
     if p is None:
         raise HTTPException(status_code=409, detail="start the camera first")
+    if _load_app_settings()["skeleton_only"]:
+        raise HTTPException(status_code=409, detail="Skeleton-only mode is on: no video is recorded "
+                                                    "(turn it off in Settings > Privacy to record).")
     rec = _recorders.get(LAPTOP_CAMERA)
     if rec is None:
         rec = _recorders[LAPTOP_CAMERA] = Recorder(str(_recordings_dir()), prefix="laptop")
@@ -520,6 +525,7 @@ def get_alerts(limit: int = Query(50, ge=1, le=1000), severity: str | None = Non
         for e in events:
             item = to_serializable(e.to_alert_dict())
             item["has_clip"] = bool(e.alert_id) and _clip_path(e.alert_id) is not None
+            item["has_skeleton"] = bool(e.alert_id) and _incident_file(e.alert_id, "skeleton", "json") is not None
             out.append(item)
         return out
     with history_lock:
@@ -550,6 +556,8 @@ def _event_json(event: Event) -> dict:
     has_thumb = bool(event.alert_id) and _incident_file(event.alert_id, "snapshot", "jpg") is not None
     item["clip_url"] = f"/api/clips/{event.alert_id}" if has_clip else None
     item["thumbnail_url"] = f"/api/snapshots/{event.alert_id}" if has_thumb else None
+    has_skeleton = bool(event.alert_id) and _incident_file(event.alert_id, "skeleton", "json") is not None
+    item["skeleton_url"] = f"/api/skeletons/{event.alert_id}" if has_skeleton else None
     return item
 
 
@@ -614,7 +622,16 @@ def get_event(event_id: int):
 # --- App settings: mode and demo footage ------------------------------------------------------
 
 APP_MODES = ("posture", "warehouse", "exam")
-APP_DEFAULTS = {"mode": "warehouse", "demo_footage": False}
+APP_DEFAULTS = {
+    "mode": "warehouse",
+    "demo_footage": False,
+    # Privacy: keep history this many days (0 = forever); deletions start only once the Privacy
+    # panel has been opened (privacy_seen), before that runs are dry runs.
+    "retention_days": 30,
+    "privacy_seen": False,
+    "skeleton_only": False,  # never store video or images: events keep keypoints only
+}
+RETENTION_MAX_DAYS = 3650
 
 
 def _app_defaults() -> dict:
@@ -638,7 +655,19 @@ def _load_app_settings() -> dict:
     if out["mode"] not in APP_MODES:
         out["mode"] = APP_DEFAULTS["mode"]
     out["demo_footage"] = bool(out["demo_footage"])
+    try:
+        out["retention_days"] = max(0, min(RETENTION_MAX_DAYS, int(out["retention_days"])))
+    except (TypeError, ValueError):
+        out["retention_days"] = APP_DEFAULTS["retention_days"]
+    out["privacy_seen"] = bool(out["privacy_seen"])
+    out["skeleton_only"] = bool(out["skeleton_only"])
     return out
+
+
+def _save_app_settings(settings: dict) -> None:
+    path = _app_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
 
 def _apply_app_settings(primary, settings: dict) -> None:
@@ -650,6 +679,114 @@ def _apply_app_settings(primary, settings: dict) -> None:
             p.mode = settings["mode"]
     if primary is not None and hasattr(primary, "paused"):
         primary.paused = not settings["demo_footage"]
+    _apply_privacy(settings, pipelines)
+
+
+# --- Privacy: retention ------------------------------------------------------------------
+
+_retention_worker = None
+
+
+def _retention():
+    from privacy import Retention
+
+    out = config.output if config else None
+    return Retention(out.db_path if out else "data/events.db", out.clips_dir if out else "data/clips",
+                     str(_recordings_dir()))
+
+
+def _start_retention():
+    global _retention_worker
+    from privacy import RetentionWorker
+
+    if _retention_worker is None:
+        _retention_worker = RetentionWorker(_retention(), _load_app_settings)
+        _retention_worker.start()
+
+
+def _retention_runner():
+    from privacy import RetentionWorker
+
+    return _retention_worker or RetentionWorker(_retention(), _load_app_settings)
+
+
+class PrivacyIn(BaseModel):
+    retention_days: int | None = Field(None, ge=0, le=RETENTION_MAX_DAYS)
+    skeleton_only: bool | None = None
+
+
+class DeleteNowIn(BaseModel):
+    retention_days: int = Field(..., ge=1, le=RETENTION_MAX_DAYS)  # must match the saved setting
+
+
+@app.get("/api/privacy")
+def get_privacy():
+    """What's stored, what the retention setting would delete now, and the last automatic run."""
+    from privacy import CATEGORIES, summary
+
+    s = _load_app_settings()
+    r = _retention()
+    days = s["retention_days"]
+    return {
+        "retention_days": days,
+        "skeleton_only": s["skeleton_only"],
+        "privacy_seen": s["privacy_seen"],
+        "dry_run": not s["privacy_seen"],
+        "categories": CATEGORIES,
+        "stored": summary(r.plan(cutoff=float("inf"))),
+        "would_delete": summary(r.plan(days)) if days > 0 else None,
+        "last_run": _retention_runner().last_run,
+    }
+
+
+@app.post("/api/privacy/seen")
+def privacy_seen(request: Request):
+    """The Privacy panel was opened: from now on retention deletes for real (it was a dry run)."""
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "privacy settings")
+    s = _load_app_settings()
+    if not s["privacy_seen"]:
+        s["privacy_seen"] = True
+        _save_app_settings(s)
+        logger.info("Privacy panel opened: retention now deletes (was a dry run)")
+    return {"privacy_seen": True}
+
+
+@app.put("/api/privacy")
+def put_privacy(body: PrivacyIn, request: Request):
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "privacy settings")
+    s = _load_app_settings()
+    if body.retention_days is not None:
+        s["retention_days"] = body.retention_days
+    if body.skeleton_only is not None:
+        s["skeleton_only"] = body.skeleton_only
+    _save_app_settings(s)
+    _apply_privacy(s)
+    logger.info("privacy settings: retention %s days, skeleton-only %s", s["retention_days"], s["skeleton_only"])
+    return get_privacy()
+
+
+@app.post("/api/privacy/delete-now")
+def privacy_delete_now(body: DeleteNowIn, request: Request):
+    """Delete everything older than the retention setting now (the preview in GET /api/privacy)."""
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "privacy settings")
+    s = _load_app_settings()
+    if body.retention_days != s["retention_days"]:
+        raise HTTPException(status_code=409, detail="The retention setting changed; check the preview again.")
+    return _retention_runner().delete_now(body.retention_days)
+
+
+def _apply_privacy(settings: dict, pipelines: list | None = None) -> None:
+    """Skeleton-only mode on every running pipeline (no clips, snapshots or images), and no
+    camera recording while it's on."""
+    if pipelines is None:
+        with _cameras_lock:
+            pipelines = [p for p in (pipeline, *_cameras.values()) if p is not None]
+    for p in pipelines:
+        if hasattr(p, "skeleton_only"):
+            p.skeleton_only = settings["skeleton_only"]
+    if settings["skeleton_only"]:
+        for camera_id in list(_recorders):
+            _stop_recorder(camera_id)
 
 
 class AppSettingsIn(BaseModel):
@@ -660,7 +797,11 @@ class AppSettingsIn(BaseModel):
 @app.get("/api/app")
 def get_app_settings():
     """The app mode (posture | warehouse | exam) and whether the demo footage runs."""
-    return _load_app_settings()
+    return _app_view(_load_app_settings())
+
+
+def _app_view(settings: dict) -> dict:
+    return {k: settings[k] for k in ("mode", "demo_footage")}  # privacy settings: /api/privacy
 
 
 @app.put("/api/app")
@@ -672,12 +813,10 @@ def put_app_settings(body: AppSettingsIn, request: Request):
         settings["mode"] = body.mode
     if body.demo_footage is not None:
         settings["demo_footage"] = body.demo_footage
-    path = _app_settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    _save_app_settings(settings)
     _apply_app_settings(pipeline, settings)
-    logger.info("app settings: %s", settings)
-    return settings
+    logger.info("app settings: %s", _app_view(settings))
+    return _app_view(settings)
 
 
 # --- Desk posture coach -----------------------------------------------------------------------
@@ -1338,15 +1477,15 @@ def ergonomics_live(camera: str | None = None):
 
 @app.get("/api/ergonomics/time")
 def ergonomics_time(
-    group_by: str = Query("zone", pattern=r"^(zone|hour|track)$"),
+    group_by: str = Query("zone", pattern=r"^(zone|hour)$"),
     day_from: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="YYYY-MM-DD, default today"),
     day_to: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     camera_id: str | None = None,
 ):
-    """Seconds spent at each REBA risk level, grouped by zone (default), hour of day, or track ID.
+    """Seconds spent at each REBA risk level, grouped by zone (default) or hour of day.
 
     Level "unknown" is time when the view was too unreliable to score (e.g. facing the camera).
-    Per track ID means per tracker identity: a person re-identified under a new ID counts twice.
+    There is no per-person (per track ID) grouping: aggregates never rank individuals.
     """
     from datetime import date
 
@@ -1416,6 +1555,15 @@ def get_clip(alert_id: str):
     if path is None:
         raise HTTPException(status_code=404, detail="Clip not found (it may still be recording)")
     return FileResponse(path, media_type="video/mp4")
+
+
+@app.get("/api/skeletons/{alert_id}")
+def get_skeleton(alert_id: str):
+    """Skeleton-only mode's incident record: keypoints around the alert (no pixels)."""
+    path = _incident_file(alert_id, "skeleton", "json")
+    if path is None:
+        raise HTTPException(status_code=404, detail="Skeleton not found (it is written 5 s after the alert)")
+    return FileResponse(path, media_type="application/json")
 
 
 @app.get("/api/snapshots/{alert_id}")

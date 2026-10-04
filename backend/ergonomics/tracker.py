@@ -81,7 +81,6 @@ class ErgoTracker:
         self.current: dict[int, TrackErgo] = {}
         # Seconds at each risk level (1..5), by local date. Unreliable frames are counted
         # under level 0 ("unknown") so totals still add up to time observed.
-        self.by_track: dict = _nested()  # day -> track_id -> level -> seconds
         self.by_zone: dict = _nested()   # day -> zone_id ("" = no zone) -> level -> seconds
         self.by_hour: dict = _nested()   # day -> hour -> level -> seconds
 
@@ -125,14 +124,13 @@ class ErgoTracker:
             view.reason = ergo_reason(keypoints, angles.confidence, cfg.min_confidence, box_height_frac,
                                       min_conf=cfg.keypoint_min_conf)
 
-        # Time at risk (per track ID, per zone, per hour), using the gap since the last frame.
+        # Time at risk (per zone, per hour; never per person), using the gap since the last frame.
         if st.last_ts is not None:
             dt = ts - st.last_ts
             if 0 < dt <= MAX_FRAME_GAP_S:
                 day = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
                 hour = datetime.fromtimestamp(ts).hour
                 lvl = view.level if (view.reliable and view.level) else 0
-                self.by_track[day][track_id][lvl] += dt
                 self.by_hour[day][hour][lvl] += dt
                 for z in zone_ids or [""]:
                     self.by_zone[day][z][lvl] += dt
@@ -168,9 +166,9 @@ class ErgoTracker:
 
     def drain_time(self) -> list[tuple[str, str, str, int, float]]:
         """Accumulated (day, kind, key, level, seconds) rows since the last drain, then reset.
-        kind is "zone", "hour" or "track"; used to persist time-at-risk."""
+        kind is "zone" or "hour" (never per person); used to persist time-at-risk."""
         rows = []
-        for kind, data in (("zone", self.by_zone), ("hour", self.by_hour), ("track", self.by_track)):
+        for kind, data in (("zone", self.by_zone), ("hour", self.by_hour)):
             for day, keys in data.items():
                 for key, levels in keys.items():
                     for lvl, secs in levels.items():

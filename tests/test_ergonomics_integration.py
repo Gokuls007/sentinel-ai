@@ -90,11 +90,29 @@ def test_v1_database_gains_the_ergo_and_rules_tables_after_a_backup(tmp_path):
     assert store.total() == 1
     assert len(list(tmp_path.glob("*.bak-*"))) == 1  # backed up before migrating (Phase 3 plan)
     with sqlite3.connect(db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 4
         assert conn.execute("SELECT COUNT(*) FROM ergo_time").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM rules").fetchone()[0] == 0
     EventStore(str(db))  # already current: no second backup
     assert len(list(tmp_path.glob("*.bak-*"))) == 1
+
+
+def test_v4_deletes_stored_per_track_time_after_a_backup(tmp_path):
+    from events.migrate import migrate
+
+    db = tmp_path / "events.db"
+    EventStore(str(db))
+    with sqlite3.connect(db) as conn:  # a v3 database that still has per-track rows
+        conn.execute("INSERT INTO ergo_time VALUES ('2026-10-01', 'cam-0', 'track', '7', 4, 12.0)")
+        conn.execute("INSERT INTO ergo_time VALUES ('2026-10-01', 'cam-0', 'zone', 'dock', 4, 12.0)")
+        conn.execute("PRAGMA user_version = 3")
+    assert migrate(db) == 4
+    assert len(list(tmp_path.glob("*.bak-*"))) == 1
+    with sqlite3.connect(db) as conn:
+        kinds = [r[0] for r in conn.execute("SELECT kind FROM ergo_time")]
+    assert kinds == ["zone"]
+    with pytest.raises(ValueError):
+        EventStore(str(db)).ergo_time("track", "2026-10-01", "2026-10-01")
 
 
 def test_ergo_time_accumulates_and_groups(tmp_path):
@@ -143,6 +161,7 @@ def test_time_endpoint_flushes_and_names_levels(ergo_client):
     assert body["rows"] == {"dock": {"unknown": 5.0, "high": 30.0}}
     assert body["levels"] == ["unknown", "negligible", "low", "medium", "high", "very_high"]
     assert ergo_client.get("/api/ergonomics/time", params={"group_by": "person"}).status_code == 422
+    assert ergo_client.get("/api/ergonomics/time", params={"group_by": "track"}).status_code == 422  # privacy
     assert ergo_client.get("/api/ergonomics/time", params={"day_from": "yesterday"}).status_code == 422
 
 

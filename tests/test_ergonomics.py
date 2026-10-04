@@ -280,14 +280,14 @@ def test_low_confidence_never_alerts():
     assert not view.reliable and alerts == []
 
 
-def test_time_at_risk_per_track_zone_and_hour():
+def test_time_at_risk_per_zone_and_hour_never_per_track():
     tr = ErgoTracker()
     run(tr, skeleton(), 5, track_id=7, zone_ids=["line_1"])
     rows = tr.drain_time()
-    by_kind = {k: sum(r[4] for r in rows if r[1] == k) for k in ("track", "zone", "hour")}
-    assert by_kind["track"] == pytest.approx(4.9, abs=0.15)  # 50 frames -> 49 gaps of 0.1 s
-    assert by_kind["zone"] == pytest.approx(by_kind["track"]) == pytest.approx(by_kind["hour"])
-    assert {r[2] for r in rows if r[1] == "track"} == {"7"}
+    assert {r[1] for r in rows} == {"zone", "hour"}  # no per-person time (privacy)
+    by_kind = {k: sum(r[4] for r in rows if r[1] == k) for k in ("zone", "hour")}
+    assert by_kind["zone"] == pytest.approx(4.9, abs=0.15)  # 50 frames -> 49 gaps of 0.1 s
+    assert by_kind["zone"] == pytest.approx(by_kind["hour"])
     assert {r[2] for r in rows if r[1] == "zone"} == {"line_1"}
     assert tr.drain_time() == []  # drained
 

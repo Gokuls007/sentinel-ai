@@ -5,6 +5,7 @@ import DashboardPanel from '../components/DashboardPanel';
 import EmptyState from '../components/EmptyState';
 import HudBarChart from '../components/HudBarChart';
 import AngleTable from '../components/AngleTable';
+import SkeletonPlayer from '../components/SkeletonPlayer';
 import TimeRangeControl from '../components/TimeRangeControl';
 import { useFeed } from '../context/liveFeed';
 import { apiUrl, describeError, formatTs, hourSeries, queryString, useFetch, useNow } from '../lib/api';
@@ -183,7 +184,9 @@ const EventDetail = ({ eventId, onClose }) => {
     const attrs = Object.entries(ev.attributes || {}).filter(([k]) => !(isErgo && ERGO_ATTRS.has(k)));
     body = (
       <div className="space-y-4">
-        {ev.clip_url && !clipFailed ? (
+        {!ev.clip_url && ev.skeleton_url ? (
+          <SkeletonPlayer url={ev.skeleton_url} />
+        ) : ev.clip_url && !clipFailed ? (
           <video
             key={`${ev.clip_url}#${reload}`}
             src={apiUrl(ev.clip_url) + (reload ? `?try=${reload}` : '')}
@@ -400,7 +403,7 @@ const EventsPage = () => {
                           aria-label={`Open event ${ev.id}`}
                           className={chipClass(selected)}
                         >
-                          {ev.clip_url ? 'Play' : 'View'}
+                          {ev.clip_url || ev.skeleton_url ? 'Play' : 'View'}
                         </button>
                       </td>
                     </tr>

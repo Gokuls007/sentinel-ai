@@ -172,6 +172,7 @@ def test_event_stats_and_meta(events_client):
     assert events_client.get("/api/events/stats", params={"group_by": "zone"}).json()["counts"] == {
         "": 1, "lab": 2}
     assert events_client.get("/api/events/stats", params={"group_by": "evil"}).status_code == 422
+    assert events_client.get("/api/events/stats", params={"group_by": "track"}).status_code == 422  # privacy
     meta = events_client.get("/api/meta").json()
     assert meta["cameras"] == ["cam-0"] and "fall" in meta["event_types"]
     assert meta["notifications"]["telegram"] is False
