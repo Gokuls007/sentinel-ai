@@ -2,6 +2,7 @@ import { useState } from 'react';
 import DashboardPanel from '../components/DashboardPanel';
 import EmptyState from '../components/EmptyState';
 import PrivacyPanel from '../components/PrivacyPanel';
+import ObjectsPanel from '../components/ObjectsPanel';
 import { MODES, useAppMode } from '../context/appMode';
 import { useFeed } from '../context/liveFeed';
 import { describeError, putJson, useFetch } from '../lib/api';
@@ -126,6 +127,7 @@ const SettingsPage = () => {
     <>
       <ModeAndFootage />
       <PrivacyPanel />
+      <ObjectsPanel />
       <DemoTimings />
       <p className="text-[11px] outfit text-white/60">
         The settings below are read-only here. Change them in the backend config and{' '}

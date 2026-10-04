@@ -51,7 +51,7 @@ L_HIP, R_HIP, L_KNEE, R_KNEE, L_ANK, R_ANK = 11, 12, 13, 14, 15, 16
 STANDING, WALKING, SITTING, BENDING = "Standing", "Walking", "Sitting", "Bending"
 LIFTING, CARRYING, REACHING, LYING, FALLEN = "Lifting", "Carrying", "Reaching overhead", "Lying down", "Fallen"
 UPPER_ONLY = "Upper body only"
-CARRY_CLASSES = ("backpack", "handbag", "suitcase")
+CARRY_CLASSES = ("backpack", "handbag", "suitcase", "cardboard box")  # COCO, plus YOLO-World's box
 
 
 @dataclass

@@ -50,4 +50,6 @@ def tmp_config(tmp_path):
     cfg.output.db_path = str(tmp_path / "events.db")
     cfg.output.clips_dir = str(tmp_path / "clips")
     cfg.anomaly.lstm_model_path = str(tmp_path / "missing_lstm.pt")
+    cfg.objects.enabled = False  # YOLO-World is mocked where it is tested (no weights in CI)
+    cfg.objects.cache_dir = str(tmp_path / "cache")
     return cfg

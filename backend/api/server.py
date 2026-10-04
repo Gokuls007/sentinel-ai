@@ -90,6 +90,7 @@ def start_pipeline(cfg: SentinelConfig) -> SentinelPipeline:
     _attach(pipeline, primary=True)
     _apply_app_settings(pipeline, _load_app_settings())
     _exam_attach(pipeline)
+    _apply_object_classes(pipeline, _load_app_settings())
     _start_retention()
     thread = threading.Thread(target=pipeline.run, daemon=True, name="sentinel-pipeline")
     thread.start()
@@ -299,6 +300,7 @@ def _run_camera(camera_id: str, cfg: SentinelConfig, mode: str | None = None) ->
         p = SentinelPipeline(cfg)  # loads the models: a few seconds
         p.skeleton_only = _load_app_settings()["skeleton_only"]
         _exam_attach(p)
+        _apply_object_classes(p, _load_app_settings())
         if camera_id == TEST_CAMERA:
             p.event_bus.unsubscribe("store")  # test footage never enters the event history or analytics
             p.save_clips = False  # ... and never writes clips or snapshots
@@ -632,6 +634,7 @@ APP_DEFAULTS = {
     "retention_days": 30,
     "privacy_seen": False,
     "skeleton_only": False,  # never store video or images: events keep keypoints only
+    "object_classes": None,  # Warehouse objects (YOLO-World); None = OBJECT_CLASSES / the defaults
 }
 RETENTION_MAX_DAYS = 3650
 
@@ -663,6 +666,8 @@ def _load_app_settings() -> dict:
         out["retention_days"] = APP_DEFAULTS["retention_days"]
     out["privacy_seen"] = bool(out["privacy_seen"])
     out["skeleton_only"] = bool(out["skeleton_only"])
+    classes = out.get("object_classes")
+    out["object_classes"] = ([str(c) for c in classes][:40] if isinstance(classes, list) and classes else None)
     return out
 
 
@@ -876,6 +881,56 @@ def exam_end(session_id: int, request: Request):
     _exam_store().update_session(session_id, status="ended", ended_at=time.time())
     _exam_reload(s["camera_id"])
     return _exam_json(_exam_session_or_404(session_id))
+
+
+# --- Warehouse objects (YOLO-World) -----------------------------------------------------------
+
+def _apply_object_classes(p, settings: dict) -> None:
+    det = getattr(p, "object_detector", None)
+    if det is not None and settings.get("object_classes") and settings["object_classes"] != det.classes:
+        det.set_classes(settings["object_classes"])
+
+
+class ObjectClassesIn(BaseModel):
+    classes: list[str] = Field(..., min_length=1, max_length=40)
+
+    @field_validator("classes")
+    @classmethod
+    def _clean(cls, classes):
+        out = []
+        for c in classes:
+            c = " ".join(c.split()).lower()
+            if not c or len(c) > 40 or not all(ch.isalnum() or ch in " -'" for ch in c):
+                raise ValueError(f"not a class name: {c!r} (letters, digits, spaces, - and ')")
+            if c not in out:
+                out.append(c)
+        return out
+
+
+@app.get("/api/objects")
+def get_objects():
+    """What Warehouse mode looks for besides people, and whether the detector is running."""
+    from config.settings import DEFAULT_OBJECT_CLASSES
+
+    o = config.objects if config else None
+    det = getattr(pipeline, "object_detector", None) if pipeline else None
+    classes = (det.classes if det else None) or _load_app_settings()["object_classes"] or \
+        (o.classes if o else DEFAULT_OBJECT_CLASSES)
+    return {"enabled": bool(o and o.enabled), "classes": classes, "defaults": DEFAULT_OBJECT_CLASSES,
+            "confidence": o.confidence if o else None, "model": o.model_path if o else None,
+            "error": det.error if det else None}
+
+
+@app.put("/api/objects")
+def put_objects(body: ObjectClassesIn, request: Request):
+    """Change the class list. Re-encoding new names takes a few seconds once (then cached)."""
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "object classes")
+    s = _load_app_settings()
+    s["object_classes"] = body.classes
+    _save_app_settings(s)
+    for p in _all_pipelines():
+        _apply_object_classes(p, s)
+    return get_objects()
 
 
 # --- Privacy: retention ------------------------------------------------------------------

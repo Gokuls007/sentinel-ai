@@ -151,6 +151,21 @@ class RulesConfig:
     compile_rate_limit_per_min: int = 10
 
 
+DEFAULT_OBJECT_CLASSES = ["cardboard box", "chair", "ladder", "backpack", "hard hat", "safety vest", "forklift"]
+
+
+@dataclass
+class ObjectsConfig:
+    """Open-vocabulary objects (YOLO-World) in Warehouse mode, next to the person tracker and pose."""
+    enabled: bool = True
+    model_path: str = "yolov8s-worldv2.pt"
+    classes: list[str] = field(default_factory=lambda: list(DEFAULT_OBJECT_CLASSES))
+    confidence: float = 0.3  # open-vocabulary scores run low; below ~0.3 a soft bag can read as a box
+    every_n_frames: int = 1  # run on every Nth frame (the last result is reused in between)
+    imgsz: int = 640
+    cache_dir: str = "data/cache"  # encoded class names (CLIP runs only when the list changes)
+
+
 @dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
@@ -173,6 +188,7 @@ class SentinelConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     rules: RulesConfig = field(default_factory=RulesConfig)
+    objects: ObjectsConfig = field(default_factory=ObjectsConfig)
     
     source: str = "0"
     camera_id: str = "cam-0"  # recorded on every event; one pipeline = one camera
@@ -224,6 +240,13 @@ class SentinelConfig:
         cfg.detector.confidence_threshold = env("DETECTION_CONFIDENCE", float,
                                                 cfg.detector.confidence_threshold)
         cfg.detector.iou_threshold = env("IOU_THRESHOLD", float, cfg.detector.iou_threshold)
+        cfg.objects.enabled = env("OBJECTS_ENABLED", bool, cfg.objects.enabled)
+        cfg.objects.model_path = env("OBJECT_MODEL", str, cfg.objects.model_path)
+        cfg.objects.confidence = env("OBJECT_CONFIDENCE", float, cfg.objects.confidence)
+        cfg.objects.every_n_frames = max(1, env("OBJECT_EVERY_N_FRAMES", int, cfg.objects.every_n_frames))
+        raw_classes = env("OBJECT_CLASSES", str, "")
+        if raw_classes:
+            cfg.objects.classes = [c.strip() for c in raw_classes.split(",") if c.strip()]
         if env("FORCE_CPU", bool, False):
             cfg.detector.device = "cpu"
 
