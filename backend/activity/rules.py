@@ -9,21 +9,27 @@ Rules first (each needs only the body parts it uses, and isn't offered without t
 - **Bending**: trunk flexion of ``bend_deg`` or more, or (bending toward a front camera, which
   hides the angle) the torso foreshortened to ``bend_torso_ratio`` of its upright length, or
   the hands down at knee height with the legs extended (a squat pick-up with an upright back).
-- **Lifting**: bending with the wrists low (near or below the knees) while the hips stay up
-  (not sitting or kneeling), then rising to upright within ``lift_window_s``; shown for
+  Torso length is measured against the thigh, so walking away from the camera (everything
+  shrinks) isn't mistaken for a bend.
+- **Lifting**: bending with the wrists low (below mid-thigh) while the hips stay up (not
+  sitting or kneeling), then rising to upright within ``lift_window_s`` **with the hands up in
+  front** (holding something; after a bend without a load the arms hang); shown for
   ``lift_show_s``.
-- **Carrying**: upright, wrists between hips and shoulders in front of the body, holding a
-  detected COCO object (backpack, handbag, suitcase). Without a detected object (COCO has no
-  "box"), only when walking with the hands together and raised above the hips (hanging arms
-  overlap in a side view), and marked low confidence.
+- **Carrying**: after a lift, while the hands stay up in front; it ends when both arms hang for
+  ``hang_s`` or the person bends (putting it down). Also: upright, wrists between hips and
+  shoulders, holding a detected COCO object (backpack, handbag, suitcase); or walking with the
+  hands together and raised (low confidence).
 - **Sitting**: thighs (hip -> knee) well off vertical, or the hips dropped by ``sit_drop`` of the
   upright torso length, with an upright trunk.
-- **Walking / Standing**: upright, hip speed over / under ``walk_speed`` body heights per second.
+- **Walking / Standing**: upright, hip speed over / under ``walk_speed`` body heights per second,
+  or growing/shrinking in the image (walking toward or away from the camera) faster than
+  ``approach_rate`` per second.
 
 Labels are smoothed (majority over ``smooth_s``) and each person keeps a short history
 (``history_s``), live only: nothing is stored per person.
 
-Tuned only on CAUCAFall subjects 1-5 (subjects 6-10 are the held-out fall test set). Where a
+Tuned only on CAUCAFall subjects 1-5 (subjects 6-10 are the held-out fall test set) and on
+the author's own side-view lift-and-carry recording. Where a
 learned model could help later: the ActionLSTM for Lifting vs Bending timing and Carrying with
 no visible object.
 """
@@ -62,11 +68,17 @@ class ActivityConfig:
     legs_extended: float = 0.5        # knees this far below the hips (x torso): not sitting
     knee_margin: float = 0.0          # wrists at or below knee height (x torso): reaching low
     low_hold_s: float = 0.5           # hands low this long (not walking) before a rise counts as a lift
-    walk_speed: float = 0.35          # body heights per second
+    low_gap_s: float = 0.3            # hands-low gaps shorter than this don't restart that timer
+    walk_speed: float = 0.25          # body heights per second
+    carry_walk_speed: float = 0.35    # the no-object, hands-raised Carrying needs a brisker walk
+    approach_rate: float = 0.22       # |d ln(torso length)| per second: walking toward/away from the camera
+    lift_hands_low: float = 0.4       # wrists below this far from hip to knee (0 = hips, 1 = knees)
+    held_margin: float = 0.15         # a wrist this far above the hips (x torso) is "up", holding
+    hang_s: float = 0.5               # both arms down this long: no longer carrying
     speed_window_s: float = 1.0
     reach_margin: float = 0.03        # body heights above the head
     lift_window_s: float = 4.0
-    lift_show_s: float = 2.0
+    lift_show_s: float = 1.0
     smooth_s: float = 1.0
     history_s: float = 120.0
 
@@ -79,10 +91,14 @@ class _Track:
     since: float = 0.0
     low_bend_at: float | None = None                 # last time: bending with wrists low
     low_since: float | None = None                   # start of the current hands-low stretch
+    low_last: float | None = None                    # last frame with the hands low
     lift_until: float = 0.0
     history: list = field(default_factory=list)      # [label, start, end]
     detail: str | None = None
     torso_up: float | None = None                    # upright torso length (px), slow average
+    torso_rel_up: float | None = None                # upright torso / thigh length (scale-free)
+    carrying: bool = False                           # lifted something and still holding it
+    hang_since: float | None = None                  # both arms down since (while carrying)
     hip_up: float | None = None                      # upright hip height (image y)
 
 
@@ -116,14 +132,18 @@ class ActivityTracker:
         kp = np.asarray(kp, float)
         st = self.tracks.setdefault(tid, _Track())
         parts = visible_parts(kp, c.min_conf)
+        if body_height <= 1.0 and box is not None:  # no ankles in view: use the box
+            body_height = box[3] - box[1]
         bh = max(body_height, 1.0)
         if fallen:
+            st.carrying = False
             return FALLEN, None, "high"
         sh, hip = _mid(kp, L_SH, R_SH, c.min_conf), _mid(kp, L_HIP, R_HIP, c.min_conf)
         head = min((kp[i, 1] for i in (NOSE, L_EYE, R_EYE) if kp[i, 2] >= c.min_conf), default=None)
         wrists = [kp[i, :2] for i in (L_WR, R_WR) if kp[i, 2] >= c.min_conf]
         if hip is not None:
-            st.hips.append((ts, tuple(hip), bh))
+            torso_px = float(math.hypot(*(sh - hip))) if sh is not None else None
+            st.hips.append((ts, tuple(hip), bh, torso_px))
         while st.hips and ts - st.hips[0][0] > c.speed_window_s:
             st.hips.popleft()
 
@@ -146,42 +166,69 @@ class ActivityTracker:
         if knee is not None and parts["knees"]:
             thigh = _angle_from_vertical(hip, knee)  # 0 = straight down (standing)
             thigh = 180 - thigh if thigh > 90 else thigh
-        speed = 0.0
+        speed = approach = 0.0
         if len(st.hips) >= 2 and st.hips[-1][0] - st.hips[0][0] > 0.3:
-            (t0, p0, b0), (t1, p1, _b1) = st.hips[0], st.hips[-1]
+            (t0, p0, b0, s0), (t1, p1, _b1, s1) = st.hips[0], st.hips[-1]
             speed = math.hypot(p1[0] - p0[0], p1[1] - p0[1]) / max(b0, 1.0) / (t1 - t0)
+            if s0 and s1:
+                approach = abs(math.log(s1 / s0)) / (t1 - t0)
+        thigh_len = float(math.hypot(*(knee - hip))) if thigh is not None else 0.0
+        torso_rel = torso / thigh_len if thigh_len > 0.2 * torso else None
         # Upright reference: torso length and hip height while clearly standing.
         if trunk <= 15 and (thigh is None or thigh <= 25):
             st.torso_up = torso if st.torso_up is None else max(torso, 0.97 * st.torso_up + 0.03 * torso)
             st.hip_up = hip[1] if st.hip_up is None else 0.9 * st.hip_up + 0.1 * hip[1]
+            if torso_rel is not None:
+                st.torso_rel_up = (torso_rel if st.torso_rel_up is None
+                                   else max(torso_rel, 0.97 * st.torso_rel_up + 0.03 * torso_rel))
         hip_drop = ((hip[1] - st.hip_up) / st.torso_up) if st.torso_up and st.hip_up is not None else 0.0
-        foreshortened = st.torso_up is not None and torso <= c.bend_torso_ratio * st.torso_up and hip_drop < c.sit_drop
+        if torso_rel is not None and st.torso_rel_up:  # scale-free: walking away shrinks both
+            foreshortened = torso_rel <= c.bend_torso_ratio * st.torso_rel_up and hip_drop < c.sit_drop
+        else:
+            foreshortened = (st.torso_up is not None and torso <= c.bend_torso_ratio * st.torso_up
+                             and hip_drop < c.sit_drop)
+        # A wrist up in front (above the hips): holding something.
+        held = any(w[1] <= hip[1] - c.held_margin * torso for w in wrists)
         # Hands down at knee height with the legs extended (not sitting): reaching low, e.g. a
         # squat pick-up with an upright back (CAUCAFall "Pick up object" looks like this).
         legs_out = knee is not None and (knee[1] - hip[1]) >= c.legs_extended * torso
         low_reach = legs_out and len(wrists) > 0 and max(w[1] for w in wrists) >= knee[1] - c.knee_margin * torso
         if trunk >= c.bend_deg or foreshortened or low_reach:
-            low_line = knee[1] - 0.1 * bh if knee is not None else hip[1] + 0.35 * bh
+            st.carrying = False  # bending puts it down (or picks something else up)
+            low_line = (hip[1] + c.lift_hands_low * (knee[1] - hip[1]) if knee is not None
+                        else hip[1] + 0.35 * bh)
             hips_up = hip_drop < c.lift_hip_drop and (thigh is None or thigh < c.sit_thigh_deg)
             hands_low = bool(wrists) and max(w[1] for w in wrists) >= low_line
             if hands_low and hips_up and speed < c.walk_speed:
                 st.low_since = ts if st.low_since is None else st.low_since
+                st.low_last = ts
                 if ts - st.low_since >= c.low_hold_s:
                     st.low_bend_at = ts
-            else:
+            elif st.low_last is None or ts - st.low_last > c.low_gap_s:  # brief keypoint jitter is ignored
                 st.low_since = None
             return BENDING, None, "high"
         # Lifting: bent with hands low, now upright again.
         st.low_since = None
-        if st.low_bend_at is not None and ts - st.low_bend_at <= c.lift_window_s and trunk <= c.upright_deg:
-            st.lift_until, st.low_bend_at = ts + c.lift_show_s, None
+        if st.low_bend_at is not None and ts - st.low_bend_at > c.lift_window_s:
+            st.low_bend_at = None
+        if st.low_bend_at is not None and trunk <= c.upright_deg and held:
+            st.lift_until, st.low_bend_at, st.carrying, st.hang_since = ts + c.lift_show_s, None, True, None
         if ts < st.lift_until:
             return LIFTING, None, "high"
+        if st.carrying:
+            if held:
+                st.hang_since = None
+            else:
+                st.hang_since = ts if st.hang_since is None else st.hang_since
+                if ts - st.hang_since >= c.hang_s:
+                    st.carrying = False
 
         if trunk <= c.bend_deg and ((thigh is not None and thigh >= c.sit_thigh_deg)
                                      or (parts["knees"] and hip_drop >= c.sit_drop)):
             return SITTING, None, "high"
-        walking = speed >= c.walk_speed and (parts["knees"] or parts["ankles"])
+        walking = (speed >= c.walk_speed or approach >= c.approach_rate) and (parts["knees"] or parts["ankles"])
+        if st.carrying and trunk <= c.upright_deg:
+            return CARRYING, None, "high"
 
         if wrists and len(wrists) == 2 and trunk <= c.upright_deg:
             between = all(sh[1] - 0.05 * bh <= w[1] <= hip[1] + 0.1 * bh for w in wrists)
@@ -192,7 +239,7 @@ class ActivityTracker:
                 return CARRYING, held[0], "high"
             together = math.hypot(*(wrists[0] - wrists[1])) <= 0.3 * bh
             raised = all(w[1] <= hip[1] - 0.1 * bh for w in wrists)  # hanging arms (side view) overlap too
-            if between and together and raised and walking:
+            if between and together and raised and walking and speed >= c.carry_walk_speed:
                 return CARRYING, None, "low"
         if not (parts["knees"] or parts["ankles"]):
             return UPPER_ONLY, None, "low"

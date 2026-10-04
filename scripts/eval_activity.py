@@ -160,8 +160,9 @@ def main() -> int:
         shown = Counter(lbl for _t, lbl in labels).most_common(4)
         lift_s = sum(t1 - t0 for (t0, lbl), (t1, _n) in pairwise(labels) if lbl == "Lifting")
         false_lift = activity.lower() in ("walk", "sit down", "hop", "kneel") and lift_s >= args.min_s
+        carry_s = sum(t1 - t0 for (t0, lbl), (t1, _n) in pairwise(labels) if lbl == "Carrying")
         rows.append({"clip": rel, "activity": activity, "ok": ok, "problems": problems, "shown": shown,
-                     "false_lift": false_lift})
+                     "false_lift": false_lift, "false_carry": carry_s >= args.min_s})  # nobody carries anything
         shown_text = ", ".join(f"{k} {v}" for k, v in shown)
         print(f"{'PASS' if ok else 'FAIL'} {rel}: {', '.join(problems) or 'ok'}  [{shown_text}]", flush=True)
 
@@ -178,8 +179,9 @@ def main() -> int:
              f"_Measured {datetime.now():%Y-%m-%d} with `python scripts/eval_activity.py --subjects {args.subjects}`._ "
              f"CAUCAFall subjects {args.subjects} "
              f"({'the tuning set' if tuned else 'held out: never used for tuning'}), "
-             f"{len(rows)} clips. The rules were tuned **only on subjects 1-5**; subjects 6-10 are held out (they are "
-             f"also the fall test set). A clip passes when its expected label shows for at least {args.min_s:g} s "
+             f"{len(rows)} clips. The rules were tuned **only on subjects 1-5** (plus one own lift-and-carry "
+             f"recording, below); subjects 6-10 are held out (they are also the fall test set). "
+             f"A clip passes when its expected label shows for at least {args.min_s:g} s "
              "(main person, smoothed labels).",
              "", "| Clip type | Expected | Passed |", "|---|---|---|"]
     expect_text = {"Walk": "Walking", "Sit down": "Sitting", "Pick up object": "Bending, then Lifting",
@@ -189,7 +191,9 @@ def main() -> int:
         lines.append(f"| {act} | {expect_text.get(act, '-')} | {k} / {n} |")
     others = [r for r in rows if r["activity"].lower() in ("walk", "sit down", "hop", "kneel")]
     lines += ["", f"False \"Lifting\" (shown for {args.min_s:g} s or more in Walk, Sit down, Hop or Kneel clips): "
-                  f"{sum(r['false_lift'] for r in others)} / {len(others)} clips."]
+                  f"{sum(r['false_lift'] for r in others)} / {len(others)} clips.",
+              "", f"False \"Carrying\" (shown for {args.min_s:g} s or more; nobody carries anything in these clips): "
+                  f"{sum(r['false_carry'] for r in rows)} / {len(rows)} clips."]
     fails = [r for r in rows if not r["ok"]]
     if fails:
         lines += ["", "Failures: " + "; ".join(f"`{r['clip']}` ({', '.join(r['problems'])})" for r in fails)]
