@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Film, Square } from 'lucide-react';
 import DashboardPanel from './DashboardPanel';
+import AlertPanel from './AlertPanel';
 import ErgonomicsPanel from './ErgonomicsPanel';
 import VideoFeed from './VideoFeed';
 import { ActivityPanel, ViewBanner } from './ActivityPanel';
 import { describeError, fetchJson, postJson } from '../lib/api';
 import { useCameraFrames } from '../lib/laptopCamera';
+import { useFeed } from '../context/liveFeed';
+import { isTestAlert } from '../lib/eventTypes';
 import { chipClass, inputClass } from '../lib/ui';
 
 const TEST = 'test';
@@ -13,6 +16,8 @@ const TEST = 'test';
 const TestFeed = ({ label }) => {
   const { status, frame, frameData } = useCameraFrames(TEST);
   const live = status === 'live';
+  const { alerts } = useFeed();
+  const testAlerts = useMemo(() => alerts.filter(isTestAlert), [alerts]);
   return (
     <div className="space-y-3">
       <ViewBanner view={frameData?.view} />
@@ -22,6 +27,9 @@ const TestFeed = ({ label }) => {
       <div className="grid md:grid-cols-2 gap-3">
         <ActivityPanel connected={live} activity={frameData?.activity} ergonomics={frameData?.ergonomics} />
         <ErgonomicsPanel connected={live} ergonomics={frameData ? frameData.ergonomics : null} />
+      </div>
+      <div className="max-h-72">
+        <AlertPanel alerts={testAlerts} connected={live} />
       </div>
     </div>
   );

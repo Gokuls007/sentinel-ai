@@ -63,3 +63,17 @@ def test_event_bus_unsubscribe():
     bus.unsubscribe("store")
     bus.publish(SimpleNamespace(alert_id="a1"))
     assert [n for n, _e in seen] == ["ws"]
+
+
+@pytest.mark.parametrize(("camera", "flagged"), [("test", True), ("laptop", False)])
+def test_test_footage_alerts_are_flagged(camera, flagged):
+    from api import server
+    from events.bus import EventBus
+
+    event = SimpleNamespace(to_alert_dict=lambda: {"alert_id": "a1", "camera_id": camera})
+    p = SimpleNamespace(config=SimpleNamespace(camera_id=camera), event_bus=EventBus(), on_frame=lambda f: f)
+    server.alert_history.clear()
+    server._attach(p, primary=False)
+    p.event_bus.publish(event)
+    assert server.alert_history[-1].get("test", False) is flagged
+    server.alert_history.clear()

@@ -11,6 +11,7 @@ import PageErrorBoundary from './PageErrorBoundary';
 import { useFeed } from '../context/liveFeed';
 import { loadStored, saveStored, usePoll } from '../lib/api';
 import { stopLaptopCamera } from '../lib/laptopCamera';
+import { isTestAlert } from '../lib/eventTypes';
 
 const SETTINGS = { to: '/settings', label: 'Settings', title: 'Settings', icon: Settings };
 // Each mode shows only its own pages.
@@ -76,7 +77,7 @@ function useUnseenAlerts(onEvents) {
   const { alerts } = useFeed();
   // First ever visit: start counting from now rather than flagging all history as new.
   const [lastSeen, setLastSeen] = useState(() => loadStored(LAST_SEEN_KEY, Date.now() / 1000));
-  const newest = alerts[0]?.timestamp || 0;
+  const newest = alerts.find((a) => !isTestAlert(a))?.timestamp || 0;
 
   // Adjust state during render (React's recommended alternative to an effect here).
   if (onEvents && newest > lastSeen) setLastSeen(newest);
@@ -88,6 +89,7 @@ function useUnseenAlerts(onEvents) {
   if (onEvents) return 0;
   let n = 0;
   for (const a of alerts) {
+    if (isTestAlert(a)) continue; // test footage never counts as new
     if ((a.timestamp || 0) > lastSeen) n += 1;
     else break; // alerts are newest first
   }
