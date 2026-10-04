@@ -101,6 +101,8 @@ def _attach(p: SentinelPipeline, primary: bool) -> None:
     def handle_event(event: Event):
         # Same alert shape the dashboard always received, plus event_id and camera_id.
         alert_dict = to_serializable(event.to_alert_dict())
+        if p.config.camera_id == TEST_CAMERA:
+            alert_dict["test"] = True  # demo footage: labelled TEST, not counted as new
         with history_lock:
             alert_history.append(alert_dict)
         _broadcast_alert(json.dumps({"type": "alert", "alert": alert_dict}))

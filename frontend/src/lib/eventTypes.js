@@ -11,3 +11,8 @@ export function eventTypeLabel(type) {
   if (String(type).startsWith('rule:')) return `Rule: ${String(type).slice(5).replace(/[-_]/g, ' ')}`;
   return TYPE_LABELS[type] || String(type).replace(/_/g, ' ');
 }
+
+/** An alert from "Test with demo footage" (the `test` camera): shown, labelled TEST, never counted as new. */
+export function isTestAlert(alert) {
+  return Boolean(alert?.test) || alert?.camera_id === 'test';
+}

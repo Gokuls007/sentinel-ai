@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import DashboardPanel from './DashboardPanel';
 import { apiUrl, useNow } from '../lib/api';
-import { eventTypeLabel } from '../lib/eventTypes';
+import { eventTypeLabel, isTestAlert } from '../lib/eventTypes';
 
 const SEVERITY_COLORS = {
   critical: 'text-red-500 bg-red-950/20 border-red-500/50 glow-red',
@@ -24,12 +24,13 @@ const AlertItem = ({ alert, nowMs }) => {
   // A new query string on retry, so the browser doesn't reuse a cached 404.
   const clipUrl = apiUrl(`/api/clips/${id}`) + (attempt ? `?try=${attempt}` : '');
   const ageS = nowMs / 1000 - (alert.timestamp || 0);
-  const clipLikely = alert.has_clip || ageS >= CLIP_READY_AFTER_S;
+  const test = isTestAlert(alert); // test footage: nothing is stored, so no snapshot, clip or details
+  const clipLikely = !test && (alert.has_clip || ageS >= CLIP_READY_AFTER_S);
 
   return (
     <div className={`p-2 border-l-2 ${SEVERITY_COLORS[alert.severity] || SEVERITY_COLORS.low} transition-all`}>
       <div className="flex gap-2">
-        {!snapshotFailed && (
+        {!snapshotFailed && !test && (
           <img
             src={apiUrl(`/api/snapshots/${id}`)}
             alt=""
@@ -44,6 +45,11 @@ const AlertItem = ({ alert, nowMs }) => {
               {new Date(alert.timestamp * 1000).toLocaleTimeString()}
             </span>
             <span className="text-[8px] font-extrabold tracking-widest uppercase small-caps">
+              {test && (
+                <span className="mr-1.5 px-1 border border-amber-400/60 text-amber-300" title="From test footage: not stored, not notified">
+                  TEST
+                </span>
+              )}
               {eventTypeLabel(alert.alert_type)} // {alert.severity}
             </span>
           </div>
@@ -56,7 +62,7 @@ const AlertItem = ({ alert, nowMs }) => {
               {typeof alert.confidence === 'number' && ` // ${(alert.confidence * 100).toFixed(0)}%`}
             </span>
             <span className="flex items-center gap-1.5">
-            {alert.event_id != null && (
+            {alert.event_id != null && !test && (
               <Link
                 to={`/events?event=${encodeURIComponent(alert.event_id)}`}
                 className="text-[8px] mono uppercase font-bold px-1.5 py-px border border-current opacity-70 hover:opacity-100"
