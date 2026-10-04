@@ -49,6 +49,9 @@ EXPECT = {
     "bend without lift": (["Bending"], ["Lifting", "Carrying"]),
     "walk": (["Walking"], ["Lifting"]),
     "walk back": (["Walking"], ["Lifting"]),
+    "carry one hand": (["Carrying"], ["Lifting"]),  # a load held low at the side
+    "raise to chest": ([], []),
+    "handle bag low": ([], []),
 }
 
 
@@ -75,6 +78,7 @@ def main() -> int:
     ap.add_argument("--device", default="auto")
     ap.add_argument("--cache", default=os.path.join(ROOT, "outputs", "activity_cache"))
     ap.add_argument("--write", metavar="MD", help="add or replace this clip's section in a markdown file")
+    ap.add_argument("--held-out", action="store_true", help="this clip was never used for tuning (say so)")
     args = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -104,23 +108,28 @@ def main() -> int:
         span = f"{r['start']:5.1f}-{r['end']:5.1f}s"
         print(f"{flag} {r['action']:<18} {span}  expected {r['expected']:<20} [{shown}]{extra}")
     if args.write:
-        write_section(args.write, stem, rows, len(frames) / max(frames[-1]["ts"], 1e-6) if frames else 0)
+        write_section(args.write, stem, rows, args.held_out)
     return 0
 
 
-def write_section(md_path: str, stem: str, rows: list[dict], fps: float) -> None:
+def write_section(md_path: str, stem: str, rows: list[dict], held_out: bool = False) -> None:
     from datetime import datetime
 
     start, end = f"<!-- benchmark:activity-own-{stem}:start -->", f"<!-- benchmark:activity-own-{stem}:end -->"
     lines = [start,
              f"_Measured {datetime.now():%Y-%m-%d} with "
              f"`python scripts/eval_activity_own.py data/recordings/{stem}.mp4`._ "
-             "One hand-labelled webcam recording (not committed), side/oblique view; it was used for tuning "
-             "together with CAUCAFall subjects 1-5, so these are training-set numbers, not an accuracy estimate.",
+             + ("One hand-labelled webcam recording (not committed), **held out**: labelled before the first run, "
+              "evaluated once, never used for tuning."
+              if held_out else
+              "One hand-labelled webcam recording (not committed), side/oblique view; it was used for tuning "
+              "together with CAUCAFall subjects 1-5, so these are training-set numbers, not an accuracy estimate."),
              "", "| Action | Time (s) | Expected | Result | Labels shown (frames) |", "|---|---|---|---|---|"]
     for r in rows:
         shown = ", ".join(f"{k} {v}" for k, v in r["shown"])
         result = "pass" if r["ok"] else ("missed" if not r["hit"] else f"showed {', '.join(r['bad'])}")
+        if r["expected"] == "(reported only)":
+            result = "not scored"
         lines.append(f"| {r['action']} | {r['start']:.1f}-{r['end']:.1f} | {r['expected']} | {result} | {shown} |")
     lines.append(end)
     md = "\n".join(lines)
@@ -130,7 +139,8 @@ def write_section(md_path: str, stem: str, rows: list[dict], fps: float) -> None
         before, rest = text.split(start, 1)
         text = before + md + rest.split(end, 1)[1]
     else:
-        text = text.rstrip() + "\n\n## Activity labels (own lift-and-carry recording)\n\n" + md + "\n"
+        title = "own recording, held out" if held_out else "own lift-and-carry recording"
+        text = text.rstrip() + f"\n\n## Activity labels ({title})\n\n" + md + "\n"
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(text)
 

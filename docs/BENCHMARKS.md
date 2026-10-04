@@ -402,7 +402,7 @@ _Measured 2026-10-03 with `python scripts/eval_activity_own.py data/recordings/l
 | bend to pick up | 9.4-10.9 | Bending | pass | Bending 23, Lifting 9, Walking 2 |
 | lift | 10.9-11.8 | Lifting | pass | Lifting 22, Bending 2 |
 | carry | 11.8-22.2 | Carrying | pass | Carrying 155, Lifting 12 |
-| put down | 22.3-23.7 | (reported only) | pass | Carrying 32 |
+| put down | 22.3-23.7 | (reported only) | not scored | Carrying 32 |
 | walk back | 24.0-26.0 | Walking | pass | Walking 15, Standing 14, Carrying 11, Upper body only 1 |
 <!-- benchmark:activity-own-laptop_20261003_215620:end -->
 
@@ -410,3 +410,40 @@ Not covered yet: the clip has no reach overhead, squat, or bend without lifting,
 untested on real footage (the bend-without-lift case is covered by unit tests only). "Put down"
 has no label of its own: Carrying ends about 1 s after both arms drop (0.5 s hang plus
 smoothing). The view is side/oblique and partly front-on, with a soft bag rather than a box.
+
+## Activity labels (own recording, held out)
+
+<!-- benchmark:activity-own-laptop_20261003_222917:start -->
+_Measured 2026-10-03 with `python scripts/eval_activity_own.py data/recordings/laptop_20261003_222917.mp4`._ One hand-labelled webcam recording (not committed), **held out**: labelled before the first run, evaluated once, never used for tuning.
+
+| Action | Time (s) | Expected | Result | Labels shown (frames) |
+|---|---|---|---|---|
+| carry | 2.8-12.6 | Carrying | missed | Standing 106, Lying down 29, Walking 23 |
+| reach overhead | 13.1-17.3 | Reaching overhead | pass | Lying down 31, Standing 22, Reaching overhead 21 |
+| put down | 17.7-18.9 | (reported only) | not scored | Lying down 18, Standing 9, Reaching overhead 1 |
+| handle bag low | 19.1-24.3 | (reported only) | not scored | Lying down 45, Fallen 28, Standing 13, Sitting 2 |
+| lift | 26.6-27.6 | Lifting | missed | Walking 16, Upper body only 5, Bending 2, Sitting 1 |
+| carry one hand | 28.0-30.3 | Carrying | missed | Walking 21, Standing 13, Lying down 11 |
+| raise to chest | 30.3-31.3 | (reported only) | not scored | Lying down 15, Standing 11 |
+| carry | 31.3-35.0 | Carrying | missed | Lying down 36, Standing 28, Bending 2 |
+| put down | 35.3-36.4 | (reported only) | not scored | Lying down 15, Standing 12 |
+| walk | 36.6-37.6 | Walking | pass | Lying down 21, Standing 4, Walking 1 |
+<!-- benchmark:activity-own-laptop_20261003_222917:end -->
+
+**Read this with the table.** This clip is mostly **front-on** and dim, with a soft bag rather
+than a box. It starts already carrying, and it has no squat or bend without lifting. Result:
+1 of 5 scored actions caught (reach overhead), plus walking. Why the rest failed (diagnosed
+after the run; nothing was tuned on it):
+
+- **A false "person" (the gaming chair next to the bright monitor)** was detected in about 178
+  of 597 frames. The evaluation follows the largest person box, so in those frames it scored
+  the chair, whose wide box reads as Lying down. Live, it would show as a phantom person.
+- **A false confirmed fall** on the real person (21.5-23.1 s) while swinging the bag low near the
+  left edge of the frame. Live, this would have sent a fall alert.
+- **Carrying needs a lift first**, so carrying from the first frame isn't recognised, and a bag
+  held low in one hand at the side isn't covered by the carry rule.
+- **The one lift (26.6-27.6 s)** happened partly out of frame, one-handed.
+
+What would help (not done; to decide together): a third, side-on clip to tune on; ignoring
+person boxes with implausible keypoints (the chair); following the person the event is about
+rather than the largest box in the evaluation; and checking the fall detector on bag handling.
