@@ -129,7 +129,7 @@ def objects_api(tmp_config, monkeypatch):
     det = SimpleNamespace(classes=["cardboard box", "chair"], error=None, set_classes=None)
     det.set_classes = lambda classes: setattr(det, "classes", list(classes))
     monkeypatch.setattr(server, "config", tmp_config)
-    monkeypatch.setattr(server, "pipeline", SimpleNamespace(object_detector=det, config=tmp_config))
+    monkeypatch.setattr(server, "pipeline", SimpleNamespace(object_detector=det, config=tmp_config, mode_classes={}))
     monkeypatch.setattr(server, "_retention_worker", None)
     server._cameras.clear()
     with TestClient(server.app) as c:
@@ -137,13 +137,37 @@ def objects_api(tmp_config, monkeypatch):
         yield c
 
 
-def test_object_classes_api(objects_api):
-    assert objects_api.get("/api/objects").json()["classes"] == ["cardboard box", "chair"]
-    r = objects_api.put("/api/objects", json={"classes": ["Pallet  Jack", "chair", "chair"]})
-    assert r.status_code == 200 and r.json()["classes"] == ["pallet jack", "chair"]
-    assert objects_api.det.classes == ["pallet jack", "chair"]
+def test_object_classes_per_mode_api(objects_api):
+    from api import server
+    from config.settings import DEFAULT_EXAM_OBJECTS, DEFAULT_OBJECT_CLASSES
+
+    body = objects_api.get("/api/objects").json()
+    assert body["mode"] == "warehouse" and body["classes"] == DEFAULT_OBJECT_CLASSES
+    assert objects_api.get("/api/objects", params={"mode": "exam"}).json()["classes"] == DEFAULT_EXAM_OBJECTS
+    assert objects_api.get("/api/objects", params={"mode": "posture"}).json()["classes"] == []
+    r = objects_api.put("/api/objects", json={"mode": "exam", "classes": ["Cell  Phone", "book", "book"]})
+    assert r.status_code == 200 and r.json()["classes"] == ["cell phone", "book"]
+    assert server.pipeline.mode_classes["exam"] == ["cell phone", "book"]  # the pipeline switches lists
+    assert server.pipeline.mode_classes["warehouse"] == DEFAULT_OBJECT_CLASSES  # other modes untouched
+    assert objects_api.put("/api/objects", json={"mode": "warehouse", "classes": []}).status_code == 200
     assert objects_api.put("/api/objects", json={"classes": ["<script>"]}).status_code == 422
-    assert objects_api.put("/api/objects", json={"classes": []}).status_code == 422
+    assert objects_api.put("/api/objects", json={"mode": "fall", "classes": ["x"]}).status_code == 422
+
+
+def test_each_mode_detects_only_its_own_list():
+    from core.pipeline import SentinelPipeline
+
+    calls = []
+    det = SimpleNamespace(classes=["chair"], set_classes=lambda c: (calls.append(c), setattr(det, "classes", c)),
+                          detect=lambda frame: ["found"])
+    p = SentinelPipeline.__new__(SentinelPipeline)
+    p.object_detector, p.mode_classes = det, {"warehouse": ["chair"], "exam": ["cell phone"], "posture": []}
+    p.mode = "warehouse"
+    assert p._detect_objects(None) == ["found"] and calls == []
+    p.mode = "exam"
+    assert p._detect_objects(None) == ["found"] and calls == [["cell phone"]]
+    p.mode = "posture"
+    assert p._detect_objects(None) == []  # no list: nothing detected
 
 
 def test_feed_status_line_says_whether_objects_run_and_what_they_see():

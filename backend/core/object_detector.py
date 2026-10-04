@@ -42,6 +42,9 @@ DEFAULT_SYNONYMS = {
     "chair": ["chair", "office chair", "gaming chair", "wooden chair"],
     "cardboard box": ["cardboard box", "shipping box", "carton"],
     "couch": ["couch", "sofa"],
+    "paper": ["paper", "sheet of paper", "notes"],
+    "earbuds": ["earbuds", "earphones", "wireless earbuds"],
+    "headphones": ["headphones", "headset"],
 }
 
 

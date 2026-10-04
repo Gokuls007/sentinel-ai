@@ -634,7 +634,7 @@ APP_DEFAULTS = {
     "retention_days": 30,
     "privacy_seen": False,
     "skeleton_only": False,  # never store video or images: events keep keypoints only
-    "object_classes": None,  # Warehouse objects (YOLO-World); None = OBJECT_CLASSES / the defaults
+    "object_classes": None,  # {mode: [classes]} overrides; None = OBJECT_CLASSES* / the defaults
     "hazard_classes": None,  # objects whose touch alerts; None = HAZARD_CLASSES / the defaults
 }
 RETENTION_MAX_DAYS = 3650
@@ -668,7 +668,11 @@ def _load_app_settings() -> dict:
     out["privacy_seen"] = bool(out["privacy_seen"])
     out["skeleton_only"] = bool(out["skeleton_only"])
     classes = out.get("object_classes")
-    out["object_classes"] = ([str(c) for c in classes][:120] if isinstance(classes, list) and classes else None)
+    if isinstance(classes, list):  # before per-mode lists: one list, for warehouse
+        classes = {"warehouse": classes}
+    out["object_classes"] = ({m: [str(c) for c in v][:120] for m, v in classes.items()
+                              if m in ("warehouse", "exam", "posture") and isinstance(v, list)}
+                             if isinstance(classes, dict) else None) or None
     hazards = out.get("hazard_classes")
     out["hazard_classes"] = [str(c) for c in hazards][:120] if isinstance(hazards, list) else None
     return out
@@ -888,10 +892,18 @@ def exam_end(session_id: int, request: Request):
 
 # --- Warehouse objects (YOLO-World) -----------------------------------------------------------
 
+def _mode_classes(settings: dict | None = None) -> dict[str, list[str]]:
+    """Each mode's object list: the config's (OBJECT_CLASSES*), overridden by Settings."""
+    from config.settings import default_mode_classes
+
+    base = {m: list(v) for m, v in (config.objects.mode_classes if config else default_mode_classes()).items()}
+    saved = (settings or _load_app_settings()).get("object_classes") or {}
+    return {**base, **saved}
+
+
 def _apply_object_classes(p, settings: dict) -> None:
-    det = getattr(p, "object_detector", None)
-    if det is not None and settings.get("object_classes") and settings["object_classes"] != det.classes:
-        det.set_classes(settings["object_classes"])
+    if hasattr(p, "mode_classes"):
+        p.mode_classes = _mode_classes(settings)  # the detector switches lists on the next frame
     rules = getattr(p, "object_rules", None)
     if rules is not None and settings.get("hazard_classes") is not None:
         rules.hazard_classes = list(settings["hazard_classes"])
@@ -927,7 +939,8 @@ class HazardsIn(BaseModel):
 
 
 class ObjectClassesIn(BaseModel):
-    classes: list[str] = Field(..., min_length=1, max_length=120)
+    classes: list[str] = Field(..., max_length=120)  # empty: this mode detects no objects
+    mode: str = Field("warehouse", pattern=r"^(warehouse|exam|posture)$")
 
     @field_validator("classes")
     @classmethod
@@ -936,15 +949,16 @@ class ObjectClassesIn(BaseModel):
 
 
 @app.get("/api/objects")
-def get_objects():
-    """What Warehouse mode looks for besides people, and whether the detector is running."""
-    from config.settings import DEFAULT_OBJECT_CLASSES
+def get_objects(mode: str = Query("warehouse", pattern=r"^(warehouse|exam|posture)$")):
+    """What a mode looks for besides people (each mode has its own list), and whether the
+    detectors are running."""
+    from config.settings import default_mode_classes
 
     o = config.objects if config else None
     det = getattr(pipeline, "object_detector", None) if pipeline else None
-    classes = (det.classes if det else None) or _load_app_settings()["object_classes"] or \
-        (o.classes if o else DEFAULT_OBJECT_CLASSES)
-    return {"enabled": bool(o and o.enabled), "classes": classes, "defaults": DEFAULT_OBJECT_CLASSES,
+    lists = _mode_classes()
+    return {"enabled": bool(o and o.enabled), "mode": mode, "classes": lists.get(mode, []), "modes": lists,
+            "defaults": default_mode_classes().get(mode, []),
             "confidence": o.confidence if o else None, "model": o.model_path if o else None,
             "synonyms": o.synonyms if o else {}, "floors": o.floors if o else {}, "hazards": _hazards(),
             "error": det.error if det else None}
@@ -955,11 +969,11 @@ def put_objects(body: ObjectClassesIn, request: Request):
     """Change the class list. Re-encoding new names takes a few seconds once (then cached)."""
     _check_local_json(request, bool(config and config.allow_remote_camera_control), "object classes")
     s = _load_app_settings()
-    s["object_classes"] = body.classes
+    s["object_classes"] = {**(s.get("object_classes") or {}), body.mode: body.classes}
     _save_app_settings(s)
     for p in _all_pipelines():
         _apply_object_classes(p, s)
-    return get_objects()
+    return get_objects(body.mode)
 
 
 @app.put("/api/objects/hazards")
@@ -971,7 +985,7 @@ def put_hazards(body: HazardsIn, request: Request):
     _save_app_settings(s)
     for p in _all_pipelines():
         _apply_object_classes(p, s)
-    return get_objects()
+    return get_objects("warehouse")
 
 
 # --- Privacy: retention ------------------------------------------------------------------

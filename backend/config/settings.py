@@ -167,6 +167,13 @@ COCO_OBJECTS = [
 WAREHOUSE_OBJECTS = ["pillow", "cardboard box", "ladder", "hard hat", "safety vest", "forklift"]
 DEFAULT_OBJECT_CLASSES = COCO_OBJECTS + [c for c in WAREHOUSE_OBJECTS if c not in COCO_OBJECTS]
 DEFAULT_HAZARD_CLASSES = ["tv", "knife", "scissors", "oven", "laptop"]
+# Each mode detects and draws only its own list (posture: none).
+DEFAULT_EXAM_OBJECTS = ["cell phone", "book", "paper", "earbuds", "headphones"]
+OBJECT_MODES = ("warehouse", "exam", "posture")
+
+
+def default_mode_classes() -> dict[str, list[str]]:
+    return {"warehouse": list(DEFAULT_OBJECT_CLASSES), "exam": list(DEFAULT_EXAM_OBJECTS), "posture": []}
 
 
 @dataclass
@@ -176,7 +183,8 @@ class ObjectsConfig:
     enabled: bool = True
     model_path: str = "yolov8s-worldv2.pt"  # YOLO-World, for the classes COCO doesn't have
     coco_model_path: str = "yolo11m.pt"     # the 80 COCO classes (better on small handheld things)
-    classes: list[str] = field(default_factory=lambda: list(DEFAULT_OBJECT_CLASSES))
+    classes: list[str] = field(default_factory=lambda: list(DEFAULT_OBJECT_CLASSES))  # = mode_classes["warehouse"]
+    mode_classes: dict[str, list[str]] = field(default_factory=default_mode_classes)
     confidence: float = 0.3  # open-vocabulary scores run low; below ~0.3 a soft bag can read as a box
     every_n_frames: int = 1  # run on every Nth frame (the last result is reused in between)
     # Several prompts per class (YOLO-World is sensitive to wording); the best one wins per object.
@@ -184,6 +192,9 @@ class ObjectsConfig:
         "chair": ["chair", "office chair", "gaming chair", "wooden chair"],
         "cardboard box": ["cardboard box", "shipping box", "carton"],
         "couch": ["couch", "sofa"],
+        "paper": ["paper", "sheet of paper", "notes"],
+        "earbuds": ["earbuds", "earphones", "wireless earbuds"],
+        "headphones": ["headphones", "headset"],
     })
     # Per-class confidence floors (others use ``confidence``); set from the smoke test.
     floors: dict[str, float] = field(default_factory=lambda: {"chair": 0.25, "cardboard box": 0.25})
@@ -287,6 +298,11 @@ class SentinelConfig:
         raw_classes = env("OBJECT_CLASSES", str, "")
         if raw_classes:
             cfg.objects.classes = [c.strip() for c in raw_classes.split(",") if c.strip()]
+        cfg.objects.mode_classes["warehouse"] = list(cfg.objects.classes)
+        for mode in ("exam", "posture"):
+            raw = env(f"OBJECT_CLASSES_{mode.upper()}", str, None)
+            if raw is not None:
+                cfg.objects.mode_classes[mode] = [c.strip() for c in raw.split(",") if c.strip()]
         if env("FORCE_CPU", bool, False):
             cfg.detector.device = "cpu"
 

@@ -139,7 +139,9 @@ class SentinelPipeline:
         )
         self.skeleton_recorder = SkeletonRecorder(config.output.clips_dir)
         o = config.objects
-        self.object_detector = (ObjectDetector(o.classes, o.model_path, o.coco_model_path, COCO_OBJECTS,
+        self.mode_classes = {m: list(v) for m, v in o.mode_classes.items()}  # each mode: its own objects
+        self.object_detector = (ObjectDetector(self.mode_classes.get("warehouse", o.classes), o.model_path,
+                                               o.coco_model_path, COCO_OBJECTS,
                                                confidence=o.confidence, imgsz=o.imgsz, device=config.detector.device,
                                                cache_dir=o.cache_dir, every_n_frames=o.every_n_frames,
                                                synonyms=o.synonyms, floors=o.floors, vote_window=o.vote_window,
@@ -205,8 +207,7 @@ class SentinelPipeline:
         #    ergonomics; posture = the desk posture coach only (no alerts); exam = nothing yet.
         all_features = self.pose_estimator.get_all_features()
         posture = exam = None
-        objects = (self.object_detector.detect(frame)
-                   if self.mode == "warehouse" and self.object_detector is not None else [])
+        objects = self._detect_objects(frame)
         if self.mode == "warehouse":
             recovered = self._recover_fallen(frame, poses, all_features, timestamp)
             alerts = self.anomaly_engine.process(poses, all_features, timestamp, recovered=recovered)
@@ -250,6 +251,9 @@ class SentinelPipeline:
                 self._draw_skeleton(annotated_frame, pose)
             if self.mode == "posture":
                 self._draw_ghost(annotated_frame, self.posture.ghost())
+            if getattr(self, "mode_classes", {}).get(self.mode):  # this mode looks for objects: draw them
+                self._draw_objects(annotated_frame, objects)
+                self._draw_status(annotated_frame, self.objects_status(objects))
         lap("annotate")
 
         # 5. Events: clip + snapshot, then publish (store -> notifications -> WebSocket)
@@ -439,6 +443,16 @@ class SentinelPipeline:
                 cv2.rectangle(frame, (x1, top), (x1 + w + 8, top + h + 6), (0, 0, 200), -1)
                 cv2.putText(frame, line, (x1 + 4, top + h + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         return set(self._alert_labels)
+
+    def _detect_objects(self, frame) -> list:
+        """This mode's objects only (its own class list; none in a mode without one)."""
+        det = getattr(self, "object_detector", None)
+        wanted = getattr(self, "mode_classes", {}).get(self.mode, [])
+        if det is None or not wanted:
+            return []
+        if det.classes != wanted:
+            det.set_classes(wanted)  # switching modes: instant (YOLO-World prompts are cached)
+        return det.detect(frame)
 
     def objects_status(self, objects) -> str:
         """One line for the feed: is open-vocabulary detection running, and what it sees."""
