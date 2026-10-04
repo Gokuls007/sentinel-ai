@@ -144,6 +144,7 @@ class SentinelPipeline:
         self.mode = getattr(config, "mode", "warehouse")
         data_dir = os.path.dirname(os.path.abspath(config.output.db_path))
         self.posture = PostureCoach(baseline_path=os.path.join(data_dir, f"posture_baseline_{config.camera_id}.json"))
+        self.save_clips = True  # forensic clips and snapshots (off for "Test with demo footage")
         self.paused = False  # demo footage off: the loop idles without reading frames
         self._posture_id = None  # track id of the person the posture coach follows
 
@@ -226,7 +227,8 @@ class SentinelPipeline:
         for alert in alerts:
             self.total_alerts += 1
             # Forensic clip (pre + post alert) is encoded in the background.
-            want_clip = alert.details.get("record_clip", True)  # a rule can leave the clip out
+            # A rule can leave the clip out; test footage never saves one.
+            want_clip = self.save_clips and alert.details.get("record_clip", True)
             clip_path = (self.clip_recorder.save_clip(alert.alert_id, alert.timestamp, snapshot=annotated_frame)
                          if want_clip else None)
             clip_path = clip_path.replace("\\", "/") if clip_path else None
