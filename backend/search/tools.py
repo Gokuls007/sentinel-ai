@@ -22,7 +22,7 @@ MAX_FIND_LIMIT = 50
 DEFAULT_FIND_LIMIT = 10
 MAX_RESULT_CHARS = 12_000
 WEEKDAYS = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
-GROUPS = ("type", "severity", "zone", "camera", "track", "hour", "day", "weekday")
+GROUPS = ("type", "severity", "zone", "camera", "hour", "day", "weekday")  # never per track (person)
 
 TYPE_HELP = {
     "fall": "a person fell",
@@ -150,8 +150,6 @@ class SearchTools:
                 result["counts"] = {self._zone_label(k): v for k, v in counts.items()}
             elif group_by == "weekday":
                 result["counts"] = {WEEKDAYS[int(k)]: v for k, v in counts.items()}
-            elif group_by == "track":
-                result["counts"] = {(f"track {k}" if k else "(no track)"): v for k, v in counts.items()}
             else:
                 result["counts"] = counts
             result["group_by"] = group_by

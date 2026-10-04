@@ -74,12 +74,13 @@ def test_breakdown_by_zone_uses_display_names(tools):
                       "Workbench [workbench]": 3}
 
 
-def test_weekday_hour_and_track_groups(tools):
+def test_weekday_and_hour_groups_but_never_per_track(tools):
     assert tools.count_events(group_by="weekday", types=["fall"])["counts"] == {
         "Monday": 1, "Tuesday": 2, "Wednesday": 1, "Friday": 2}
     hours = tools.count_events(group_by="hour", types=["zone_intrusion"])["counts"]
     assert max(hours, key=hours.get) == "18" and hours["18"] == 2
-    assert tools.count_events(group_by="track", types=["ergo_risk"])["counts"]["track 2"] == 3
+    with pytest.raises(ToolError):
+        tools.count_events(group_by="track", types=["ergo_risk"])
 
 
 def test_find_orders_and_records_seen_ids(tools):

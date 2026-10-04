@@ -39,7 +39,7 @@ _GROUPS = {
     "day": "strftime('%Y-%m-%d', start_ts, 'unixepoch', 'localtime')",
     # Day of week in local time, "0" (Sunday) .. "6" (Saturday).
     "weekday": "strftime('%w', start_ts, 'unixepoch', 'localtime')",
-    "track": "COALESCE(CAST(track_id AS TEXT), '')",
+    # No "track": counts per tracked person would rank individuals (see README, Privacy by design).
 }
 GROUP_BY_KEYS = tuple(_GROUPS)
 _ORDERS = {
@@ -112,9 +112,9 @@ class EventStore:
             )
 
     def ergo_time(self, kind: str, day_from: str, day_to: str, camera_id: str | None = None) -> dict:
-        """{key: {level: seconds}} for kind "zone", "hour" or "track" over [day_from, day_to]."""
-        if kind not in ("zone", "hour", "track"):
-            raise ValueError(f"kind must be zone, hour or track, got {kind!r}")
+        """{key: {level: seconds}} for kind "zone" or "hour" over [day_from, day_to]."""
+        if kind not in ("zone", "hour"):
+            raise ValueError(f"kind must be zone or hour, got {kind!r}")
         sql = "SELECT key, level, SUM(seconds) FROM ergo_time WHERE kind = ? AND day >= ? AND day <= ?"
         params: list = [kind, day_from, day_to]
         if camera_id:

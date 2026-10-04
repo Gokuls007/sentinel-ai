@@ -20,7 +20,7 @@ from pathlib import Path
 
 logger = logging.getLogger("sentinel.events.migrate")
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _V1_TABLE = """
 CREATE TABLE IF NOT EXISTS events (
@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS events (
 )
 """
 # v2: seconds at each REBA risk level, accumulated per day / camera / grouping.
-# kind is "zone" (key = zone id, "" = no zone), "hour" (key = "0".."23") or "track" (key = track id).
+# kind is "zone" (key = zone id, "" = no zone) or "hour" (key = "0".."23"). Before v4 there was also
+# "track" (per tracker identity); v4 deletes those rows (privacy: no per-person rankings).
 _V2_ERGO_TABLE = """
 CREATE TABLE IF NOT EXISTS ergo_time (
     day TEXT NOT NULL,
@@ -171,6 +172,9 @@ def migrate(db_path: str | os.PathLike) -> int:
         with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
             conn.execute(_V2_ERGO_TABLE)
             conn.execute(_V3_RULES_TABLE)
+            dropped = conn.execute("DELETE FROM ergo_time WHERE kind = 'track'").rowcount
+            if dropped:
+                logger.info("Deleted %d per-track time-at-risk row(s) (schema v4)", dropped)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         return SCHEMA_VERSION
     if legacy and exists_with_data:

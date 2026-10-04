@@ -1338,15 +1338,15 @@ def ergonomics_live(camera: str | None = None):
 
 @app.get("/api/ergonomics/time")
 def ergonomics_time(
-    group_by: str = Query("zone", pattern=r"^(zone|hour|track)$"),
+    group_by: str = Query("zone", pattern=r"^(zone|hour)$"),
     day_from: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="YYYY-MM-DD, default today"),
     day_to: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     camera_id: str | None = None,
 ):
-    """Seconds spent at each REBA risk level, grouped by zone (default), hour of day, or track ID.
+    """Seconds spent at each REBA risk level, grouped by zone (default) or hour of day.
 
     Level "unknown" is time when the view was too unreliable to score (e.g. facing the camera).
-    Per track ID means per tracker identity: a person re-identified under a new ID counts twice.
+    There is no per-person (per track ID) grouping: aggregates never rank individuals.
     """
     from datetime import date
 

@@ -6,7 +6,7 @@ import HudStackedBarChart, { StackLegend } from './HudStackedBarChart';
 import { describeError, queryString, useFetch, useNow } from '../lib/api';
 import {
   DAY_PRESETS, ERGO_LEVELS, ERGO_NOTE, LEVEL_HEX, LEVEL_LABEL, dayBounds, dayRange, formatSeconds,
-  levelBadge, levelForScore, partLabel, trackLabel,
+  levelBadge, levelForScore, partLabel,
 } from '../lib/ergonomics';
 import { chipClass, inputClass, labelClass } from '../lib/ui';
 
@@ -128,52 +128,11 @@ const PosturesTable = ({ postures }) => {
   );
 };
 
-const TRACK_LIMIT = 50;
-
-const TrackTable = ({ rows }) => {
-  const shown = rows.slice(0, TRACK_LIMIT);
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left border-collapse">
-        <caption className="sr-only">Time at each risk level per track ID, most high-risk time first</caption>
-        <thead>
-          <tr className="text-[9px] uppercase text-white/40 tracking-widest small-caps border-b border-white/10">
-            <th scope="col" className="py-1.5 pr-3 font-bold">Track</th>
-            <th scope="col" className="py-1.5 pr-3 font-bold text-right">High + very high</th>
-            {ORDER.map((l) => (
-              <th key={l} scope="col" className="py-1.5 pr-3 font-bold text-right whitespace-nowrap">
-                <span className="inline-block w-2 h-2 mr-1 align-middle" style={{ background: LEVEL_HEX[l] }} aria-hidden="true" />
-                {LEVEL_LABEL[l]}
-              </th>
-            ))}
-            <th scope="col" className="py-1.5 font-bold text-right">Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {shown.map((r) => (
-            <tr key={r.key} className="text-[10px] mono border-b border-white/5">
-              <th scope="row" className="py-1.5 pr-3 font-bold text-cyan-400 whitespace-nowrap">{r.label}</th>
-              <td className={`py-1.5 pr-3 text-right tabular-nums font-bold ${r.risky > 0 ? 'text-orange-300' : 'text-white/30'}`}>{formatSeconds(r.risky)}</td>
-              {ORDER.map((l) => (
-                <td key={l} className={`py-1.5 pr-3 text-right tabular-nums ${r[l] > 0 ? 'text-white/70' : 'text-white/20'}`}>{formatSeconds(r[l])}</td>
-              ))}
-              <td className="py-1.5 text-right tabular-nums text-white/70">{formatSeconds(r.total)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {rows.length > TRACK_LIMIT && (
-        <p className="mt-2 text-[9px] mono uppercase text-white/40">Showing the {TRACK_LIMIT} track IDs with the most high-risk time of {rows.length}.</p>
-      )}
-    </div>
-  );
-};
-
 // --- Section -----------------------------------------------------------------------------
 
 /**
- * Time at each REBA risk level: per zone (main view), per hour of day, top risky postures
- * and per track ID. `status` (the feed status) refetches on reconnect.
+ * Time at each REBA risk level: per zone (main view), per hour of day, and top risky
+ * postures. Never per person (track ID). `status` (the feed status) refetches on reconnect.
  */
 const ErgonomicsAnalytics = ({ status, meta }) => {
   const id = useId();
@@ -187,7 +146,6 @@ const ErgonomicsAnalytics = ({ status, meta }) => {
   const common = { day_from, day_to, camera_id: camera };
   const zoneRes = useFetch(`/api/ergonomics/time${queryString({ group_by: 'zone', ...common })}`, reloadKey);
   const hourRes = useFetch(`/api/ergonomics/time${queryString({ group_by: 'hour', ...common })}`, reloadKey);
-  const trackRes = useFetch(`/api/ergonomics/time${queryString({ group_by: 'track', ...common })}`, reloadKey);
   const { start, end } = dayBounds(day_from, day_to);
   const postureRes = useFetch(`/api/ergonomics/postures${queryString({ start, end, camera_id: camera })}`, reloadKey);
 
@@ -213,13 +171,11 @@ const ErgonomicsAnalytics = ({ status, meta }) => {
       const r = hourRaw.find((x) => Number(x.key) === h);
       return { ...(r || Object.fromEntries(ORDER.map((l) => [l, 0]))), key: String(h), label: String(h).padStart(2, '0') };
     });
-  const trackRows = toStacks(trackRes.data?.rows, trackLabel).sort(byRisk);
   const postures = postureRes.data?.postures || {};
 
   const zoneEmpty = zoneRows.every((r) => r.total === 0);
   const zoneMsg = stateMessage(zoneRes, zoneEmpty);
   const hourMsg = stateMessage(hourRes, hourRows.every((r) => r.total === 0));
-  const trackMsg = stateMessage(trackRes, trackRows.length === 0);
   let postureMsg = null;
   if (postureRes.error) postureMsg = describeError(postureRes.error);
   else if (!postureRes.data) postureMsg = 'Loading...';
@@ -294,18 +250,6 @@ const ErgonomicsAnalytics = ({ status, meta }) => {
         </DashboardPanel>
       </div>
 
-      <DashboardPanel title="Time per track ID" headerAction={trackRes.data && trackRows.length ? `${trackRows.length} TRACK IDS` : null}>
-        {trackMsg ? (
-          <EmptyState className="py-6">{trackMsg}</EmptyState>
-        ) : (
-          <>
-            <TrackTable rows={trackRows} />
-            <p className="mt-2 text-[9px] outfit text-white/40">
-              Track IDs are tracker identities, not people: someone who leaves and is picked up again gets a new ID.
-            </p>
-          </>
-        )}
-      </DashboardPanel>
     </section>
   );
 };
