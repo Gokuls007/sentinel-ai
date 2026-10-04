@@ -54,7 +54,7 @@ def replay(rows: list[list], tracker) -> list[dict]:
     one record per logged row."""
     out = []
     prev = None
-    for t, measured, shift, width, lean in rows:
+    for t, measured, shift, width, lean, *_rest in rows:
         kp = pose(shift or 0.0, width or 0.0, lean or 0.0) if measured else None
         # Fill the second with frames, like the camera did, but never across a real gap.
         steps = [t] if prev is None or t - prev > 1.5 else [prev + (t - prev) * (i + 1) / 10 for i in range(10)]
@@ -63,7 +63,7 @@ def replay(rows: list[list], tracker) -> list[dict]:
         prev = t
         snap = tracker.snapshot(T0 + t)
         out.append({"t": t, "measured": measured, "state": snap["state"], "still_s": snap["still_s"],
-                    "breaks": snap["breaks_today"]})
+                    "breaks": snap["breaks_today"], "reminder": snap["reminder"]["offered"]})
     return out
 
 

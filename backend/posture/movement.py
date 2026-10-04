@@ -16,6 +16,7 @@ too long. So the coach tracks *movement*, not instant posture:
   With the first thresholds (1 s smoothing, 3 s hold, 15% / 10 degrees) two minutes of
   seated posture changes registered five "movements", so the still timer never got far.
   The defaults below register none on that recording (tests/fixtures/real_seated_shoulders.json).
+- **Getting up** = out of view for ``left_s`` (8 s) or more: counted as movement on return.
 - **Breaks** = away for ``break_min_s`` (20 s) or more, or a completed stretch break.
 - **Paused** when no frames arrive for ``max_gap_s`` (camera stopped, computer asleep): that
   time never counts as being still. (A real session counted a 20-minute stall as "still".)
@@ -49,6 +50,7 @@ class MovementConfig:
     hold_window_s: float = 12.0   # ...counted in total within this window
     smooth_s: float = 3.0
     away_s: float = 20.0
+    left_s: float = 8.0            # out of view this long = got up (moved), even if back before "away"
     break_min_s: float = 20.0      # away this long counts as a break (as soon as it's "away")
     max_gap_s: float = 5.0         # no frames for longer (camera stopped, PC asleep): paused
     static_min_s: float = 600.0
@@ -241,12 +243,14 @@ class MovementTracker:
         if self._away_since is not None:
             gone = ts - self._away_since
             self._away_since, self._away_ended = None, False
-            if gone >= self.cfg.away_s:  # got up: that's movement (and a break if long enough)
+            # Out of view for left_s means you got up (a live test: left for 16 s, came back, and
+            # the still timer kept running). Away (and a break) only from away_s.
+            if gone >= self.cfg.left_s:
                 if gone >= self.cfg.break_min_s:
                     self.count_break(ts, "away", gone)
                 self._window.clear()
                 self._window.append((ts, pose))
-                self._moved(ts, pose, f"away for {gone:.0f} s")
+                self._moved(ts, pose, f"got up (out of view {gone:.0f} s)")
                 self._last_seen = ts
                 return
         self._last_seen = ts

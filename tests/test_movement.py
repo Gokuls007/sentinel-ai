@@ -278,8 +278,8 @@ def test_real_session_standing_up_and_moving_resets_the_timer_promptly():
     """At ~1415 s the person moved a lot (shift 1.3-7 shoulder widths); the first version
     dated it back to an earlier burst and showed "still 28 s" while they were moving."""
     rec = replay_real_session()
-    moving = next(r for r in rec if 1414 <= r["t"] <= 1430 and r["state"] == MOVING)
-    assert moving["still_s"] < 2
+    # Out of view for ~15 s while standing (1395-1410 s), then moving a lot: the timer restarts.
+    assert any(r["still_s"] < 2 and r["state"] == MOVING for r in rec if 1395 <= r["t"] <= 1430)
 
 
 def test_no_frames_pauses_the_still_timer():
@@ -327,3 +327,32 @@ def test_holds_pause_too():
     h.pause(1000)
     h.update(down, 1060.0)
     assert h.held_s(HEAD_DOWN, 1060.0) == pytest.approx(60, abs=1) and HEAD_DOWN not in h.warned
+
+
+# --- the guided live test (tests/fixtures/live_test_movement_log.json) ---------------------------
+
+def replay_live_test(cfg=None):
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+    from replay_movement_log import load, replay
+
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "live_test_movement_log.json")
+    return replay(load(path), MovementTracker(cfg or MovementConfig(reminder_s=60), now=1_790_000_000.0))
+
+
+def test_live_test_sitting_gives_the_reminder_at_one_minute():
+    rec = replay_live_test()
+    first = next(r for r in rec if r["reminder"])
+    assert 58 <= first["still_s"] <= 64 and all(r["state"] != MOVING for r in rec if r["t"] < first["t"])
+
+
+def test_live_test_leaving_for_17_s_counts_as_getting_up():
+    """Left the frame for ~17 s (132-149 s) and sat down again: the still timer must restart
+    (the first version kept counting: 151 s)."""
+    rec = replay_live_test()
+    back = next(r for r in rec if r["t"] > 149 and r["measured"])
+    assert back["still_s"] < 2 and back["state"] == MOVING
+    assert back["breaks"] == 0  # under 20 s: not a break
+    old = replay_live_test(MovementConfig(reminder_s=60, left_s=999))
+    assert next(r for r in old if r["t"] > 149 and r["measured"])["still_s"] > 100  # the bug, reproduced
