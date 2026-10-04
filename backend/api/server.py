@@ -89,6 +89,7 @@ def start_pipeline(cfg: SentinelConfig) -> SentinelPipeline:
     pipeline = SentinelPipeline(cfg)
     _attach(pipeline, primary=True)
     _apply_app_settings(pipeline, _load_app_settings())
+    _start_retention()
     thread = threading.Thread(target=pipeline.run, daemon=True, name="sentinel-pipeline")
     thread.start()
     logger.info("Sentinel Pipeline started in background thread.")
@@ -614,7 +615,16 @@ def get_event(event_id: int):
 # --- App settings: mode and demo footage ------------------------------------------------------
 
 APP_MODES = ("posture", "warehouse", "exam")
-APP_DEFAULTS = {"mode": "warehouse", "demo_footage": False}
+APP_DEFAULTS = {
+    "mode": "warehouse",
+    "demo_footage": False,
+    # Privacy: keep history this many days (0 = forever); deletions start only once the Privacy
+    # panel has been opened (privacy_seen), before that runs are dry runs.
+    "retention_days": 30,
+    "privacy_seen": False,
+    "skeleton_only": False,  # never store video or images: events keep keypoints only
+}
+RETENTION_MAX_DAYS = 3650
 
 
 def _app_defaults() -> dict:
@@ -638,7 +648,19 @@ def _load_app_settings() -> dict:
     if out["mode"] not in APP_MODES:
         out["mode"] = APP_DEFAULTS["mode"]
     out["demo_footage"] = bool(out["demo_footage"])
+    try:
+        out["retention_days"] = max(0, min(RETENTION_MAX_DAYS, int(out["retention_days"])))
+    except (TypeError, ValueError):
+        out["retention_days"] = APP_DEFAULTS["retention_days"]
+    out["privacy_seen"] = bool(out["privacy_seen"])
+    out["skeleton_only"] = bool(out["skeleton_only"])
     return out
+
+
+def _save_app_settings(settings: dict) -> None:
+    path = _app_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
 
 def _apply_app_settings(primary, settings: dict) -> None:
@@ -652,6 +674,108 @@ def _apply_app_settings(primary, settings: dict) -> None:
         primary.paused = not settings["demo_footage"]
 
 
+# --- Privacy: retention ------------------------------------------------------------------
+
+_retention_worker = None
+
+
+def _retention():
+    from privacy import Retention
+
+    out = config.output if config else None
+    return Retention(out.db_path if out else "data/events.db", out.clips_dir if out else "data/clips",
+                     str(_recordings_dir()))
+
+
+def _start_retention():
+    global _retention_worker
+    from privacy import RetentionWorker
+
+    if _retention_worker is None:
+        _retention_worker = RetentionWorker(_retention(), _load_app_settings)
+        _retention_worker.start()
+
+
+def _retention_runner():
+    from privacy import RetentionWorker
+
+    return _retention_worker or RetentionWorker(_retention(), _load_app_settings)
+
+
+class PrivacyIn(BaseModel):
+    retention_days: int | None = Field(None, ge=0, le=RETENTION_MAX_DAYS)
+    skeleton_only: bool | None = None
+
+
+class DeleteNowIn(BaseModel):
+    retention_days: int = Field(..., ge=1, le=RETENTION_MAX_DAYS)  # must match the saved setting
+
+
+@app.get("/api/privacy")
+def get_privacy():
+    """What's stored, what the retention setting would delete now, and the last automatic run."""
+    from privacy import CATEGORIES, summary
+
+    s = _load_app_settings()
+    r = _retention()
+    days = s["retention_days"]
+    return {
+        "retention_days": days,
+        "skeleton_only": s["skeleton_only"],
+        "privacy_seen": s["privacy_seen"],
+        "dry_run": not s["privacy_seen"],
+        "categories": CATEGORIES,
+        "stored": summary(r.plan(cutoff=float("inf"))),
+        "would_delete": summary(r.plan(days)) if days > 0 else None,
+        "last_run": _retention_runner().last_run,
+    }
+
+
+@app.post("/api/privacy/seen")
+def privacy_seen(request: Request):
+    """The Privacy panel was opened: from now on retention deletes for real (it was a dry run)."""
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "privacy settings")
+    s = _load_app_settings()
+    if not s["privacy_seen"]:
+        s["privacy_seen"] = True
+        _save_app_settings(s)
+        logger.info("Privacy panel opened: retention now deletes (was a dry run)")
+    return {"privacy_seen": True}
+
+
+@app.put("/api/privacy")
+def put_privacy(body: PrivacyIn, request: Request):
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "privacy settings")
+    s = _load_app_settings()
+    if body.retention_days is not None:
+        s["retention_days"] = body.retention_days
+    if body.skeleton_only is not None:
+        s["skeleton_only"] = body.skeleton_only
+    _save_app_settings(s)
+    _apply_privacy(s)
+    logger.info("privacy settings: retention %s days, skeleton-only %s", s["retention_days"], s["skeleton_only"])
+    return get_privacy()
+
+
+@app.post("/api/privacy/delete-now")
+def privacy_delete_now(body: DeleteNowIn, request: Request):
+    """Delete everything older than the retention setting now (the preview in GET /api/privacy)."""
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "privacy settings")
+    s = _load_app_settings()
+    if body.retention_days != s["retention_days"]:
+        raise HTTPException(status_code=409, detail="The retention setting changed; check the preview again.")
+    return _retention_runner().delete_now(body.retention_days)
+
+
+def _apply_privacy(settings: dict) -> None:
+    """Skeleton-only mode on every running pipeline (no clips, snapshots or images)."""
+    with _cameras_lock:
+        pipelines = [p for p in (pipeline, *_cameras.values()) if p is not None]
+    for p in pipelines:
+        if hasattr(p, "skeleton_only"):
+            p.skeleton_only = settings["skeleton_only"]
+
+
 class AppSettingsIn(BaseModel):
     mode: str | None = Field(None, pattern=r"^(posture|warehouse|exam)$")
     demo_footage: bool | None = None
@@ -660,7 +784,11 @@ class AppSettingsIn(BaseModel):
 @app.get("/api/app")
 def get_app_settings():
     """The app mode (posture | warehouse | exam) and whether the demo footage runs."""
-    return _load_app_settings()
+    return _app_view(_load_app_settings())
+
+
+def _app_view(settings: dict) -> dict:
+    return {k: settings[k] for k in ("mode", "demo_footage")}  # privacy settings: /api/privacy
 
 
 @app.put("/api/app")
@@ -672,12 +800,10 @@ def put_app_settings(body: AppSettingsIn, request: Request):
         settings["mode"] = body.mode
     if body.demo_footage is not None:
         settings["demo_footage"] = body.demo_footage
-    path = _app_settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    _save_app_settings(settings)
     _apply_app_settings(pipeline, settings)
-    logger.info("app settings: %s", settings)
-    return settings
+    logger.info("app settings: %s", _app_view(settings))
+    return _app_view(settings)
 
 
 # --- Desk posture coach -----------------------------------------------------------------------
