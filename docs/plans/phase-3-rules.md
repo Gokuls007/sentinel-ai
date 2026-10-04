@@ -112,6 +112,9 @@ deterministic code. There is no LLM in the frame loop.
   twice.
 
 ## 3.6 Exam hall demo (preset "Exam hall")
+> **Superseded by [exam-hall.md](exam-hall.md)** (the full Exam Hall specification). Where they
+> disagree, exam-hall.md wins.
+
 **Design rule:** the system only **flags moments for a human to review**.
 - It never decides anyone cheated.
 - It never shows a "cheating" label.
