@@ -138,12 +138,18 @@ class Retention:
 
     def _orphans(self, cut: float) -> Item:
         item = Item("orphan_clips")
-        if not self.clips_dir.is_dir():
+        # Only when the clips folder belongs to this database's data folder: a second server with
+        # its own database but a shared clips folder would otherwise see every clip as an orphan.
+        if not self.clips_dir.is_dir() or self.data_dir not in self.clips_dir.parents:
             return item
+        # Known to ANY events database in the data folder (servers may use different ones, e.g.
+        # DB_PATH=data/integration.db vs the default), not just this one.
         known: set[str] = set()
-        if self.db_path.is_file():
-            with contextlib.closing(self._connect(self.db_path)) as conn, contextlib.suppress(sqlite3.Error):
-                known = {r[0] for r in conn.execute("SELECT alert_id FROM events WHERE alert_id IS NOT NULL")}
+        for db in {self.db_path.resolve(), *self.data_dir.glob("*.db")}:
+            if not db.is_file():
+                continue
+            with contextlib.closing(self._connect(db)) as conn, contextlib.suppress(sqlite3.Error):
+                known |= {r[0] for r in conn.execute("SELECT alert_id FROM events WHERE alert_id IS NOT NULL")}
         for folder in self.clips_dir.iterdir():
             if folder.is_dir() and folder.name not in known and _newest_mtime(folder) < cut:
                 item.count += 1

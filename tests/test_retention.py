@@ -98,6 +98,22 @@ def test_apply_deletes_old_items_everywhere_and_keeps_recent_ones(data):
     assert all(i.count == 0 for i in data.retention.plan(30))  # nothing left to do
 
 
+def test_a_clips_folder_outside_the_data_folder_is_never_treated_as_orphans(data, tmp_path):
+    other = tmp_path / "other_server" / "events.db"  # another database sharing these clips
+    other.parent.mkdir()
+    EventStore(str(other))
+    r = Retention(str(other), str(data.clips), str(data.rec), clock=lambda: NOW)
+    assert counts(r.plan(30))["orphan_clips"] == 0
+    r.apply(30)
+    assert (data.clips / "ALT-ORPHAN-OLD").is_dir() and (data.clips / "ALT-OLD").is_dir()
+
+
+def test_clips_of_another_database_in_the_data_folder_are_not_orphans(data):
+    other = EventStore(str(data.root / "integration.db"))  # e.g. another server's DB_PATH
+    other.emit(Event("fall", "critical", OLD, NEW, alert_id="ALT-ORPHAN-OLD"))
+    assert counts(data.retention.plan(30))["orphan_clips"] == 0
+
+
 def test_worker_dry_runs_until_the_privacy_panel_is_opened(data):
     settings = {"retention_days": 30, "privacy_seen": False}
     w = RetentionWorker(data.retention, lambda: settings)
