@@ -165,7 +165,11 @@ COCO_OBJECTS = [
     "scissors", "teddy bear", "hair drier", "toothbrush",
 ]
 WAREHOUSE_OBJECTS = ["pillow", "cardboard box", "ladder", "hard hat", "safety vest", "forklift"]
-DEFAULT_OBJECT_CLASSES = COCO_OBJECTS + [c for c in WAREHOUSE_OBJECTS if c not in COCO_OBJECTS]
+# Everything both detectors know (Settings > "Show all objects", a debug view).
+ALL_OBJECT_CLASSES = COCO_OBJECTS + [c for c in WAREHOUSE_OBJECTS if c not in COCO_OBJECTS]
+# Warehouse default: safety-relevant classes only.
+DEFAULT_OBJECT_CLASSES = ["cardboard box", "chair", "couch", "ladder", "tv", "laptop", "knife", "scissors", "oven",
+                          "pillow", "bottle", "hard hat", "safety vest", "forklift"]
 DEFAULT_HAZARD_CLASSES = ["tv", "knife", "scissors", "oven", "laptop"]
 # Each mode detects and draws only its own list (posture: none).
 DEFAULT_EXAM_OBJECTS = ["cell phone", "book", "paper", "earbuds", "headphones"]

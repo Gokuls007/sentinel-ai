@@ -152,6 +152,9 @@ def test_object_classes_per_mode_api(objects_api):
     assert objects_api.put("/api/objects", json={"mode": "warehouse", "classes": []}).status_code == 200
     assert objects_api.put("/api/objects", json={"classes": ["<script>"]}).status_code == 422
     assert objects_api.put("/api/objects", json={"mode": "fall", "classes": ["x"]}).status_code == 422
+    assert objects_api.get("/api/objects").json()["show_all"] is False
+    assert objects_api.put("/api/objects/show-all", json={"on": True}).json()["show_all"] is True
+    assert server.pipeline.show_all_objects is True
 
 
 def test_each_mode_detects_only_its_own_list():
@@ -168,6 +171,11 @@ def test_each_mode_detects_only_its_own_list():
     assert p._detect_objects(None) == ["found"] and calls == [["cell phone"]]
     p.mode = "posture"
     assert p._detect_objects(None) == []  # no list: nothing detected
+    from config.settings import ALL_OBJECT_CLASSES
+
+    p.mode, p.show_all_objects = "warehouse", True  # the debug toggle: every class
+    p._detect_objects(None)
+    assert calls[-1] == ALL_OBJECT_CLASSES and len(ALL_OBJECT_CLASSES) == 85
 
 
 def test_feed_status_line_says_whether_objects_run_and_what_they_see():

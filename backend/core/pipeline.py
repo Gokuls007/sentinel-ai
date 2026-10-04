@@ -13,7 +13,7 @@ from activity import CARRY_CLASSES, ActivityTracker, ViewCheck
 from activity.object_rules import ObjectRules
 from anomaly.engine import AnomalyAlert, AnomalyEngine
 from anomaly.fall_recovery import recover_pose
-from config.settings import COCO_OBJECTS, SentinelConfig
+from config.settings import ALL_OBJECT_CLASSES, COCO_OBJECTS, SentinelConfig
 from core.object_detector import ObjectDetector
 from events import Event, EventBus, EventStore
 from exam import ExamMonitor
@@ -140,6 +140,7 @@ class SentinelPipeline:
         self.skeleton_recorder = SkeletonRecorder(config.output.clips_dir)
         o = config.objects
         self.mode_classes = {m: list(v) for m, v in o.mode_classes.items()}  # each mode: its own objects
+        self.show_all_objects = False  # Settings debug toggle: warehouse uses every class both detectors know
         self.object_detector = (ObjectDetector(self.mode_classes.get("warehouse", o.classes), o.model_path,
                                                o.coco_model_path, COCO_OBJECTS,
                                                confidence=o.confidence, imgsz=o.imgsz, device=config.detector.device,
@@ -448,6 +449,8 @@ class SentinelPipeline:
         """This mode's objects only (its own class list; none in a mode without one)."""
         det = getattr(self, "object_detector", None)
         wanted = getattr(self, "mode_classes", {}).get(self.mode, [])
+        if self.mode == "warehouse" and getattr(self, "show_all_objects", False):
+            wanted = ALL_OBJECT_CLASSES
         if det is None or not wanted:
             return []
         if det.classes != wanted:

@@ -91,6 +91,26 @@ const ObjectsPanel = () => {
           {saved && <p className="text-[11px] text-emerald-300 outfit">Saved.</p>}
           {saveError && <p className="text-[11px] text-red-300 break-words">{saveError}</p>}
           {mode === 'warehouse' && (
+            <label className="flex items-start gap-2 text-[11px] outfit text-white/70">
+              <input type="checkbox" checked={Boolean(data.show_all)} disabled={busy}
+                onChange={async (e) => {
+                  setBusy(true);
+                  try {
+                    await putJson('/api/objects/show-all', { on: e.target.checked });
+                    setReload((n) => n + 1);
+                  } catch (err) {
+                    setSaveError(describeError(err));
+                  } finally {
+                    setBusy(false);
+                  }
+                }} />
+              <span>
+                Show all objects (debug): detect and draw every class the detectors know (85) instead of this list.
+                {data.show_all && <span className="text-amber-300"> On: warehouse is using all 85.</span>}
+              </span>
+            </label>
+          )}
+          {mode === 'warehouse' && (
           <fieldset className="border border-white/10 p-2">
             <legend className="px-1 text-[10px] mono uppercase text-white/50">
               Hazards: touching one alerts (&quot;Hand on knife (hazard)&quot;)

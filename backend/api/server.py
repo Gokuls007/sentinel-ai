@@ -636,6 +636,7 @@ APP_DEFAULTS = {
     "skeleton_only": False,  # never store video or images: events keep keypoints only
     "object_classes": None,  # {mode: [classes]} overrides; None = OBJECT_CLASSES* / the defaults
     "hazard_classes": None,  # objects whose touch alerts; None = HAZARD_CLASSES / the defaults
+    "show_all_objects": False,  # debug: warehouse detects all 85 classes instead of its list
 }
 RETENTION_MAX_DAYS = 3650
 
@@ -673,6 +674,7 @@ def _load_app_settings() -> dict:
     out["object_classes"] = ({m: [str(c) for c in v][:120] for m, v in classes.items()
                               if m in ("warehouse", "exam", "posture") and isinstance(v, list)}
                              if isinstance(classes, dict) else None) or None
+    out["show_all_objects"] = bool(out["show_all_objects"])
     hazards = out.get("hazard_classes")
     out["hazard_classes"] = [str(c) for c in hazards][:120] if isinstance(hazards, list) else None
     return out
@@ -904,6 +906,7 @@ def _mode_classes(settings: dict | None = None) -> dict[str, list[str]]:
 def _apply_object_classes(p, settings: dict) -> None:
     if hasattr(p, "mode_classes"):
         p.mode_classes = _mode_classes(settings)  # the detector switches lists on the next frame
+        p.show_all_objects = bool(settings.get("show_all_objects"))
     rules = getattr(p, "object_rules", None)
     if rules is not None and settings.get("hazard_classes") is not None:
         rules.hazard_classes = list(settings["hazard_classes"])
@@ -958,6 +961,7 @@ def get_objects(mode: str = Query("warehouse", pattern=r"^(warehouse|exam|postur
     det = getattr(pipeline, "object_detector", None) if pipeline else None
     lists = _mode_classes()
     return {"enabled": bool(o and o.enabled), "mode": mode, "classes": lists.get(mode, []), "modes": lists,
+            "show_all": _load_app_settings()["show_all_objects"],
             "defaults": default_mode_classes().get(mode, []),
             "confidence": o.confidence if o else None, "model": o.model_path if o else None,
             "synonyms": o.synonyms if o else {}, "floors": o.floors if o else {}, "hazards": _hazards(),
@@ -974,6 +978,22 @@ def put_objects(body: ObjectClassesIn, request: Request):
     for p in _all_pipelines():
         _apply_object_classes(p, s)
     return get_objects(body.mode)
+
+
+class ShowAllIn(BaseModel):
+    on: bool
+
+
+@app.put("/api/objects/show-all")
+def put_show_all(body: ShowAllIn, request: Request):
+    """Debug: warehouse detects every class both detectors know (85) instead of its list."""
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "object classes")
+    s = _load_app_settings()
+    s["show_all_objects"] = body.on
+    _save_app_settings(s)
+    for p in _all_pipelines():
+        _apply_object_classes(p, s)
+    return get_objects("warehouse")
 
 
 @app.put("/api/objects/hazards")
