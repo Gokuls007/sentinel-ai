@@ -24,6 +24,9 @@ EVENT_TYPES = (
     "action",
     "ergo_risk",
     "near_miss",
+    "unsafe_lift",        # pose + a detected box: bent back, straight legs, hands at the box
+    "standing_on_chair",  # both ankles over a chair's seat
+    "hazard_contact",     # a wrist on an object marked as a hazard
 )
 
 DEFAULT_CAMERA = "cam-0"

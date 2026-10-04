@@ -151,9 +151,22 @@ class RulesConfig:
     compile_rate_limit_per_min: int = 10
 
 
-# "couch" is its own class so a sofa competes for its box instead of reading as a chair.
-DEFAULT_OBJECT_CLASSES = ["cardboard box", "chair", "couch", "ladder", "backpack", "hard hat", "safety vest",
-                          "forklift"]
+# The 80 COCO classes except "person" (people come from the tracker, with stable ids), plus
+# warehouse extras. "couch" competes for sofas so they don't read as chairs.
+COCO_OBJECTS = [
+    "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard",
+    "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
+    "scissors", "teddy bear", "hair drier", "toothbrush",
+]
+WAREHOUSE_OBJECTS = ["pillow", "cardboard box", "ladder", "hard hat", "safety vest", "forklift"]
+DEFAULT_OBJECT_CLASSES = COCO_OBJECTS + [c for c in WAREHOUSE_OBJECTS if c not in COCO_OBJECTS]
+DEFAULT_HAZARD_CLASSES = ["tv", "knife", "scissors", "oven", "laptop"]
 
 
 @dataclass
@@ -174,6 +187,8 @@ class ObjectsConfig:
     floors: dict[str, float] = field(default_factory=lambda: {"chair": 0.25, "cardboard box": 0.25})
     vote_window: int = 15  # frames: the class shown is the one given most often over this window
     min_hits: int = 3      # sightings before an object is shown (drops one-frame false hits)
+    # Touching one of these (a wrist inside its box) alerts: "Hand on knife (hazard)".
+    hazards: list[str] = field(default_factory=lambda: list(DEFAULT_HAZARD_CLASSES))
     imgsz: int = 640
     cache_dir: str = "data/cache"  # encoded class names (CLIP runs only when the list changes)
 
@@ -263,6 +278,9 @@ class SentinelConfig:
         if raw_floors:
             cfg.objects.floors = {k.strip(): float(v) for k, v in
                                   (pair.split("=", 1) for pair in raw_floors.split(",") if "=" in pair)}
+        raw_hazards = env("HAZARD_CLASSES", str, "")
+        if raw_hazards:
+            cfg.objects.hazards = [c.strip() for c in raw_hazards.split(",") if c.strip()]
         raw_classes = env("OBJECT_CLASSES", str, "")
         if raw_classes:
             cfg.objects.classes = [c.strip() for c in raw_classes.split(",") if c.strip()]

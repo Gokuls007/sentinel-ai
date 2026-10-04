@@ -635,6 +635,7 @@ APP_DEFAULTS = {
     "privacy_seen": False,
     "skeleton_only": False,  # never store video or images: events keep keypoints only
     "object_classes": None,  # Warehouse objects (YOLO-World); None = OBJECT_CLASSES / the defaults
+    "hazard_classes": None,  # objects whose touch alerts; None = HAZARD_CLASSES / the defaults
 }
 RETENTION_MAX_DAYS = 3650
 
@@ -667,7 +668,9 @@ def _load_app_settings() -> dict:
     out["privacy_seen"] = bool(out["privacy_seen"])
     out["skeleton_only"] = bool(out["skeleton_only"])
     classes = out.get("object_classes")
-    out["object_classes"] = ([str(c) for c in classes][:40] if isinstance(classes, list) and classes else None)
+    out["object_classes"] = ([str(c) for c in classes][:120] if isinstance(classes, list) and classes else None)
+    hazards = out.get("hazard_classes")
+    out["hazard_classes"] = [str(c) for c in hazards][:120] if isinstance(hazards, list) else None
     return out
 
 
@@ -889,22 +892,47 @@ def _apply_object_classes(p, settings: dict) -> None:
     det = getattr(p, "object_detector", None)
     if det is not None and settings.get("object_classes") and settings["object_classes"] != det.classes:
         det.set_classes(settings["object_classes"])
+    rules = getattr(p, "object_rules", None)
+    if rules is not None and settings.get("hazard_classes") is not None:
+        rules.hazard_classes = list(settings["hazard_classes"])
+
+
+def _hazards() -> list[str]:
+    from config.settings import DEFAULT_HAZARD_CLASSES
+
+    saved = _load_app_settings()["hazard_classes"]
+    if saved is not None:
+        return saved
+    return config.objects.hazards if config else list(DEFAULT_HAZARD_CLASSES)
+
+
+def _clean_names(names: list[str]) -> list[str]:
+    out = []
+    for c in names:
+        c = " ".join(c.split()).lower()
+        if not c or len(c) > 40 or not all(ch.isalnum() or ch in " -'" for ch in c):
+            raise ValueError(f"not a class name: {c!r} (letters, digits, spaces, - and ')")
+        if c not in out:
+            out.append(c)
+    return out
+
+
+class HazardsIn(BaseModel):
+    hazards: list[str] = Field(..., max_length=120)
+
+    @field_validator("hazards")
+    @classmethod
+    def _clean(cls, hazards):
+        return _clean_names(hazards)
 
 
 class ObjectClassesIn(BaseModel):
-    classes: list[str] = Field(..., min_length=1, max_length=40)
+    classes: list[str] = Field(..., min_length=1, max_length=120)
 
     @field_validator("classes")
     @classmethod
     def _clean(cls, classes):
-        out = []
-        for c in classes:
-            c = " ".join(c.split()).lower()
-            if not c or len(c) > 40 or not all(ch.isalnum() or ch in " -'" for ch in c):
-                raise ValueError(f"not a class name: {c!r} (letters, digits, spaces, - and ')")
-            if c not in out:
-                out.append(c)
-        return out
+        return _clean_names(classes)
 
 
 @app.get("/api/objects")
@@ -918,7 +946,7 @@ def get_objects():
         (o.classes if o else DEFAULT_OBJECT_CLASSES)
     return {"enabled": bool(o and o.enabled), "classes": classes, "defaults": DEFAULT_OBJECT_CLASSES,
             "confidence": o.confidence if o else None, "model": o.model_path if o else None,
-            "synonyms": o.synonyms if o else {}, "floors": o.floors if o else {},
+            "synonyms": o.synonyms if o else {}, "floors": o.floors if o else {}, "hazards": _hazards(),
             "error": det.error if det else None}
 
 
@@ -928,6 +956,18 @@ def put_objects(body: ObjectClassesIn, request: Request):
     _check_local_json(request, bool(config and config.allow_remote_camera_control), "object classes")
     s = _load_app_settings()
     s["object_classes"] = body.classes
+    _save_app_settings(s)
+    for p in _all_pipelines():
+        _apply_object_classes(p, s)
+    return get_objects()
+
+
+@app.put("/api/objects/hazards")
+def put_hazards(body: HazardsIn, request: Request):
+    """Which detected objects count as hazards (touching one alerts)."""
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "object classes")
+    s = _load_app_settings()
+    s["hazard_classes"] = body.hazards
     _save_app_settings(s)
     for p in _all_pipelines():
         _apply_object_classes(p, s)

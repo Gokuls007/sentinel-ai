@@ -29,6 +29,21 @@ const ObjectsPanel = () => {
     }
   };
   const parsed = value.split(',').map((c) => c.trim()).filter(Boolean);
+  const [hazards, setHazards] = useState(null);
+  const shownHazards = hazards ?? data?.hazards ?? [];
+  const saveHazards = async () => {
+    setBusy(true);
+    setSaveError(null);
+    try {
+      await putJson('/api/objects/hazards', { hazards: shownHazards });
+      setHazards(null);
+      setReload((n) => n + 1);
+    } catch (err) {
+      setSaveError(err.detail ? JSON.stringify(err.detail) : describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <DashboardPanel title="Warehouse objects" headerAction={data ? (data.error ? 'OFF' : `${data.classes.length} CLASSES`) : null}>
@@ -58,6 +73,23 @@ const ObjectsPanel = () => {
           </div>
           {saved && <p className="text-[11px] text-emerald-300 outfit">Saved.</p>}
           {saveError && <p className="text-[11px] text-red-300 break-words">{saveError}</p>}
+          <fieldset className="border border-white/10 p-2">
+            <legend className="px-1 text-[10px] mono uppercase text-white/50">
+              Hazards: touching one alerts (&quot;Hand on knife (hazard)&quot;)
+            </legend>
+            <div className="flex flex-wrap gap-x-3 gap-y-1 max-h-40 overflow-y-auto">
+              {data.classes.map((c) => (
+                <label key={c} className="text-[11px] outfit text-white/70 flex items-center gap-1">
+                  <input type="checkbox" checked={shownHazards.includes(c)}
+                    onChange={(e) => setHazards(e.target.checked ? [...shownHazards, c] : shownHazards.filter((x) => x !== c))} />
+                  {c}
+                </label>
+              ))}
+            </div>
+            <button type="button" disabled={busy || hazards === null} onClick={saveHazards} className={`${chipClass(true)} mt-2`}>
+              Save hazards
+            </button>
+          </fieldset>
           {Object.keys(data.synonyms || {}).length > 0 && (
             <ul className="text-[10px] mono text-white/50 space-y-0.5">
               {Object.entries(data.synonyms).map(([cls, words]) => (

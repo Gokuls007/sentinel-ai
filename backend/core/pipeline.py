@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 
 from activity import CARRY_CLASSES, ActivityTracker, ViewCheck
+from activity.object_rules import ObjectRules
 from anomaly.engine import AnomalyAlert, AnomalyEngine
 from anomaly.fall_recovery import recover_pose
 from config.settings import SentinelConfig
@@ -144,6 +145,7 @@ class SentinelPipeline:
                                                   floors=o.floors, vote_window=o.vote_window, min_hits=o.min_hits)
                                 if o.enabled else None)
         self._alert_labels: dict = {}  # track id -> (reason text, show until), drawn next to the person
+        self.object_rules = ObjectRules(hazard_classes=o.hazards)  # unsafe lift, on a chair, hand on a hazard
         self.event_store = EventStore(config.output.db_path)
         self.rule_store = RuleStore(config.output.db_path)
         self.reload_rules()
@@ -210,6 +212,7 @@ class SentinelPipeline:
             if self.config.rules.builtins:  # the built-in rules replace these (no double alerts)
                 alerts = [a for a in alerts if a.alert_type not in ("fall", "zone_intrusion")]
             alerts += self._evaluate_rules(poses, all_features, detections, timestamp)
+            alerts += self.object_rules.update(poses, objects, timestamp)
             timings["ergonomics"] = self.anomaly_engine.last_ergo_ms  # included in "analytics"
             ergonomics = self.anomaly_engine.ergonomics_snapshot
             self._persist_ergo_time(timestamp)
@@ -505,7 +508,7 @@ class SentinelPipeline:
         fd = self.anomaly_engine.fall_detector
         objects = [(d.class_name, tuple(float(v) for v in d.bbox)) for d in detections.detections
                    if d.class_name in CARRY_CLASSES]
-        objects += [(o.class_name, o.bbox) for o in found or [] if o.class_name in CARRY_CLASSES]
+        objects += [(o.class_name, o.bbox) for o in found or []]  # the activity rules decide what's carryable
         self.view_check.update({tid: p.keypoints for tid, p in poses.items()}, timestamp)
         self.activity.prune(poses.keys())
         return {tid: self.activity.update(tid, p.keypoints, timestamp, float(p.body_height),
@@ -515,7 +518,10 @@ class SentinelPipeline:
     @staticmethod
     def person_tag(act: dict | None, info: dict | None) -> str:
         """e.g. "Bending · REBA 9 HIGH · back" (REBA only when it can be trusted)."""
-        parts = [act["label"]] if act else []
+        label = act["label"] if act else None
+        if label == "Carrying" and act.get("detail"):
+            label = f"Carrying {act['detail']}"
+        parts = [label] if label else []
         if info and info.get("score") is not None and info.get("reliable"):
             parts.append(f"REBA {info['score']} {info['level_name'].replace('_', ' ').upper()}")
             if info.get("dominant"):
