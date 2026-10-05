@@ -447,3 +447,59 @@ after the run; nothing was tuned on it):
 What would help (not done; to decide together): a third, side-on clip to tune on; ignoring
 person boxes with implausible keypoints (the chair); following the person the event is about
 rather than the largest box in the evaluation; and checking the fall detector on bag handling.
+
+## Pose models: YOLOv8n-pose vs RTMPose-m
+
+<!-- benchmark:pose-compare:start -->
+Clip `laptop_20261004_221104.mp4`, 983 frames at 15 fps; same frames and tracker boxes for both models; main (largest) person.
+
+| Segment | Model | Frames | Box missing | No pose | Mean conf | Low conf (<0.3) | Jitter (% box h) | ms/frame |
+|---|---|---|---|---|---|---|---|---|
+| standing | yolov8n-pose | 86 | 0% | 0% | 0.91 | 0% | 1.05 | 12.0 |
+| standing | rtmpose-m | 86 | 0% | 0% | 0.84 | 0% | 0.85 | 8.8 |
+| lying across couch | yolov8n-pose | 37 | 24% | 5% | 0.51 | 34% | 2.89 | 11.3 |
+| lying across couch | rtmpose-m | 37 | 24% | 0% | 0.26 | 70% | 1.42 | 8.7 |
+| sitting on couch edge | yolov8n-pose | 45 | 0% | 0% | 0.85 | 3% | 1.83 | 12.7 |
+| sitting on couch edge | rtmpose-m | 45 | 0% | 0% | 0.72 | 0% | 1.63 | 9.2 |
+| leaning forward to stand | yolov8n-pose | 28 | 7% | 0% | 0.67 | 19% | 6.15 | 13.0 |
+| leaning forward to stand | rtmpose-m | 28 | 7% | 0% | 0.52 | 16% | 4.09 | 9.0 |
+| crouching on floor | yolov8n-pose | 80 | 16% | 0% | 0.64 | 21% | 3.54 | 11.5 |
+| crouching on floor | rtmpose-m | 80 | 16% | 0% | 0.51 | 19% | 2.50 | 8.5 |
+| lying on floor | yolov8n-pose | 14 | 100% | 0% | -- | -- | -- | -- |
+| lying on floor | rtmpose-m | 14 | 100% | 0% | -- | -- | -- | -- |
+| getting up from floor | yolov8n-pose | 42 | 60% | 0% | 0.68 | 18% | 5.32 | 12.8 |
+| getting up from floor | rtmpose-m | 42 | 60% | 0% | 0.57 | 6% | 4.47 | 9.7 |
+
+Weakest keypoints (mean confidence):
+- standing, yolov8n-pose: weakest l_ear 0.68, l_ankle 0.72, r_ear 0.74, r_ankle 0.74
+- standing, rtmpose-m: weakest nose 0.75, r_hip 0.76, l_hip 0.76, l_eye 0.80
+- lying across couch, yolov8n-pose: weakest l_eye 0.02, l_ear 0.04, nose 0.06, r_eye 0.07
+- lying across couch, rtmpose-m: weakest l_wrist 0.18, l_elbow 0.18, l_hip 0.23, r_eye 0.23
+- sitting on couch edge, yolov8n-pose: weakest l_ear 0.44, l_ankle 0.63, r_ankle 0.64, r_ear 0.83
+- sitting on couch edge, rtmpose-m: weakest r_ankle 0.51, r_knee 0.57, l_wrist 0.61, l_hip 0.63
+- leaning forward to stand, yolov8n-pose: weakest r_ankle 0.14, l_ankle 0.15, r_knee 0.31, l_knee 0.32
+- leaning forward to stand, rtmpose-m: weakest r_ankle 0.23, l_ankle 0.31, r_knee 0.31, l_knee 0.41
+- crouching on floor, yolov8n-pose: weakest r_ankle 0.08, l_ankle 0.08, r_knee 0.23, l_knee 0.23
+- crouching on floor, rtmpose-m: weakest r_ankle 0.22, l_ankle 0.26, l_wrist 0.39, r_wrist 0.39
+- getting up from floor, yolov8n-pose: weakest l_ankle 0.20, r_ankle 0.21, l_knee 0.36, r_knee 0.38
+- getting up from floor, rtmpose-m: weakest r_ankle 0.33, l_ankle 0.39, r_knee 0.42, l_knee 0.44
+<!-- benchmark:pose-compare:end -->
+
+**Reading it.** One 65 s webcam clip of one person, poses shorter than planned (1-5 s each),
+boundaries marked from the frames. Small sample: a direction, not a measurement.
+
+- **The person box is the bottleneck.** Both pose models are top-down on the tracker's boxes
+  (YOLOv8n + ByteTrack), and the box is missing in 24% of the frames lying across the couch,
+  16% crouching, 60% getting up from the floor and 100% of the (short) time lying on the floor.
+  No pose model helps there; fall prediction needs a person detector that keeps lying people.
+- **RTMPose-m is steadier.** Lower jitter in every segment (standing 0.85 vs 1.05% of box
+  height, leaning to stand 4.09 vs 6.15, crouching 2.50 vs 3.54), and legs are found more often in
+  the hard poses (ankles while crouching 0.22-0.26 vs 0.08; low-confidence keypoints while getting
+  up 6% vs 18%).
+- **Confidences aren't comparable across models.** RTMPose's SimCC scores run lower than the
+  YOLO pose scores for the same quality (standing: 0.84 vs 0.91), so compare jitter and the
+  low-confidence share, not mean confidence. Lying across the couch, RTMPose marked 70% of
+  keypoints low: the body was cut off by the frame edge there.
+- **Speed.** Pose time per frame: RTMPose-m ~9-10 ms vs YOLOv8n-pose ~12 ms (which detects on the
+  whole frame). Live on the webcam with RTMPose-m, while recording: 17.3 fps for the whole
+  pipeline (person tracker, YOLO11m + YOLO-World objects, pose, rules, recording).

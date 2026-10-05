@@ -112,7 +112,7 @@ def main() -> int:
             prev[name] = kp
     cap.release()
 
-    order = [s["action"] for s in segments]
+    order = list(dict.fromkeys(s["action"] for s in segments))  # a name may repeat (e.g. standing twice)
     lines = [f"Clip `{os.path.basename(args.clip)}`, {idx} frames at {fps:.0f} fps; same frames and tracker boxes for "
              "both models; main (largest) person.", "",
              "| Segment | Model | Frames | Box missing | No pose | Mean conf | Low conf (<0.3) "
