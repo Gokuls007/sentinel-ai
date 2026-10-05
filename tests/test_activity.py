@@ -315,6 +315,21 @@ def test_settled_sitting_is_not_a_transition():
     assert out["transition"] is None
 
 
+def test_shifting_on_a_seat_is_not_standing_up():
+    """Single frames leaning 20 degrees with the hips 0.28 torso higher (keypoint jitter, shifting
+    about) don't hold for sustain_s, so no sit-to-stand."""
+    a = ActivityTracker()
+    t, _ = run(a, lambda _t: facing(thigh_px=40), 0.0, 2, objects=[CHAIR])
+    fired = []
+    for i in range(60):
+        t += 0.1
+        spike = i % 5 == 0
+        out = a.update(1, facing(thigh_px=40, trunk_deg=20 if spike else 0, top=75 if spike else 100), t, BH,
+                       objects=[CHAIR])
+        fired.append(out["transition"])
+    assert not any(fired)
+
+
 def test_sitting_up_from_lying_is_a_transition():
     bed = ("bed", (150.0, 150.0, 600.0, 400.0))
     a = ActivityTracker()

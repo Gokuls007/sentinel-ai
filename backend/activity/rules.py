@@ -33,9 +33,11 @@ Rules first (each needs only the body parts it uses, and isn't offered without t
 
 **Transitions** are reported next to the label (they're the risky moments for falls):
 "sit-to-stand" for someone seated in the last ``transition_window_s`` who either leans the trunk
-forward by ``lean_deg`` (within ``lean_window_s``) while still seated, the usual first stage of
-standing up, or whose hips have risen cumulatively by ``rise_torso`` x torso from their lowest
-point in the last ``rise_window_s`` (slow risers stand in 2-4 s, often in stages);
+forward by ``lean_deg`` while still seated, the usual first stage of standing up, or whose hips
+have risen cumulatively by ``rise_torso`` x torso (slow risers stand in 2-4 s, often in stages).
+Both are measured from how the person sat (medians over the seated frames of the last
+``rise_window_s``) and must hold for ``sustain_s``: shifting about on a seat moves single frames
+past those amounts, standing up keeps them there;
 "lying-to-sitting" when someone lying has their trunk coming upright by ``sit_up_deg``. A
 transition lasts ``transition_hold_s`` after the last frame that showed it. Balance
 checks stay on during transitions; only settled sitting or lying turns them off.
@@ -100,9 +102,9 @@ class ActivityConfig:
     rise_window_s: float = 3.0        # the hip rise is measured cumulatively over up to this long
     rise_torso: float = 0.20          # hips up by this x torso from their lowest point: standing up
     lean_deg: float = 15.0            # trunk tilting forward this much while still seated: about to stand
-    lean_window_s: float = 1.5
     sit_up_deg: float = 20.0          # trunk this much more upright (from reclined): sitting up
     transition_hold_s: float = 1.5
+    sustain_s: float = 0.3            # a lean or rise must hold this long (one jittery frame isn't standing up)
     stable_window_s: float = 0.7      # the transition logic sees labels smoothed over this window...
     stable_share: float = 0.6         # ...switching only when a new label holds this share (hysteresis)
     legs_extended: float = 0.5        # knees this far below the hips (x torso): not sitting
@@ -369,15 +371,21 @@ class ActivityTracker:
         elif st.transition == "sit-to-stand" and still_rising and ts < st.transition_until + 1.0:
             kind, why = "sit-to-stand", "rise in progress"  # keeps going, however long ago the seat was
         elif seated and now[4] != LYING:
-            # Cumulative rise: hips up from their lowest (largest image y) point in the window.
-            window = [p for p in st.posture if now[0] - p[0] <= c.rise_window_s]
-            lowest = max(p[1] for p in window)
-            if lowest - now[1] >= c.rise_torso * max(now[2], 1.0):
-                kind, why = "sit-to-stand", f"hips rising {(lowest - now[1]) / max(now[2], 1.0):.2f} torso"
+            # Compared with how the person sat (medians over the seated frames, so shifting about on the
+            # seat doesn't move the baseline), and only once it has held for sustain_s.
+            sat = [p for p in st.posture if p[4] == SITTING and now[0] - p[0] <= c.rise_window_s] or seated
+            hip0, torso0 = float(np.median([p[1] for p in sat])), max(float(np.median([p[2] for p in sat])), 1.0)
+            trunk0 = float(np.median([p[3] for p in sat]))
+            held = [p for p in st.posture if now[0] - p[0] <= c.sustain_s]
+            # Cumulative rise: hips up from where they sat (the torso while seated sets the scale: a
+            # torso leaning toward the camera looks short).
+            rise = min(hip0 - p[1] for p in held) / torso0
+            if rise >= c.rise_torso:
+                kind, why = "sit-to-stand", f"hips rising {rise:.2f} torso"
             # Leaning forward while still seated: the first stage of standing up.
-            lean_from = [p[3] for p in recent if p[4] == SITTING and now[0] - p[0] <= c.lean_window_s]
-            if now[4] == SITTING and lean_from and now[3] - min(lean_from) >= c.lean_deg:
-                kind, why = "sit-to-stand", f"leaning forward {now[3] - min(lean_from):.0f} deg"
+            lean = min(p[3] for p in held) - trunk0
+            if kind is None and all(p[4] == SITTING for p in held) and lean >= c.lean_deg:
+                kind, why = "sit-to-stand", f"leaning forward {lean:.0f} deg"
         if kind is None and any(p[4] == LYING for p in recent):
             reclined = max(p[3] for p in recent if p[4] == LYING)
             if reclined >= 45 and now[3] < 45 and reclined - now[3] >= c.sit_up_deg:
