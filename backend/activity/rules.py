@@ -29,6 +29,12 @@ Rules first (each needs only the body parts it uses, and isn't offered without t
   or growing/shrinking in the image (walking toward or away from the camera) faster than
   ``approach_rate`` per second.
 
+**Transitions** are reported next to the label (they're the risky moments for falls):
+"sit-to-stand" when someone seated in the last ``transition_window_s`` has their hips rising
+(by ``rise_torso`` x torso within ``rise_window_s``), "lying-to-sitting" when someone lying has
+their trunk coming upright by ``sit_up_deg``. A transition lasts ``transition_hold_s``. Balance
+checks stay on during transitions; only settled sitting or lying turns them off.
+
 Labels are smoothed (majority over ``smooth_s``) and each person keeps a short history
 (``history_s``), live only: nothing is stored per person.
 
@@ -83,6 +89,11 @@ class ActivityConfig:
     lift_hip_drop: float = 0.25       # hips dropped more than this (x upright torso): not a lift
     seated_thigh: float = 0.55        # thigh shorter than this (x torso): pointing at the camera, seated
     seated_max_trunk: float = 60.0    # on a seat, leaning forward up to this still counts as sitting
+    transition_window_s: float = 2.0  # seated / lying this recently, then rising: a transition
+    rise_window_s: float = 0.8
+    rise_torso: float = 0.15          # hips up by this x torso within rise_window_s: standing up
+    sit_up_deg: float = 20.0          # trunk this much more upright (from reclined): sitting up
+    transition_hold_s: float = 1.5
     legs_extended: float = 0.5        # knees this far below the hips (x torso): not sitting
     knee_margin: float = 0.0          # wrists at or below knee height (x torso): reaching low
     low_hold_s: float = 0.5           # hands low this long (not walking) before a rise counts as a lift
@@ -118,6 +129,9 @@ class _Track:
     carrying: bool = False                           # lifted something and still holding it
     hang_since: float | None = None                  # both arms down since (while carrying)
     hip_up: float | None = None                      # upright hip height (image y)
+    posture: deque = field(default_factory=deque)    # (ts, hip y, torso, trunk deg, raw label)
+    transition: str | None = None                    # "sit-to-stand" / "lying-to-sitting"
+    transition_until: float = 0.0
 
 
 def _mid(kp, a, b, min_conf):
@@ -279,6 +293,34 @@ class ActivityTracker:
             return UPPER_ONLY, None, "low"
         return (WALKING if walking else STANDING), None, "high"
 
+    def _transition(self, st: _Track, kp, ts: float, label: str) -> str | None:
+        """Sit-to-stand / lying-to-sitting, from the last few seconds of hips and trunk."""
+        c = self.cfg
+        kp = np.asarray(kp, float)
+        sh, hip = _mid(kp, L_SH, R_SH, c.min_conf), _mid(kp, L_HIP, R_HIP, c.min_conf)
+        if sh is not None and hip is not None:
+            st.posture.append((ts, float(hip[1]), float(math.hypot(*(sh - hip))), _angle_from_vertical(sh, hip), label))
+        while st.posture and ts - st.posture[0][0] > c.transition_window_s + c.rise_window_s:
+            st.posture.popleft()
+        if ts < st.transition_until:
+            return st.transition
+        if len(st.posture) < 2 or label in (FALLEN,):
+            return None
+        now = st.posture[-1]
+        then = next((p for p in st.posture if now[0] - p[0] <= c.rise_window_s), None)
+        recent = [p for p in st.posture if now[0] - p[0] <= c.transition_window_s]
+        kind = None
+        if then is not None and then is not now:
+            rising = then[1] - now[1] >= c.rise_torso * max(now[2], 1.0)  # image y grows downward
+            if rising and any(p[4] == SITTING for p in recent) and label != LYING:
+                kind = "sit-to-stand"
+            elif (any(p[4] == LYING for p in recent) and then[3] >= 45 and now[3] < 45
+                  and then[3] - now[3] >= c.sit_up_deg):
+                kind = "lying-to-sitting"
+        if kind:
+            st.transition_until = ts + c.transition_hold_s
+        return kind
+
     def update(self, tid: int, kp, ts: float, body_height: float, fallen: bool = False,
                objects: list | None = None, fall_state: str | None = None, box: tuple | None = None) -> dict:
         """Classify, smooth, keep the history; returns the person's live activity."""
@@ -300,6 +342,7 @@ class ActivityTracker:
         st.detail = detail if smoothed == label else st.detail
         while st.history and ts - st.history[0][2] > c.history_s:
             st.history.pop(0)
-        return {"label": st.label, "since": st.since, "detail": st.detail,
+        st.transition = self._transition(st, kp, ts, label)
+        return {"label": st.label, "since": st.since, "detail": st.detail, "transition": st.transition,
                 "confidence": conf if smoothed == label else "high",
                 "history": [{"label": lbl, "start": round(a, 2), "end": round(b, 2)} for lbl, a, b in st.history]}

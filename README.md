@@ -156,6 +156,14 @@ hour and one fall is 4 points of recall.
 - Detection quality is YOLOv8n's: small or heavily occluded people can be missed. Try a
   larger model with `DETECTION_MODEL=yolov8s.pt`.
 
+### Open issues
+Tracked here until fixed; each links to the numbers in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+- **Lying on the floor: the person box is missing in 57% of frames** (YOLO11m at 0.25, own
+  recording; it was 100% with YOLOv8n). Every missing frame is kept as "lost while lying", so the
+  person isn't silently dropped, but there's no pose to judge. To revisit after the
+  chair-slide/bed-exit work: the rotated-image recovery (`anomaly/fall_recovery.py`, off by
+  default) or fine-tuning the detector on fall-dataset images.
+
 ### Known dependency risks
 - **The hosted LLM can disappear.** Search and the rule compiler use a hosted model, and
   providers retire models without notice: NVIDIA's `nemotron-3-super-120b-a12b`, the default

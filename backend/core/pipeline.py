@@ -580,7 +580,9 @@ class SentinelPipeline:
     def person_tag(act: dict | None, info: dict | None) -> str:
         """e.g. "Bending · REBA 9 HIGH · back" (REBA only when it can be trusted)."""
         label = act["label"] if act else None
-        if label == "Carrying" and act.get("detail"):
+        if act and act.get("transition"):
+            label = SentinelPipeline.TRANSITION_LABELS.get(act["transition"], label)
+        elif label == "Carrying" and act.get("detail"):
             label = f"Carrying {act['detail']}"
         elif label in ("Sitting", "Lying down") and act.get("detail"):
             label = f"{label.split()[0]} on {act['detail']}"  # "Sitting on chair", "Lying on bed"
@@ -606,8 +608,12 @@ class SentinelPipeline:
             cv2.rectangle(frame, (x1, top), (x1 + w + 8, top + h + 8), color, -1)
             cv2.putText(frame, text, (x1 + 4, top + h + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 1)
 
+    TRANSITION_LABELS: ClassVar[dict[str, str]] = {"sit-to-stand": "Standing up", "lying-to-sitting": "Sitting up"}
+
     def _activity_labels(self) -> dict:
-        return {tid: st.label for tid, st in self.activity.tracks.items()}
+        """Last smoothed label per track; a transition (standing up, sitting up) overrides it, so the
+        balance check stays on while someone gets up and only settled sitting/lying is gated off."""
+        return {tid: self.TRANSITION_LABELS.get(st.transition, st.label) for tid, st in self.activity.tracks.items()}
 
     def _update_lost(self, detections, labels, frame, objects, ts) -> list:
         people = {d.track_id: d.bbox for d in detections.detections

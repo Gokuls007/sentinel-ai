@@ -279,3 +279,48 @@ def test_balance_and_lift_skip_people_who_are_not_on_their_feet():
     assert alerts == []
     assert SentinelPipeline.person_tag({"label": "Sitting", "detail": "chair"}, None) == "Sitting on chair"
     assert SentinelPipeline.person_tag({"label": "Lying down", "detail": "bed"}, None) == "Lying on bed"
+
+
+# --- transitions: balance stays on while getting up -----------------------------------------------
+
+def test_sit_to_stand_is_a_transition_and_keeps_balance_checks_on():
+    from types import SimpleNamespace
+
+    from core.pipeline import SentinelPipeline
+
+    a = ActivityTracker()
+    t, out = run(a, lambda _t: facing(thigh_px=40), 0.0, 2, objects=[CHAIR])
+    assert out["label"] == SITTING and out["transition"] is None
+    # Hips rise off the seat (y up by 70 px in 0.5 s, torso 90 px) and the legs straighten.
+    t0 = t
+    t, out = run(a, lambda tt: person(top=100 - 140 * (tt - t0)), t, 0.5)
+    assert out["transition"] == "sit-to-stand"
+    p = SentinelPipeline.__new__(SentinelPipeline)
+    p.activity = a
+    assert p._activity_labels()[1] == "Standing up"  # not a "Sitting" label: balance stays on
+    assert SentinelPipeline.person_tag({"label": "Sitting", "transition": "sit-to-stand"}, None) == "Standing up"
+    t, out = run(a, lambda _t: person(top=30), t, 3)
+    assert out["transition"] is None and out["label"] == STANDING  # settled: plain standing
+
+    from activity.balance import BalanceTracker
+    b = BalanceTracker()
+    pose = SimpleNamespace(keypoints=person(), bbox=(250, 80, 350, 400), body_height=300.0)
+    b.update({1: pose}, 1.0, {1: "Standing up"})
+    assert 1 in b.current
+
+
+def test_settled_sitting_is_not_a_transition():
+    a = ActivityTracker()
+    _, out = run(a, lambda _t: facing(thigh_px=40), 0.0, 4, objects=[CHAIR])
+    assert out["transition"] is None
+
+
+def test_sitting_up_from_lying_is_a_transition():
+    bed = ("bed", (150.0, 150.0, 600.0, 400.0))
+    a = ActivityTracker()
+    t, out = run(a, lambda _t: facing(thigh_px=40, trunk_deg=70), 0.0, 1.5, objects=[bed])
+    assert out["label"] == LYING
+    t0 = t
+    _, out = run(a, lambda tt: facing(thigh_px=40, trunk_deg=max(10.0, 70 - 120 * (tt - t0))), t, 0.6,
+                 objects=[bed])
+    assert out["transition"] == "lying-to-sitting"
