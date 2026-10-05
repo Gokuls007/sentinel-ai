@@ -22,8 +22,10 @@ Rules first (each needs only the body parts it uses, and isn't offered without t
 - **Sitting**: thighs (hip -> knee) well off vertical, or the hips dropped by ``sit_drop`` of the
   upright torso length, with an upright trunk. Also, found automatically: the hips on a detected
   chair, couch or bed (leaning forward up to ``seated_max_trunk`` still counts: reading), or,
-  facing the camera, a thigh foreshortened toward the lens (shorter than ``seated_thigh`` x torso).
-  Standing in front of a chair has long, vertical thighs, so it doesn't count. On a bed with the
+  facing the camera, a thigh foreshortened toward the lens. The cue is the shin against the thigh
+  (thigh length against the torso didn't separate them: both ~0.65 with RTMPose on a webcam):
+  seated facing the camera the shin looks ``seat_shank_ratio``-``facing_shank_ratio`` x the thigh
+  or more; standing, about the same length (p90 1.1-1.3 on own recordings). On a bed with the
   trunk tilted past 45 degrees: Lying down.
 - **Walking / Standing**: upright, hip speed over / under ``walk_speed`` body heights per second,
   or growing/shrinking in the image (walking toward or away from the camera) faster than
@@ -90,11 +92,13 @@ class ActivityConfig:
     bend_torso_ratio: float = 0.72    # torso this short vs upright: bending toward the camera
     lying_aspect: float = 1.3         # box width / height
     lift_hip_drop: float = 0.25       # hips dropped more than this (x upright torso): not a lift
-    seated_thigh: float = 0.55        # thigh shorter than this (x torso): pointing at the camera, seated
     seated_max_trunk: float = 60.0    # on a seat, leaning forward up to this still counts as sitting
+    seat_shank_ratio: float = 1.3     # on a detected seat: shin >= this x thigh (thigh foreshortened) = seated
+    facing_shank_ratio: float = 1.5   # no seat detected: shin >= this x thigh, upright trunk = seated
+    settled_share: float = 0.6        # a transition needs this share of Sitting frames over 1 s first
     transition_window_s: float = 3.0  # seated / lying this recently, then rising: a transition
     rise_window_s: float = 3.0        # the hip rise is measured cumulatively over up to this long
-    rise_torso: float = 0.15          # hips up by this x torso from their lowest point: standing up
+    rise_torso: float = 0.20          # hips up by this x torso from their lowest point: standing up
     lean_deg: float = 15.0            # trunk tilting forward this much while still seated: about to stand
     lean_window_s: float = 1.5
     sit_up_deg: float = 20.0          # trunk this much more upright (from reclined): sitting up
@@ -137,6 +141,18 @@ class _Track:
     posture: deque = field(default_factory=deque)    # (ts, hip y, torso, trunk deg, raw label)
     transition: str | None = None                    # "sit-to-stand" / "lying-to-sitting"
     transition_until: float = 0.0
+
+
+def _shank_ratio(kp, min_conf) -> float | None:
+    """Longest shin/thigh ratio over the legs with hip, knee and ankle visible (None if none)."""
+    best = None
+    for h, k, a in ((L_HIP, L_KNEE, L_ANK), (R_HIP, R_KNEE, R_ANK)):
+        if min(kp[h, 2], kp[k, 2], kp[a, 2]) >= min_conf:
+            thigh = math.hypot(*(kp[k, :2] - kp[h, :2]))
+            if thigh > 1:
+                r = math.hypot(*(kp[a, :2] - kp[k, :2])) / thigh
+                best = r if best is None else max(best, r)
+    return best
 
 
 def _mid(kp, a, b, min_conf):
@@ -213,7 +229,8 @@ class ActivityTracker:
         torso_rel = torso / thigh_len if thigh_len > 0.2 * torso else None
         # Upright reference: torso length and hip height while clearly standing (not from a seated
         # person facing the camera, whose thigh is foreshortened: that would make standing look bent).
-        if trunk <= 15 and (thigh is None or (thigh <= 25 and thigh_len >= c.seated_thigh * torso)):
+        shank = _shank_ratio(kp, c.min_conf)
+        if trunk <= 15 and (thigh is None or (thigh <= 25 and (shank is None or shank < c.seat_shank_ratio))):
             st.torso_up = torso if st.torso_up is None else max(torso, 0.97 * st.torso_up + 0.03 * torso)
             st.hip_up = hip[1] if st.hip_up is None else 0.9 * st.hip_up + 0.1 * hip[1]
             if torso_rel is not None:
@@ -235,14 +252,14 @@ class ActivityTracker:
         # camera. (Standing in front of a chair: long, vertical thighs, no hip drop: not seated.)
         seat = next((name for name, (x1, y1, x2, y2) in (objects or [])
                      if name in SEATS and x1 <= hip[0] <= x2 and y1 <= hip[1] <= y2), None)
-        short_thigh = thigh is not None and thigh_len < c.seated_thigh * torso
-        if seat and (short_thigh or thigh is None or thigh >= 30 or hip_drop >= 0.2):
+        foreshort_thigh = shank is not None and shank >= c.seat_shank_ratio
+        if seat and (foreshort_thigh or thigh is None or thigh >= 30 or hip_drop >= 0.2):
             if seat == "bed" and trunk >= 45:
                 return LYING, "bed", "high"
             if trunk < c.seated_max_trunk:
                 st.carrying = False
                 return SITTING, seat, "high"
-        if short_thigh and trunk <= c.bend_deg and knee[1] >= hip[1] - 0.1 * torso:
+        if shank is not None and shank >= c.facing_shank_ratio and trunk <= c.bend_deg:
             return SITTING, None, "high"
         if trunk >= c.bend_deg or foreshortened or low_reach:
             st.carrying = False  # bending puts it down (or picks something else up)
@@ -312,7 +329,15 @@ class ActivityTracker:
             return st.transition if ts < st.transition_until else None
         now = st.posture[-1]
         recent = [p for p in st.posture if now[0] - p[0] <= c.transition_window_s]
-        seated = [p for p in recent if p[4] == SITTING]
+        # Settled sitting first: at least settled_share of the frames in some 1 s stretch of the window
+        # (flickery single "Sitting" frames while bending or shifting don't count).
+        seated = []
+        for start in recent:
+            span = [p for p in recent if 0 <= p[0] - start[0] <= 1.0]
+            if (span and span[-1][0] - span[0][0] >= 0.8
+                    and sum(p[4] == SITTING for p in span) >= c.settled_share * len(span)):
+                seated = span
+                break
         # Settled: a second upright (standing or walking, trunk near vertical) with the hips no longer
         # rising. Then the stand-up is over.
         last_s = [p for p in st.posture if now[0] - p[0] <= 1.0]

@@ -52,57 +52,62 @@ _Measured 2026-09-30 23:49 with `python scripts/benchmark.py`_ on the `corridor`
 ## False alarms on other non-fall footage
 
 <!-- benchmark:false-alarms:start -->
-_Measured 2026-10-02 with `python training/eval_false_alarms.py` on cuda._ These videos are separate from URFD and contain no falls, so every fall alert in them is a false alarm. Same production path and thresholds.
+_Measured 2026-10-04 with `python training/eval_false_alarms.py` on auto._ These videos are separate from URFD and contain no falls, so every fall alert in them is a false alarm. Same production path and thresholds.
 
 | Video | Source | Activities | Length | Fall alerts | Alerts/hour |
 |---|---|---|---|---|---|
 | Corridor sample (Intel, CC BY 4.0) | sample | walking, standing | 0.8 min | 0 | 0.00 |
 | Hallway sample (Intel, CC BY 4.0) | sample | walking | 2.3 min | 0 | 0.00 |
-| **All non-fall footage** | | | **0.053 h** | **0** | **0.00** |
+| laptop_20261003_213146.mp4 | recording | n/a | 0.1 min | 0 | 0.00 |
+| laptop_20261003_215620.mp4 | recording | n/a | 0.5 min | 0 | 0.00 |
+| laptop_20261003_222917.mp4 | recording | n/a | 0.7 min | 0 | 0.00 |
+| laptop_20261004_213121.mp4 | recording | n/a | 1.0 min | 3 | 175.14 |
+| laptop_20261004_221430.mp4 | recording | n/a | 0.0 min | 0 | 0.00 |
+| **All non-fall footage** | | | **0.092 h** | **3** | **32.63** |
 
 **Hard negatives (squatting and kneeling).** These look the most like a fall to this detector, because the head drops and the box gets wider.
 
 _No squat or kneel footage evaluated yet. Add the ergonomics clip to `data/recordings/` with a sidecar JSON naming those activities, then re-run._
 
-This footage totals 3.2 minutes. That is far too little for a real field false-alarm rate, which needs hours of normal work at the target site.
+This footage totals 5.5 minutes. That is far too little for a real field false-alarm rate, which needs hours of normal work at the target site.
 <!-- benchmark:false-alarms:end -->
 
 ## Fall detection: rules vs learned model (unseen subjects)
 
 <!-- benchmark:fall-final:start -->
-_Measured 2026-10-02 with `python training/fall_round3.py final`._ **Test set: CAUCAFall subjects 6-10 only** (25 falls, 25 daily activities, 4.5 min of no-fall video). These people were never used to design, tune or train anything. Training and tuning used URFD, the sample clips and CAUCAFall subjects 1-5 (55 falls). Default 1 s confirmation.
+_Measured 2026-10-04 with `python training/fall_round3.py final`._ **Test set: CAUCAFall subjects 6-10 only** (25 falls, 25 daily activities, 4.5 min of no-fall video). These people were never used to design, tune or train anything. Training and tuning used URFD, the sample clips and CAUCAFall subjects 1-5 (55 falls). Default 1 s confirmation.
 
 | Method | Confirmed recall | Confirmed false alarms / h (count) | Possible recall | Possible false alarms / h (count) |
 |---|---|---|---|---|
-| Rules: baseline | 2 / 25 (8%) | 52.9 (4) | 7 / 25 (28%) | 79.4 (6) |
-| Rules: frozen candidate (rotated retry + hysteresis, presence) | 4 / 25 (16%) | 66.2 (5) | 8 / 25 (32%) | 79.4 (6) |
-| Rules: + direction-independent signals | 4 / 25 (16%) | 0.0 (0) | 10 / 25 (40%) | 0.0 (0) |
-| Rules: + direction-independent signals + box calibration | 4 / 25 (16%) | 0.0 (0) | 10 / 25 (40%) | 0.0 (0) |
-| Rules: candidate + direction-independent + box calibration | 5 / 25 (20%) | 39.7 (3) | 10 / 25 (40%) | 52.9 (4) |
-| Learned: gradient boosting on pose features (threshold 0.5, chosen by cross-validation on training videos) | 14 / 25 (56%) | 39.7 (3) | 18 / 25 (72%) | 92.6 (7) |
+| Rules: baseline | 11 / 25 (44%) | 13.2 (1) | 11 / 25 (44%) | 13.2 (1) |
+| Rules: frozen candidate (rotated retry + hysteresis, presence) | 11 / 25 (44%) | 13.2 (1) | 11 / 25 (44%) | 39.7 (3) |
+| Rules: + direction-independent signals | 10 / 25 (40%) | 13.2 (1) | 10 / 25 (40%) | 13.2 (1) |
+| Rules: + direction-independent signals + box calibration | 10 / 25 (40%) | 13.2 (1) | 10 / 25 (40%) | 13.2 (1) |
+| Rules: candidate + direction-independent + box calibration | 11 / 25 (44%) | 26.5 (2) | 11 / 25 (44%) | 26.5 (2) |
+| Learned: gradient boosting on pose features (threshold 0.5, chosen by cross-validation on training videos) | 25 / 25 (100%) | 39.7 (3) | 24 / 25 (96%) | 79.4 (6) |
 
 False alarms on the test subjects by activity (confirmed / possible):
 
 | Method | Hop | Kneel | Pick up object | Sit down | Walk |
 |---|---|---|---|---|---|
-| Rules: baseline | 0 / 0 | 0 / 0 | 3 / 4 | 1 / 2 | 0 / 0 |
-| Rules: frozen candidate | 0 / 0 | 0 / 0 | 4 / 4 | 1 / 2 | 0 / 0 |
-| Rules: + direction-independent signals | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
-| Rules: + direction-independent signals + box calibration | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
-| Rules: candidate + direction-independent + box calibration | 0 / 0 | 0 / 0 | 3 / 3 | 0 / 1 | 0 / 0 |
-| Learned: gradient boosting on pose features | 0 / 0 | 0 / 2 | 1 / 2 | 2 / 3 | 0 / 0 |
+| Rules: baseline | 0 / 0 | 1 / 1 | 0 / 0 | 0 / 0 | 0 / 0 |
+| Rules: frozen candidate | 0 / 0 | 1 / 2 | 0 / 0 | 0 / 1 | 0 / 0 |
+| Rules: + direction-independent signals | 0 / 0 | 1 / 1 | 0 / 0 | 0 / 0 | 0 / 0 |
+| Rules: + direction-independent signals + box calibration | 0 / 0 | 1 / 1 | 0 / 0 | 0 / 0 | 0 / 0 |
+| Rules: candidate + direction-independent + box calibration | 0 / 0 | 1 / 1 | 0 / 0 | 1 / 1 | 0 / 0 |
+| Learned: gradient boosting on pose features | 0 / 0 | 2 / 2 | 0 / 1 | 1 / 3 | 0 / 0 |
 
 Tuning half (CAUCAFall subjects 1-5), for reference. Rules only; the learned model was trained on these subjects:
 
 | Method | Confirmed recall | Confirmed false alarms / h (count) | Possible recall | Possible false alarms / h (count) |
 |---|---|---|---|---|
-| Rules: baseline | 5 / 25 (20%) | 0.0 (0) | 14 / 25 (56%) | 44.6 (3) |
-| Rules: frozen candidate (rotated retry + hysteresis, presence) | 8 / 25 (32%) | 0.0 (0) | 14 / 25 (56%) | 59.5 (4) |
-| Rules: + direction-independent signals | 7 / 25 (28%) | 0.0 (0) | 15 / 25 (60%) | 0.0 (0) |
-| Rules: + direction-independent signals + box calibration | 7 / 25 (28%) | 0.0 (0) | 15 / 25 (60%) | 0.0 (0) |
-| Rules: candidate + direction-independent + box calibration | 8 / 25 (32%) | 0.0 (0) | 15 / 25 (60%) | 29.8 (2) |
+| Rules: baseline | 10 / 25 (40%) | 44.6 (3) | 14 / 25 (56%) | 59.5 (4) |
+| Rules: frozen candidate (rotated retry + hysteresis, presence) | 12 / 25 (48%) | 44.6 (3) | 14 / 25 (56%) | 59.5 (4) |
+| Rules: + direction-independent signals | 10 / 25 (40%) | 29.8 (2) | 12 / 25 (48%) | 29.8 (2) |
+| Rules: + direction-independent signals + box calibration | 10 / 25 (40%) | 29.8 (2) | 12 / 25 (48%) | 29.8 (2) |
+| Rules: candidate + direction-independent + box calibration | 12 / 25 (48%) | 29.8 (2) | 14 / 25 (56%) | 29.8 (2) |
 
-Learned model: `HistGradientBoostingClassifier` (200 trees, depth 4) on 12 per-frame pose features over a 1 s window (descent_now, descent_max_1s, drop_from_start, shrink, shrink_min_1s, aspect, torso, spread, hip_height, head_drop, hip_std_05s, visible_kps). Possible = probability above the threshold for 0.3 s; confirmed = above it for a further 1 s. Threshold grid with grouped 5-fold cross-validation on training videos (recall minus false alarms per no-fall video): 0.5 → +0.48, 0.6 → +0.44, 0.7 → +0.39, 0.8 → +0.30, 0.9 → +0.26, 0.95 → +0.19.
+Learned model: `HistGradientBoostingClassifier` (200 trees, depth 4) on 12 per-frame pose features over a 1 s window (descent_now, descent_max_1s, drop_from_start, shrink, shrink_min_1s, aspect, torso, spread, hip_height, head_drop, hip_std_05s, visible_kps). Possible = probability above the threshold for 0.3 s; confirmed = above it for a further 1 s. Threshold grid with grouped 5-fold cross-validation on training videos (recall minus false alarms per no-fall video): 0.5 → +0.43, 0.6 → +0.43, 0.7 → +0.43, 0.8 → +0.39, 0.9 → +0.40, 0.95 → +0.40.
 
 Notes on the learned model:
 - Its "confirmed" level means the probability stayed above the threshold for 1.3 s. It has no separate stillness check like the rules, so the two confirmed levels are not identical in meaning.
@@ -117,24 +122,24 @@ CAUCAFall tuning subjects 1-5: 25 falls, 14 reached the ground, 11 did not.
 
 Why (missed falls):
 
-- 6 x person not tracked during the fall
-- 3 x never calibrated (no standing height before the fall)
-- 1 x descent too slow
+- 6 x descent too slow
+- 2 x person not tracked during the fall
+- 2 x never calibrated (no standing height before the fall)
 - 1 x descended, but the torso never looked horizontal
 
 By on-screen direction (all falls: reached / total):
 
-- not visible: 2 / 8
-- sideways (rotates): 12 / 14
+- not visible: 2 / 5
+- sideways (rotates): 12 / 18
 - toward/away (shortens): 0 / 1
-- unclear: 0 / 2
+- unclear: 0 / 1
 
 By fall type (folder label):
 
 - Fall backwards: 4 / 5
-- Fall forward: 2 / 5
-- Fall left: 3 / 5
-- Fall right: 2 / 5
+- Fall forward: 4 / 5
+- Fall left: 2 / 5
+- Fall right: 1 / 5
 - Fall sitting: 3 / 5
 
 Most misses are visibility problems (the person isn't tracked during the fall, or never calibrated), not fall direction: sideways falls reach the ground in most clips, and only one clip is clearly toward or away from the camera.
@@ -143,38 +148,38 @@ Most misses are visibility problems (the person isn't tracked during the fall, o
 ## Fall confirmation time sweep
 
 <!-- benchmark:fall-sweep:start -->
-_Measured 2026-10-02 with `python training/sweep_fall_confirm.py` on cuda._ The confirmation time is how long a person must lie still on the ground before the alert. The current default is **1 s**. Detection and pose ran once per video, and only the fall state machine was replayed at each setting. The "gave up" timeout is at least confirmation + 2 s. These rows use the earlier torso-only ground rule (`ground_mode="torso"`, the default before 2026-10-02). The current default is compared in "Fall detection: rules vs learned model (unseen subjects)" above.
+_Measured 2026-10-04 with `python training/sweep_fall_confirm.py` on cuda._ The confirmation time is how long a person must lie still on the ground before the alert. The current default is **1 s**. Detection and pose ran once per video, and only the fall state machine was replayed at each setting. The "gave up" timeout is at least confirmation + 2 s. These rows use the earlier torso-only ground rule (`ground_mode="torso"`, the default before 2026-10-02). The current default is compared in "Fall detection: rules vs learned model (unseen subjects)" above.
 
-No-fall footage: **8.1 min** (URFD ADL 5.0 min, sample clips 3.2 min).
+No-fall footage: **13.3 min** (URFD ADL 5.0 min, sample clips 3.2 min, your recordings 5.2 min).
 
 Two alert levels: a **possible fall** (yellow, dashboard only) when the person reaches the ground, and a **confirmed fall** (red, notifies) after the stillness check.
 
 | Confirmation time | Confirmed recall | Confirmed false alarms / h (count) | Possible recall | Possible false alarms / h (count) | Confirmable on URFD | Confirmable but missed (why) |
 |---|---|---|---|---|---|---|
-| 0.5 s | 3 / 30 (10%) | 14.8 (2) | 25 / 30 (83%) | 81.3 (11) | 23 / 30 | 15 lost from view, 3 left the ground state, 2 not still long enough |
-| 1 s (default) | 0 / 30 (0%) | 7.4 (1) | 25 / 30 (83%) | 81.3 (11) | 14 / 30 | 7 lost from view, 4 not still long enough, 3 left the ground state |
-| 2 s | 0 / 30 (0%) | 0.0 (0) | 25 / 30 (83%) | 81.3 (11) | 2 / 30 | 1 lost from view, 1 not still long enough |
-| 3 s | 0 / 30 (0%) | 0.0 (0) | 25 / 30 (83%) | 81.3 (11) | 0 / 30 | none |
-| 5 s | 0 / 30 (0%) | 0.0 (0) | 25 / 30 (83%) | 81.3 (11) | 0 / 30 | none |
+| 0.5 s | 6 / 30 (20%) | 4.5 (1) | 16 / 30 (53%) | 31.6 (7) | 14 / 30 | 6 lost from view, 1 not still long enough, 1 left the ground state |
+| 1 s (default) | 3 / 30 (10%) | 4.5 (1) | 16 / 30 (53%) | 31.6 (7) | 11 / 30 | 4 lost from view, 3 not still long enough, 1 left the ground state |
+| 2 s | 0 / 30 (0%) | 0.0 (0) | 16 / 30 (53%) | 31.6 (7) | 2 / 30 | 2 not still long enough |
+| 3 s | 0 / 30 (0%) | 0.0 (0) | 16 / 30 (53%) | 31.6 (7) | 0 / 30 | none |
+| 5 s | 0 / 30 (0%) | 0.0 (0) | 16 / 30 (53%) | 31.6 (7) | 0 / 30 | none |
 
-**"On the ground" stage recall** (reached FALLEN, the step before confirmation; it is the same at every setting): **25 / 30 (83%)** of URFD falls. 11 of 42 no-fall videos also reached that stage without confirming.
+**"On the ground" stage recall** (reached FALLEN, the step before confirmation; it is the same at every setting): **16 / 30 (53%)** of URFD falls. 6 of 49 no-fall videos also reached that stage without confirming.
 
 **Fixes for losing the person on the floor**, each alone, at the default 1 s confirmation. These are replayed from the same pose cache. The region-local and rotated retries were run once per missing person and are used only where production would use them (falling or on the ground, within 3 s of the fall). The retry threshold is 0.15; normal is the pose model's threshold.
 
 | Fix | Confirmed catches | Confirmed false alarms (/ h) | Possible catches | Possible false alarms (/ h) | Lost from view (of falls reaching the ground) |
 |---|---|---|---|---|---|
-| Baseline (no fixes) | 0 / 30 | 1 (7.4) | 25 / 30 | 11 (81.3) | 16 / 25 |
-| 1. Hold lost track 5 s (last seen lying) | 6 / 30 | 4 +3 (29.6) | 26 / 30 | 11 (81.3) | 17 / 26 |
-| 2. Region-local low threshold, as pose | 0 / 30 | 1 (7.4) | 27 / 30 | 14 (103.5) | 13 / 27 |
-| 2. Region-local low threshold, as presence | 0 / 30 | 1 (7.4) | 26 / 30 | 12 (88.7) | 10 / 26 |
-| 3. Rotated fallback, as pose | 0 / 30 | 1 (7.4) | 27 / 30 | 19 (140.4) | 7 / 27 |
-| 3. Rotated fallback, as presence | 5 / 30 | 1 (7.4) | 26 / 30 | 12 (88.7) | 5 / 26 |
-| 4. Ground-state hysteresis 0.5 s | 0 / 30 | 1 (7.4) | 25 / 30 | 11 (81.3) | 16 / 25 |
-| 2 + 3 + 4, as pose (no hold) | 0 / 30 | 1 (7.4) | 27 / 30 | 15 (110.9) | 0 / 27 |
-| 3 + 4, as presence (no hold) | 5 / 30 | 1 (7.4) | 26 / 30 | 12 (88.7) | 3 / 26 |
-| 2 + 3 + 4, as presence (no hold) | 3 / 30 | 2 +1 (14.8) | 26 / 30 | 12 (88.7) | 0 / 26 |
-| All four, as pose | 0 / 30 | 8 +7 (59.1) | 27 / 30 | 15 (110.9) | 0 / 27 |
-| All four, as presence | 3 / 30 | 4 +3 (29.6) | 26 / 30 | 12 (88.7) | 0 / 26 |
+| Baseline (no fixes) | 3 / 30 | 1 (4.5) | 16 / 30 | 7 (31.6) | 7 / 16 |
+| 1. Hold lost track 5 s (last seen lying) | 5 / 30 | 2 +1 (9.0) | 18 / 30 | 7 (31.6) | 9 / 18 |
+| 2. Region-local low threshold, as pose | 2 / 30 | 1 (4.5) | 22 / 30 | 11 (49.7) | 9 / 22 |
+| 2. Region-local low threshold, as presence | 4 / 30 | 2 +1 (9.0) | 17 / 30 | 9 (40.6) | 3 / 17 |
+| 3. Rotated fallback, as pose | 3 / 30 | 1 (4.5) | 22 / 30 | 21 (94.8) | 7 / 22 |
+| 3. Rotated fallback, as presence | 5 / 30 | 2 +1 (9.0) | 18 / 30 | 9 (40.6) | 3 / 18 |
+| 4. Ground-state hysteresis 0.5 s | 3 / 30 | 2 +1 (9.0) | 16 / 30 | 7 (31.6) | 7 / 16 |
+| 2 + 3 + 4, as pose (no hold) | 2 / 30 | 1 (4.5) | 22 / 30 | 14 (63.2) | 1 / 22 |
+| 3 + 4, as presence (no hold) | 5 / 30 | 4 +3 (18.1) | 18 / 30 | 9 (40.6) | 1 / 18 |
+| 2 + 3 + 4, as presence (no hold) | 5 / 30 | 4 +3 (18.1) | 17 / 30 | 9 (40.6) | 0 / 17 |
+| All four, as pose | 2 / 30 | 3 +2 (13.5) | 22 / 30 | 14 (63.2) | 1 / 22 |
+| All four, as presence | 5 / 30 | 5 +4 (22.6) | 17 / 30 | 9 (40.6) | 0 / 17 |
 
 *Lost from view*: the person's pose (tracked or recovered) was missing in most frames after reaching the ground. Fix 1 doesn't find the person; it keeps the fall alive while they are missing, so it raises catches without lowering this count.
 
@@ -194,15 +199,15 @@ CAUCAFall (CC BY 4.0) has 50 falls (5 types x 10 subjects) and 50 daily activiti
 
 | Setting | Confirmed recall | Confirmed false alarms / h (count) | Possible recall | Possible false alarms / h (count) | Lost from view |
 |---|---|---|---|---|---|
-| Baseline (no fixes) | 7 / 50 (14%) | 28.0 (4) | 21 / 50 (42%) | 63.0 (9) | 5 / 21 |
-| Candidate: rotated retry + hysteresis 0.5 s, as presence | 12 / 50 (24%) | 35.0 (5) | 22 / 50 (44%) | 70.0 (10) | 5 / 22 |
+| Baseline (no fixes) | 21 / 50 (42%) | 28.0 (4) | 25 / 50 (50%) | 35.0 (5) | 2 / 25 |
+| Candidate: rotated retry + hysteresis 0.5 s, as presence | 23 / 50 (46%) | 28.0 (4) | 25 / 50 (50%) | 49.0 (7) | 2 / 25 |
 
 False alarms by daily activity (confirmed / possible):
 
 | Setting | Hop | Kneel | Pick up object | Sit down | Walk |
 |---|---|---|---|---|---|
-| Baseline (no fixes) | 0 / 0 | 0 / 1 | 3 / 5 | 1 / 2 | 0 / 1 |
-| Candidate: rotated retry + hysteresis 0.5 s, as presence | 0 / 0 | 0 / 1 | 4 / 5 | 1 / 3 | 0 / 1 |
+| Baseline (no fixes) | 0 / 0 | 2 / 2 | 1 / 1 | 1 / 2 | 0 / 0 |
+| Candidate: rotated retry + hysteresis 0.5 s, as presence | 0 / 0 | 2 / 3 | 1 / 1 | 1 / 3 | 0 / 0 |
 
 Any further tuning will split CAUCAFall by video into a tuning half and a test half, and report test-half numbers only.
 <!-- benchmark:fall-sweep:end -->
@@ -210,17 +215,17 @@ Any further tuning will split CAUCAFall by video into a tuning half and a test h
 ## Fall detection accuracy (UR Fall Detection dataset)
 
 <!-- benchmark:falls:start -->
-_Measured 2026-10-02 with `python training/eval_fall.py` on cuda._ URFD camera 0 (RGB 640x480, 30 fps); production thresholds; onset tolerance 2.0 s.
+_Measured 2026-10-04 with `python training/eval_fall.py` on auto._ URFD camera 0 (RGB 640x480, 30 fps); production thresholds; onset tolerance 2.0 s.
 
 | Metric | Value |
 |---|---|
-| Fall sequences / detected (recall) | 30 / 0 (0.0%) |
-| Precision | n/a |
-| F1 | n/a |
+| Fall sequences / detected (recall) | 30 / 3 (10.0%) |
+| Precision | 100.0% |
+| F1 | 0.18 |
 | False positives in fall sequences (early or repeated alerts) | 0 |
 | False positives in ADL sequences | 0 over 40 sequences |
 | **False alarms per hour of non-fall video** | **0.00**, based on **0.083 h (5.0 min, 8941 frames)** of ADL video |
-| Alert latency after fall onset (median / max) | n/a s / n/a s |
+| Alert latency after fall onset (median / max) | 2.47 s / 2.90 s |
 
 The false-alarm rate rests on only 5.0 minutes of non-fall video (all that URFD provides), so treat it as a rough indicator, not a measured field rate. A reliable figure needs hours of normal-activity footage from the target site.
 
@@ -228,12 +233,12 @@ The false-alarm rate rests on only 5.0 minutes of non-fall video (all that URFD 
 
 | Stage | Value |
 |---|---|
-| Fall sequences that reached FALLEN (on the ground, before confirmation) | 23 / 30 (76.7%) |
+| Fall sequences that reached FALLEN (on the ground, before confirmation) | 16 / 30 (53.3%) |
 | Video left after fall onset (median) | 1.70 s |
-| Video left after reaching FALLEN (median) | 0.97 s |
-| ADL sequences that reached FALLEN (not confirmed) | 6 / 40 |
+| Video left after reaching FALLEN (median) | 1.50 s |
+| ADL sequences that reached FALLEN (not confirmed) | 7 / 40 |
 
-URFD trims each fall clip shortly after the fall. Where the detector reaches FALLEN, the median video left after that (0.97 s) is shorter than the 1.0 s of stillness the detector waits for, so many clips end before an alert could fire. The confirmation-time sweep above breaks down the clips that had enough video but still got no alert (mostly the person is lost from view once on the floor). These numbers describe how the detector behaves on short, trimmed clips. They are not the recall you would see on continuous video, which needs longer fall recordings to measure.
+URFD trims each fall clip shortly after the fall. Where the detector reaches FALLEN, the median video left after that (1.50 s) is barely longer than the 1.0 s of stillness the detector waits for, so many clips end before an alert could fire. The confirmation-time sweep above breaks down the clips that had enough video but still got no alert (mostly the person is lost from view once on the floor). These numbers describe how the detector behaves on short, trimmed clips. They are not the recall you would see on continuous video, which needs longer fall recordings to measure.
 <!-- benchmark:falls:end -->
 
 ## Search accuracy
@@ -348,22 +353,22 @@ Rules that need objects (phone, laptop, book) add those classes to the detector'
 ## Activity labels (CAUCAFall subjects 1-5, tuning set)
 
 <!-- benchmark:activity-1-5:start -->
-_Measured 2026-10-03 with `python scripts/eval_activity.py --subjects 1-5`._ CAUCAFall subjects 1-5 (the tuning set), 50 clips. The rules were tuned **only on subjects 1-5** (plus one own lift-and-carry recording, below); subjects 6-10 are held out (they are also the fall test set). A clip passes when its expected label shows for at least 1 s (main person, smoothed labels).
+_Measured 2026-10-04 with `python scripts/eval_activity.py --subjects 1-5`._ CAUCAFall subjects 1-5 (the tuning set), 50 clips. The rules were tuned **only on subjects 1-5** (plus one own lift-and-carry recording, below); subjects 6-10 are held out (they are also the fall test set). A clip passes when its expected label shows for at least 1 s (main person, smoothed labels).
 
 | Clip type | Expected | Passed |
 |---|---|---|
-| Fall (any direction) | Fallen or Lying down | 15 / 25 |
+| Fall (any direction) | Fallen or Lying down | 23 / 25 |
 | Hop | no false Fallen | 5 / 5 |
-| Kneel | no false Fallen | 5 / 5 |
+| Kneel | no false Fallen | 4 / 5 |
 | Pick up object | Bending, then Lifting | 0 / 5 |
-| Sit down | Sitting | 4 / 5 |
-| Walk | Walking | 5 / 5 |
+| Sit down | Sitting | 5 / 5 |
+| Walk | Walking | 4 / 5 |
 
 False "Lifting" (shown for 1 s or more in Walk, Sit down, Hop or Kneel clips): 0 / 20 clips.
 
 False "Carrying" (shown for 1 s or more; nobody carries anything in these clips): 1 / 50 clips.
 
-Failures: `Subject.1/Fall forward` (no Fallen or Lying down); `Subject.1/Fall left` (no Fallen or Lying down); `Subject.1/Fall right` (no Fallen or Lying down); `Subject.1/Fall sitting` (no Fallen or Lying down); `Subject.1/Pick up object` (no Bending, no Lifting); `Subject.2/Pick up object` (no Bending, no Lifting); `Subject.3/Fall backwards` (no Fallen or Lying down); `Subject.3/Fall forward` (no Fallen or Lying down); `Subject.3/Fall left` (no Fallen or Lying down); `Subject.3/Fall sitting` (no Fallen or Lying down); `Subject.3/Pick up object` (no Bending, no Lifting); `Subject.4/Fall sitting` (no Fallen or Lying down); `Subject.4/Pick up object` (no Lifting); `Subject.5/Fall forward` (no Fallen or Lying down); `Subject.5/Pick up object` (no Lifting); `Subject.5/Sit down` (no Sitting)
+Failures: `Subject.1/Kneel` (showed Fallen); `Subject.1/Pick up object` (no Bending, no Lifting); `Subject.2/Pick up object` (no Bending, no Lifting); `Subject.2/Walk` (no Walking); `Subject.3/Fall left` (no Fallen or Lying down); `Subject.3/Pick up object` (no Bending, no Lifting); `Subject.4/Fall sitting` (no Fallen or Lying down); `Subject.4/Pick up object` (no Bending, no Lifting); `Subject.5/Pick up object` (no Lifting)
 
 Front-on room-scale clips, not warehouse footage: this checks the rules end to end, not field accuracy.
 <!-- benchmark:activity-1-5:end -->
@@ -371,22 +376,22 @@ Front-on room-scale clips, not warehouse footage: this checks the rules end to e
 ## Activity labels (CAUCAFall subjects 6-10, held out)
 
 <!-- benchmark:activity-6-10:start -->
-_Measured 2026-10-03 with `python scripts/eval_activity.py --subjects 6-10`._ CAUCAFall subjects 6-10 (held out: never used for tuning), 50 clips. The rules were tuned **only on subjects 1-5** (plus one own lift-and-carry recording, below); subjects 6-10 are held out (they are also the fall test set). A clip passes when its expected label shows for at least 1 s (main person, smoothed labels).
+_Measured 2026-10-04 with `python scripts/eval_activity.py --subjects 6-10`._ CAUCAFall subjects 6-10 (held out: never used for tuning), 50 clips. The rules were tuned **only on subjects 1-5** (plus one own lift-and-carry recording, below); subjects 6-10 are held out (they are also the fall test set). A clip passes when its expected label shows for at least 1 s (main person, smoothed labels).
 
 | Clip type | Expected | Passed |
 |---|---|---|
-| Fall (any direction) | Fallen or Lying down | 17 / 25 |
+| Fall (any direction) | Fallen or Lying down | 25 / 25 |
 | Hop | no false Fallen | 5 / 5 |
-| Kneel | no false Fallen | 5 / 5 |
+| Kneel | no false Fallen | 4 / 5 |
 | Pick up object | Bending, then Lifting | 0 / 5 |
 | Sit down | Sitting | 4 / 5 |
-| Walk | Walking | 5 / 5 |
+| Walk | Walking | 4 / 5 |
 
 False "Lifting" (shown for 1 s or more in Walk, Sit down, Hop or Kneel clips): 0 / 20 clips.
 
 False "Carrying" (shown for 1 s or more; nobody carries anything in these clips): 0 / 50 clips.
 
-Failures: `Subject.10/Pick up object` (no Bending, no Lifting); `Subject.6/Fall backwards` (no Fallen or Lying down); `Subject.6/Fall left` (no Fallen or Lying down); `Subject.6/Fall right` (no Fallen or Lying down); `Subject.6/Fall sitting` (no Fallen or Lying down); `Subject.6/Pick up object` (no Lifting); `Subject.6/Sit down` (no Sitting); `Subject.7/Fall forward` (no Fallen or Lying down); `Subject.7/Pick up object` (no Lifting); `Subject.8/Fall backwards` (no Fallen or Lying down); `Subject.8/Fall forward` (no Fallen or Lying down); `Subject.8/Fall right` (no Fallen or Lying down); `Subject.8/Pick up object` (no Lifting); `Subject.9/Pick up object` (no Lifting)
+Failures: `Subject.10/Kneel` (showed Fallen); `Subject.10/Pick up object` (no Bending, no Lifting); `Subject.6/Pick up object` (no Bending, no Lifting); `Subject.6/Walk` (no Walking); `Subject.7/Pick up object` (no Lifting); `Subject.8/Pick up object` (no Bending, no Lifting); `Subject.8/Sit down` (no Sitting); `Subject.9/Pick up object` (no Lifting)
 
 Front-on room-scale clips, not warehouse footage: this checks the rules end to end, not field accuracy.
 <!-- benchmark:activity-6-10:end -->
@@ -394,16 +399,16 @@ Front-on room-scale clips, not warehouse footage: this checks the rules end to e
 ## Activity labels (own lift-and-carry recording)
 
 <!-- benchmark:activity-own-laptop_20261003_215620:start -->
-_Measured 2026-10-03 with `python scripts/eval_activity_own.py data/recordings/laptop_20261003_215620.mp4`._ One hand-labelled webcam recording (not committed), side/oblique view; it was used for tuning together with CAUCAFall subjects 1-5, so these are training-set numbers, not an accuracy estimate.
+_Measured 2026-10-04 with `python scripts/eval_activity_own.py data/recordings/laptop_20261003_215620.mp4`._ One hand-labelled webcam recording (not committed), side/oblique view; it was used for tuning together with CAUCAFall subjects 1-5, so these are training-set numbers, not an accuracy estimate.
 
 | Action | Time (s) | Expected | Result | Labels shown (frames) |
 |---|---|---|---|---|
-| walk | 8.5-9.3 | Walking | pass | Walking 15, Bending 8 |
-| bend to pick up | 9.4-10.9 | Bending | pass | Bending 23, Lifting 9, Walking 2 |
+| walk | 8.5-9.3 | Walking | pass | Walking 16, Bending 7 |
+| bend to pick up | 9.4-10.9 | Bending | pass | Bending 22, Lifting 9, Walking 3 |
 | lift | 10.9-11.8 | Lifting | pass | Lifting 22, Bending 2 |
-| carry | 11.8-22.2 | Carrying | pass | Carrying 155, Lifting 12 |
+| carry | 11.8-22.2 | Carrying | pass | Carrying 154, Lifting 12, Standing 1 |
 | put down | 22.3-23.7 | (reported only) | not scored | Carrying 32 |
-| walk back | 24.0-26.0 | Walking | pass | Walking 15, Standing 14, Carrying 11, Upper body only 1 |
+| walk back | 24.0-26.0 | Walking | pass | Walking 15, Standing 12, Carrying 11, Sitting 3 |
 <!-- benchmark:activity-own-laptop_20261003_215620:end -->
 
 Not covered yet: the clip has no reach overhead, squat, or bend without lifting, so those are
@@ -414,20 +419,20 @@ smoothing). The view is side/oblique and partly front-on, with a soft bag rather
 ## Activity labels (own recording, held out)
 
 <!-- benchmark:activity-own-laptop_20261003_222917:start -->
-_Measured 2026-10-03 with `python scripts/eval_activity_own.py data/recordings/laptop_20261003_222917.mp4`._ One hand-labelled webcam recording (not committed), **held out**: labelled before the first run, evaluated once, never used for tuning.
+_Measured 2026-10-04 with `python scripts/eval_activity_own.py data/recordings/laptop_20261003_222917.mp4`._ One hand-labelled webcam recording (not committed), **held out**: labelled before the first run, evaluated once, never used for tuning.
 
 | Action | Time (s) | Expected | Result | Labels shown (frames) |
 |---|---|---|---|---|
-| carry | 2.8-12.6 | Carrying | missed | Standing 106, Lying down 29, Walking 23 |
-| reach overhead | 13.1-17.3 | Reaching overhead | pass | Lying down 31, Standing 22, Reaching overhead 21 |
-| put down | 17.7-18.9 | (reported only) | not scored | Lying down 18, Standing 9, Reaching overhead 1 |
-| handle bag low | 19.1-24.3 | (reported only) | not scored | Lying down 45, Fallen 28, Standing 13, Sitting 2 |
-| lift | 26.6-27.6 | Lifting | missed | Walking 16, Upper body only 5, Bending 2, Sitting 1 |
-| carry one hand | 28.0-30.3 | Carrying | missed | Walking 21, Standing 13, Lying down 11 |
-| raise to chest | 30.3-31.3 | (reported only) | not scored | Lying down 15, Standing 11 |
-| carry | 31.3-35.0 | Carrying | missed | Lying down 36, Standing 28, Bending 2 |
-| put down | 35.3-36.4 | (reported only) | not scored | Lying down 15, Standing 12 |
-| walk | 36.6-37.6 | Walking | pass | Lying down 21, Standing 4, Walking 1 |
+| carry | 2.8-12.6 | Carrying | missed | Standing 106, Lying down 35, Walking 17 |
+| reach overhead | 13.1-17.3 | Reaching overhead | pass | Reaching overhead 36, Standing 27, Lying down 11 |
+| put down | 17.7-18.9 | (reported only) | not scored | Lying down 14, Standing 13, Reaching overhead 1 |
+| handle bag low | 19.1-24.3 | (reported only) | not scored | Lying down 50, Standing 39 |
+| lift | 26.6-27.6 | Lifting | missed | Lying down 22, Walking 2, Upper body only 1, Standing 1 |
+| carry one hand | 28.0-30.3 | Carrying | missed | Lying down 41, Standing 5 |
+| raise to chest | 30.3-31.3 | (reported only) | not scored | Lying down 22, Standing 4 |
+| carry | 31.3-35.0 | Carrying | missed | Lying down 38, Standing 28 |
+| put down | 35.3-36.4 | (reported only) | not scored | Standing 20, Lying down 7 |
+| walk | 36.6-37.6 | Walking | pass | Standing 12, Walking 11, Lying down 3 |
 <!-- benchmark:activity-own-laptop_20261003_222917:end -->
 
 **Read this with the table.** This clip is mostly **front-on** and dim, with a soft bag rather

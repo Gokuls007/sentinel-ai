@@ -97,6 +97,20 @@ def load_manifest(path: str = MANIFEST) -> list[Video]:
                   source="sample") for v in data.get("videos", [])]
 
 
+STAGED = ("lying", "fall", "rolling", "on floor")
+
+
+def staged_fall(path: str) -> bool:
+    """A recording whose ``.labels.json`` segments include lying down, falling or rolling off
+    something: deliberate fall-like footage, so an alert in it is not a false alarm."""
+    labels = os.path.splitext(path)[0] + ".labels.json"
+    if not os.path.isfile(labels):
+        return False
+    with open(labels, encoding="utf-8") as f:
+        segments = json.load(f).get("segments", [])
+    return any(any(w in str(s.get("action", "")).lower() for w in STAGED) for s in segments)
+
+
 def load_recordings(directory: str = RECORDINGS_DIR) -> list[Video]:
     videos = []
     for path in sorted(glob.glob(os.path.join(directory, "*"))):
@@ -107,6 +121,9 @@ def load_recordings(directory: str = RECORDINGS_DIR) -> list[Video]:
         if os.path.isfile(sidecar):
             with open(sidecar, encoding="utf-8") as f:
                 meta = json.load(f)
+        if staged_fall(path):
+            print(f"skipping {os.path.basename(path)}: its labels include deliberate lying/falls", flush=True)
+            continue
         videos.append(Video(path=path, label=meta.get("label", os.path.basename(path)),
                             activities=list(meta.get("activities", [])),
                             segments=list(meta.get("segments", [])), source="recording"))
