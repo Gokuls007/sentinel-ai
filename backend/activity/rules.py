@@ -103,6 +103,8 @@ class ActivityConfig:
     lean_window_s: float = 1.5
     sit_up_deg: float = 20.0          # trunk this much more upright (from reclined): sitting up
     transition_hold_s: float = 1.5
+    stable_window_s: float = 0.7      # the transition logic sees labels smoothed over this window...
+    stable_share: float = 0.6         # ...switching only when a new label holds this share (hysteresis)
     legs_extended: float = 0.5        # knees this far below the hips (x torso): not sitting
     knee_margin: float = 0.0          # wrists at or below knee height (x torso): reaching low
     low_hold_s: float = 0.5           # hands low this long (not walking) before a rise counts as a lift
@@ -138,9 +140,12 @@ class _Track:
     carrying: bool = False                           # lifted something and still holding it
     hang_since: float | None = None                  # both arms down since (while carrying)
     hip_up: float | None = None                      # upright hip height (image y)
-    posture: deque = field(default_factory=deque)    # (ts, hip y, torso, trunk deg, raw label)
+    posture: deque = field(default_factory=deque)    # (ts, hip y, torso, trunk deg, stable label)
+    stable: deque = field(default_factory=deque)     # (ts, raw label) over stable_window_s
+    stable_label: str | None = None                  # smoothed with hysteresis, for transitions
     transition: str | None = None                    # "sit-to-stand" / "lying-to-sitting"
     transition_until: float = 0.0
+    transition_why: str | None = None                # what started it: "leaning forward", "hips rising"...
 
 
 def _shank_ratio(kp, min_conf) -> float | None:
@@ -316,13 +321,27 @@ class ActivityTracker:
             return UPPER_ONLY, None, "low"
         return (WALKING if walking else STANDING), None, "high"
 
+    def _stable_label(self, st: _Track, ts: float, label: str) -> str:
+        """Majority over stable_window_s with hysteresis: a new label takes over only when it holds
+        stable_share of the window, so single flickery frames (Sitting <-> Bending) don't count."""
+        c = self.cfg
+        st.stable.append((ts, label))
+        while st.stable and ts - st.stable[0][0] > c.stable_window_s:
+            st.stable.popleft()
+        counts = Counter(lbl for _t, lbl in st.stable)
+        top, n = counts.most_common(1)[0]
+        if st.stable_label is None or (top != st.stable_label and n >= c.stable_share * len(st.stable)):
+            st.stable_label = top
+        return st.stable_label
+
     def _transition(self, st: _Track, kp, ts: float, label: str) -> str | None:
         """Sit-to-stand / lying-to-sitting, from the last few seconds of hips and trunk."""
         c = self.cfg
         kp = np.asarray(kp, float)
         sh, hip = _mid(kp, L_SH, R_SH, c.min_conf), _mid(kp, L_HIP, R_HIP, c.min_conf)
         if sh is not None and hip is not None:
-            st.posture.append((ts, float(hip[1]), float(math.hypot(*(sh - hip))), _angle_from_vertical(sh, hip), label))
+            st.posture.append((ts, float(hip[1]), float(math.hypot(*(sh - hip))), _angle_from_vertical(sh, hip),
+                               self._stable_label(st, ts, label)))
         while st.posture and ts - st.posture[0][0] > c.transition_window_s + c.rise_window_s:
             st.posture.popleft()
         if len(st.posture) < 2 or label in (FALLEN,):
@@ -348,23 +367,23 @@ class ActivityTracker:
         if settled:
             st.transition_until = 0.0
         elif st.transition == "sit-to-stand" and still_rising and ts < st.transition_until + 1.0:
-            kind = "sit-to-stand"  # a slow rise in progress keeps going, however long ago the seat was
-        elif seated and label != LYING:
+            kind, why = "sit-to-stand", "rise in progress"  # keeps going, however long ago the seat was
+        elif seated and now[4] != LYING:
             # Cumulative rise: hips up from their lowest (largest image y) point in the window.
             window = [p for p in st.posture if now[0] - p[0] <= c.rise_window_s]
             lowest = max(p[1] for p in window)
             if lowest - now[1] >= c.rise_torso * max(now[2], 1.0):
-                kind = "sit-to-stand"
+                kind, why = "sit-to-stand", f"hips rising {(lowest - now[1]) / max(now[2], 1.0):.2f} torso"
             # Leaning forward while still seated: the first stage of standing up.
             lean_from = [p[3] for p in recent if p[4] == SITTING and now[0] - p[0] <= c.lean_window_s]
-            if label == SITTING and lean_from and now[3] - min(lean_from) >= c.lean_deg:
-                kind = "sit-to-stand"
+            if now[4] == SITTING and lean_from and now[3] - min(lean_from) >= c.lean_deg:
+                kind, why = "sit-to-stand", f"leaning forward {now[3] - min(lean_from):.0f} deg"
         if kind is None and any(p[4] == LYING for p in recent):
             reclined = max(p[3] for p in recent if p[4] == LYING)
             if reclined >= 45 and now[3] < 45 and reclined - now[3] >= c.sit_up_deg:
-                kind = "lying-to-sitting"
+                kind, why = "lying-to-sitting", f"trunk up {reclined - now[3]:.0f} deg"
         if kind:
-            st.transition, st.transition_until = kind, ts + c.transition_hold_s
+            st.transition, st.transition_until, st.transition_why = kind, ts + c.transition_hold_s, why
             return kind
         return st.transition if ts < st.transition_until else None
 
@@ -391,5 +410,6 @@ class ActivityTracker:
             st.history.pop(0)
         st.transition = self._transition(st, kp, ts, label)
         return {"label": st.label, "since": st.since, "detail": st.detail, "transition": st.transition,
+                "transition_why": st.transition_why if st.transition else None,
                 "confidence": conf if smoothed == label else "high",
                 "history": [{"label": lbl, "start": round(a, 2), "end": round(b, 2)} for lbl, a, b in st.history]}
