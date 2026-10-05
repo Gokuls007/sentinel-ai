@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 
 from activity import CARRY_CLASSES, ActivityTracker, ViewCheck
+from activity.balance import BalanceTracker
 from activity.object_rules import ObjectRules
 from anomaly.engine import AnomalyAlert, AnomalyEngine
 from anomaly.fall_recovery import recover_pose
@@ -56,6 +57,7 @@ class FrameResult:
     posture: dict | None = None  # desk posture coach snapshot (posture mode)
     exam: dict | None = None  # Exam Hall: seats, setup check, calibration (exam mode)
     objects: list = field(default_factory=list)  # open-vocabulary objects (warehouse mode)
+    balance: dict = field(default_factory=dict)  # track id -> balance risk, centre of mass, base (warehouse)
     mode: str = "warehouse"
 
     def to_dict(self) -> dict:
@@ -78,6 +80,7 @@ class FrameResult:
             "posture": self.posture,
             "exam": self.exam,
             "objects": [o.to_dict() for o in self.objects],
+            "balance": {str(k): v for k, v in self.balance.items()},
             "mode": self.mode,
         }
         # The JPEG is sent once, as the top-level "image" field of the WebSocket message.
@@ -150,6 +153,7 @@ class SentinelPipeline:
                                 if o.enabled else None)
         self._alert_labels: dict = {}  # track id -> (reason text, show until), drawn next to the person
         self.object_rules = ObjectRules(hazard_classes=o.hazards)  # unsafe lift, on a chair, hand on a hazard
+        self.balance = BalanceTracker()  # centre of mass vs base of support: "Losing balance"
         self.event_store = EventStore(config.output.db_path)
         self.rule_store = RuleStore(config.output.db_path)
         self.reload_rules()
@@ -216,6 +220,7 @@ class SentinelPipeline:
                 alerts = [a for a in alerts if a.alert_type not in ("fall", "zone_intrusion")]
             alerts += self._evaluate_rules(poses, all_features, detections, timestamp)
             alerts += self.object_rules.update(poses, objects, timestamp)
+            alerts += self.balance.update(poses, timestamp)
             timings["ergonomics"] = self.anomaly_engine.last_ergo_ms  # included in "analytics"
             ergonomics = self.anomaly_engine.ergonomics_snapshot
             self._persist_ergo_time(timestamp)
@@ -244,6 +249,7 @@ class SentinelPipeline:
         if self.mode == "warehouse":
             annotated_frame = self._annotate_frame(frame.copy(), detections, poses, alerts, objects, timestamp)
             self._draw_person_tags(annotated_frame, detections, ergonomics, activity)
+            self._draw_balance(annotated_frame, detections, self.balance.current)
         else:
             annotated_frame = frame.copy()
             shown = ([poses[self._posture_id]] if self.mode == "posture" and self._posture_id in poses
@@ -303,6 +309,7 @@ class SentinelPipeline:
             view=view,
             exam=exam,
             objects=objects,
+            balance=dict(self.balance.current) if self.mode == "warehouse" else {},
             posture=posture,
             mode=self.mode,
         )
@@ -558,9 +565,38 @@ class SentinelPipeline:
             reliable = bool(info and info.get("reliable") and info.get("level"))
             color = self.ERGO_COLORS.get(info["level"], (160, 160, 160)) if reliable else (200, 200, 200)
             (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-            top = max(0, y1 - 24 - h)
+            top = max(0, y1 - 32 - h)  # above the balance bar
             cv2.rectangle(frame, (x1, top), (x1 + w + 8, top + h + 8), color, -1)
             cv2.putText(frame, text, (x1 + 4, top + h + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 1)
+
+    @staticmethod
+    def balance_color(risk: float) -> tuple[int, int, int]:
+        """BGR from green (steady) through yellow to red (losing balance)."""
+        r = max(0.0, min(1.0, risk))
+        return (40, int(200 * (1 - r) + 40 * r), int(60 + 195 * min(1.0, 2 * r)))
+
+    def _draw_balance(self, frame: np.ndarray, detections, balance: dict) -> None:
+        """A risk bar above each person (fills as the balance margin shrinks), the centre of mass
+        as a dot and the base of support as a line at the ankles."""
+        boxes = {d.track_id: d.bbox for d in detections.detections if d.track_id is not None}
+        for tid, b in balance.items():
+            if tid not in boxes:
+                continue
+            x1, y1, x2, _y2 = (int(v) for v in boxes[tid])
+            risk = b.get("risk", b.get("raw_risk", 0.0))
+            color = self.balance_color(risk)
+            w = max(60, x2 - x1)
+            top = max(0, y1 - 10)
+            cv2.rectangle(frame, (x1, top), (x1 + w, top + 6), (60, 60, 60), -1)
+            cv2.rectangle(frame, (x1, top), (x1 + int(w * risk), top + 6), color, -1)
+            cv2.putText(frame, f"balance risk {risk:.0%}", (x1 + w + 4, top + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                        color, 1)
+            cx, cy = (int(v) for v in b["com"])
+            left, right = (int(v) for v in b["base"])
+            cv2.circle(frame, (cx, cy), 5, color, -1)
+            foot_y = int(_y2) - 4
+            cv2.line(frame, (left, foot_y), (right, foot_y), color, 3)
+            cv2.line(frame, (cx, cy), (cx, foot_y), color, 1)
 
     def _persist_ergo_time(self, timestamp: float, every_s: float = 10.0) -> None:
         """Flush accumulated time at risk to the store every ``every_s`` (and at stop)."""
