@@ -14,7 +14,10 @@
   margin), e.g. "Hand on knife (hazard)".
 
 Distances scale with torso length (shoulder midpoint to hip midpoint), which barely changes when
-someone bends, unlike their bounding box. Each rule must hold for a short time and then has a
+someone bends, unlike their bounding box. "Bent toward the camera" compares the torso with the
+thigh (both shrink equally with distance, so walking away isn't a bend), against that person's
+own upright ratio. A hazard only counts while the person is nearly still: walking past an object
+can put a hand over it in the image without touching it. Each rule must hold for a short time and then has a
 per-person cooldown. Thresholds are first guesses, to be tuned on recordings.
 """
 
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import math
 import uuid
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -50,6 +54,7 @@ class ObjectRulesConfig:
     hazard_hold_s: float = 0.3
     cooldown_s: float = 10.0
     wrist_conf: float = 0.3
+    still_speed: float = 0.35          # body heights per second: faster = walking (no hazard contact)
 
 
 def _mid(kp, a, b, conf=0.3):
@@ -82,7 +87,8 @@ class ObjectRules:
     def __init__(self, cfg: ObjectRulesConfig | None = None, hazard_classes: list[str] | None = None):
         self.cfg = cfg or ObjectRulesConfig()
         self.hazard_classes = list(DEFAULT_HAZARDS if hazard_classes is None else hazard_classes)
-        self._upright: dict[int, float] = {}   # track id -> upright torso length (px)
+        self._upright: dict[int, float] = {}   # track id -> upright torso / thigh ratio
+        self._hips: dict[int, deque] = {}       # track id -> (ts, hip midpoint, box height)
         self._since: dict[tuple, float] = {}   # (track, rule, object) -> condition true since
         self._fired: dict[tuple, float] = {}   # (track, rule) -> last alert time
 
@@ -104,6 +110,8 @@ class ObjectRules:
         c = self.cfg
         for tid in [t for t in self._upright if t not in poses]:
             del self._upright[tid]
+        for tid in [t for t in self._hips if t not in poses]:
+            del self._hips[tid]
         self._since = {k: v for k, v in self._since.items() if k[0] in poses}
         alerts = []
         for tid, pose in poses.items():
@@ -113,22 +121,39 @@ class ObjectRules:
                 continue
             torso = float(np.hypot(*(sh - hip)))
             trunk = _angle_from_vertical(sh, hip)
+            thighs = [float(np.hypot(*(kp[k, :2] - kp[h, :2]))) for h, k in ((L_HIP, L_KNEE), (R_HIP, R_KNEE))
+                      if min(kp[h, 2], kp[k, 2]) >= 0.4]
+            thigh = float(np.mean(thighs)) if thighs else 0.0
+            rel = torso / thigh if thigh > 0.2 * torso else None
             up = self._upright.get(tid)
-            # Upright reference: only from frames that look upright AND aren't foreshortened (a bend
-            # toward the camera also looks vertical; letting it in would shrink the reference).
-            if trunk <= 15 and (up is None or torso >= 0.85 * up):
-                self._upright[tid] = torso if up is None else max(torso, 0.97 * up + 0.03 * torso)
-            upright = self._upright.get(tid)
-            scale = max(torso, upright or 0.0)  # a bend toward the camera shortens the torso, not the scale
+            # Upright torso/thigh ratio: only from frames that look upright AND aren't foreshortened
+            # (a bend toward the camera also looks vertical; letting it in would shrink the reference).
+            if rel is not None and trunk <= 15 and (up is None or rel >= 0.85 * up):
+                self._upright[tid] = rel if up is None else max(rel, 0.97 * up + 0.03 * rel)
+            up = self._upright.get(tid)
+            ratio = rel / up if rel is not None and up else None   # torso vs its upright length, same depth
+            scale = max(torso, up * thigh) if up and thigh else torso  # the upright torso at this distance
             wrists = [kp[i, :2] for i in (L_WR, R_WR) if kp[i, 2] >= c.wrist_conf]
-            alerts += self._unsafe_lift(tid, kp, wrists, trunk, torso, upright, scale, objects, ts)
+            moving = self._speed(tid, hip, pose.bbox, ts) > c.still_speed
+            alerts += self._unsafe_lift(tid, kp, wrists, trunk, ratio, scale, objects, ts)
             alerts += self._on_chair(tid, kp, pose.bbox, objects, ts)
-            alerts += self._hazards(tid, wrists, scale, objects, ts)
+            alerts += self._hazards(tid, wrists, scale, objects, ts, moving)
         return alerts
+
+    def _speed(self, tid, hip, box, ts, window_s: float = 0.6) -> float:
+        """Hip speed in body (box) heights per second over the last ``window_s``."""
+        q = self._hips.setdefault(tid, deque())
+        q.append((ts, hip, max(float(box[3] - box[1]), 1.0)))
+        while q and ts - q[0][0] > window_s:
+            q.popleft()
+        if len(q) < 2 or q[-1][0] - q[0][0] < 0.2:
+            return 0.0
+        (t0, p0, h0), (t1, p1, _h1) = q[0], q[-1]
+        return float(np.hypot(*(p1 - p0))) / h0 / (t1 - t0)
 
     # --- rules -------------------------------------------------------------------------------------
 
-    def _unsafe_lift(self, tid, kp, wrists, trunk, torso, upright, scale, objects, ts) -> list:
+    def _unsafe_lift(self, tid, kp, wrists, trunk, ratio, scale, objects, ts) -> list:
         c = self.cfg
         boxes = [o for o in objects if o.class_name in c.lift_classes]
         near = None
@@ -140,7 +165,7 @@ class ObjectRules:
                     gap = box_gap(w, o.bbox)
                     if near is None or gap < near[1]:
                         near = (o, gap)
-        foreshort = upright is not None and torso < c.foreshortened * upright
+        foreshort = ratio is not None and ratio < c.foreshortened
         bent = trunk > c.trunk_deg or foreshort
         knees = []
         for hip, knee, ankle in ((L_HIP, L_KNEE, L_ANK), (R_HIP, R_KNEE, R_ANK)):
@@ -152,12 +177,12 @@ class ObjectRules:
             return []
         o, gap = near
         back = (f"back bent {trunk:.0f}°" if trunk > c.trunk_deg
-                else f"bent toward the camera (torso {torso / upright:.0%} of upright)")
+                else f"bent toward the camera (torso {ratio:.0%} of upright)")
         legs = f"knees {min(knees):.0f}° (straight)" if knees else "knees not visible"
         hand = "hand on" if gap == 0 else f"hand {gap:.0f} px from"
         msg = f"Unsafe lift: {back}, {legs}, {hand} {o.class_name}"
         details = {"rule": "Unsafe lift", "trunk_deg": round(trunk, 1),
-                   "torso_ratio": round(torso / upright, 2) if upright else None,
+                   "torso_ratio": round(ratio, 2) if ratio is not None else None,
                    "knee_deg": round(min(knees), 1) if knees else None, "knees_visible": bool(knees),
                    "hand_gap_px": round(gap, 1), "object": o.class_name}
         return [self._alert("unsafe_lift", tid, ts, "medium", msg, details, o.confidence)]
@@ -190,9 +215,12 @@ class ObjectRules:
                    "feet_above_base_px": round(base, 1), "object": o.class_name}
         return [self._alert("standing_on_chair", tid, ts, "high", msg, details, o.confidence)]
 
-    def _hazards(self, tid, wrists, scale, objects, ts) -> list:
+    def _hazards(self, tid, wrists, scale, objects, ts, moving: bool = False) -> list:
         c = self.cfg
         out = []
+        if moving:  # walking past: a hand over an object in the image isn't a touch
+            self._since = {k: v for k, v in self._since.items() if not (k[0] == tid and k[1] == "hazard_contact")}
+            return out
         m = max(6.0, c.hazard_margin * scale)
         for o in objects:
             if o.class_name not in self.hazard_classes:

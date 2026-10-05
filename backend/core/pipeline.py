@@ -558,7 +558,7 @@ class SentinelPipeline:
         """A tag above each person: what they're doing, plus REBA when it can be trusted."""
         for det in detections.detections:
             info, act = ergonomics.get(det.track_id), activity.get(det.track_id)
-            text = self.person_tag(act, info)
+            text = self.person_tag(act, info).replace(" · ", " | ")  # OpenCV's font has no "·"
             if not text:
                 continue
             x1, y1 = int(det.bbox[0]), int(det.bbox[1])

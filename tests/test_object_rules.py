@@ -142,3 +142,29 @@ def test_person_tag_reads_carrying_pillow():
     from core.pipeline import SentinelPipeline
 
     assert SentinelPipeline.person_tag({"label": "Carrying", "detail": "pillow"}, None) == "Carrying pillow"
+
+
+def test_walking_past_a_hazard_is_not_touching_it():
+    tv = ObjectDetection("tv", 0.9, (300.0, 400.0, 700.0, 480.0))
+    r = ObjectRules()
+    alerts, t = [], 0.0
+    for i in range(20):  # 2 s walking across, a hand passing over the TV in the image
+        t += 0.1
+        x = 300 + 20 * i
+        alerts += r.update({1: body(hip=(x, 400.0), wrist=(x + 10, 440.0))}, [tv], t)
+    assert alerts == []
+
+
+def test_walking_away_from_the_camera_is_not_a_bend_toward_it():
+    r = ObjectRules()
+    t, _ = run(r, lambda: body(torso=100), [BOX], 1)
+    # Everything shrinks together (torso and thighs): further away, not bent.
+    def far():
+        k = body(torso=60, wrist=(500.0, 545.0))
+        kp = k.keypoints
+        kp[:, :2] = (kp[:, :2] - (400, 400)) * 1.0 + (400, 400)
+        kp[13, 1] = kp[11, 1] + 54  # thigh shrinks with the torso (90 * 0.6)
+        kp[14, 1] = kp[12, 1] + 54
+        return k
+    _, alerts = run(r, far, [BOX], 1, t)
+    assert alerts == []

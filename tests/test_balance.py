@@ -52,8 +52,8 @@ def test_leaning_past_the_feet_raises_the_risk_and_warns_losing_balance():
     b = BalanceTracker()
     t, _ = run(b, stance, 1)
     t, alerts = run(b, lambda: stance(lean_px=110), 0.3, t)
-    assert alerts == [] and b.current[1]["risk"] > 0.85  # must hold 0.4 s
-    t, alerts = run(b, lambda: stance(lean_px=110), 0.5, t)
+    assert alerts == [] and b.current[1]["risk"] > 0.85  # must hold (and the sudden shift reads as motion)
+    t, alerts = run(b, lambda: stance(lean_px=110), 1.2, t)
     assert len(alerts) == 1 and alerts[0].alert_type == "losing_balance"
     assert alerts[0].message.startswith("Losing balance: centre of mass") and "base of support" in alerts[0].message
     _, again = run(b, lambda: stance(lean_px=110), 3, t)
@@ -75,3 +75,14 @@ def test_no_estimate_without_both_ankles():
     b = BalanceTracker()
     run(b, lambda: stance(ankles_conf=0.2), 1)
     assert b.current == {}
+
+
+def test_no_warning_mid_stride_while_walking():
+    b = BalanceTracker()
+    t = 0.0
+    alerts = []
+    for i in range(40):  # walking sideways across the view, the body ahead of the feet each step
+        t += 0.1
+        x = 200 + 30 * i
+        alerts += b.update({1: stance(lean_px=110, feet=(x, x + 40))}, t)
+    assert alerts == [] and b.current[1]["moving"] and b.current[1]["risk"] > 0.85  # the bar still shows it
