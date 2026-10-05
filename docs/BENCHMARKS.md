@@ -503,3 +503,53 @@ boundaries marked from the frames. Small sample: a direction, not a measurement.
 - **Speed.** Pose time per frame: RTMPose-m ~9-10 ms vs YOLOv8n-pose ~12 ms (which detects on the
   whole frame). Live on the webcam with RTMPose-m, while recording: 17.3 fps for the whole
   pipeline (person tracker, YOLO11m + YOLO-World objects, pose, rules, recording).
+
+## Person detection in hard poses (lying, sliding, getting up)
+
+<!-- benchmark:person-detection:start -->
+**laptop_20261004_221434.mp4**: share of frames with no person found, per segment.
+
+| Detector | sitting in chair | sliding out of chair | on floor by chair | getting up | back in chair | standing by bed | lying on bed | rolling off bed to floor | ms/frame |
+|---|---|---|---|---|---|---|---|---|---|
+| yolov8n @0.5 (current) | 0% | 21% | 4% | 4% | 4% | 2% | 83% | 13% | 9.4 |
+| yolov8n @0.25 | 0% | 3% | 1% | 2% | 4% | 0% | 63% | 10% | 8.6 |
+| yolo11m @0.5 | 0% | 4% | 0% | 3% | 0% | 0% | 2% | 9% | 12.1 |
+| yolo11m @0.25 | 0% | 2% | 0% | 3% | 0% | 0% | 1% | 7% | 12.3 |
+| rtmo-m @0.7 | 0% | 0% | 0% | 0% | 0% | 0% | 0% | 0% | 17.9 |
+| rtmo-m @0.4 | 0% | 0% | 0% | 0% | 0% | 0% | 0% | 0% | 17.9 |
+| rtmo-l @0.7 | 0% | 0% | 0% | 0% | 0% | 0% | 0% | 0% | 23.2 |
+| rtmo-l @0.4 | 0% | 0% | 0% | 0% | 0% | 0% | 0% | 0% | 24.6 |
+
+**laptop_20261004_221104.mp4**: share of frames with no person found, per segment.
+
+| Detector | standing | lying across couch | sitting on couch edge | leaning forward to stand | crouching on floor | lying on floor | getting up from floor | ms/frame |
+|---|---|---|---|---|---|---|---|---|
+| yolov8n @0.5 (current) | 0% | 54% | 0% | 11% | 18% | 100% | 62% | 10.4 |
+| yolov8n @0.25 | 0% | 3% | 0% | 4% | 16% | 86% | 57% | 9.4 |
+| yolo11m @0.5 | 0% | 0% | 0% | 4% | 12% | 79% | 19% | 13.7 |
+| yolo11m @0.25 | 0% | 0% | 0% | 0% | 8% | 21% | 7% | 13.4 |
+| rtmo-m @0.7 | 0% | 0% | 0% | 0% | 0% | 0% | 0% | 18.4 |
+| rtmo-m @0.4 | 0% | 0% | 0% | 0% | 0% | 0% | 0% | 18.7 |
+| rtmo-l @0.7 | 0% | 0% | 0% | 0% | 0% | 0% | 0% | 24.3 |
+| rtmo-l @0.4 | 0% | 0% | 0% | 0% | 0% | 0% | 0% | 25.7 |
+<!-- benchmark:person-detection:end -->
+
+**Usable pose** (at least 8 of 17 keypoints at confidence >= 0.3, main person) on the same
+frames, which is what fall prediction actually needs:
+
+| Segment | YOLOv8n@0.5 + RTMPose-m (old) | YOLO11m@0.25 + RTMPose-m | RTMO-m |
+|---|---|---|---|
+| Lying on bed | 17% | **99%** | 100% |
+| Sliding out of chair | 79% | **98%** | 91% |
+| Rolling off bed to floor | 87% | **93%** | 93% |
+| Lying across couch | 35% | **68%** | 22% |
+| Lying on floor | 0% | **57%** | 0% |
+| Getting up from floor | 38% | **93%** | 64% |
+
+RTMO finds a person in every frame, but in the hardest poses its keypoints are mostly unusable
+(lying on the floor: 0% usable). **Chosen: YOLO11m at 0.25 as the person detector, with
+RTMPose-m.** In the full pipeline (tracker included), no person box on the bed went from 70% to
+0% (one identity throughout); lying on the floor from 100% to 57%, with every missing frame kept
+as "lost while lying". Cost: ~4-6 ms more per frame. One person, two clips, short segments: a
+direction, not a measurement. The fall and activity benchmarks above were measured with
+YOLOv8n and need re-running.

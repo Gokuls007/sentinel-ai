@@ -5,6 +5,7 @@ const TYPE_LABELS = {
   standing_on_chair: 'Standing on chair',
   hazard_contact: 'Hand on hazard',
   losing_balance: 'Losing balance',
+  person_lost_lying: 'Lost while lying',
   fall: 'Confirmed fall',
   possible_fall: 'Possible fall',
 };

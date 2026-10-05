@@ -4,7 +4,7 @@ import { isTestAlert } from './eventTypes.js';
 // once per type every COOLDOWN_MS. History, test footage and other alert types stay silent.
 export const COOLDOWN_MS = 10000;
 export const SPOKEN_TYPES = new Set([
-  'losing_balance', 'hazard_contact', 'unsafe_lift', 'standing_on_chair', 'fall', 'possible_fall', 'trip_hazard',
+  'losing_balance', 'person_lost_lying', 'hazard_contact', 'unsafe_lift', 'standing_on_chair', 'fall', 'possible_fall', 'trip_hazard',
 ]);
 
 /** "Losing balance: centre of mass..." -> "Losing balance"; "Hand on tv (hazard)" -> "Hand on tv". */

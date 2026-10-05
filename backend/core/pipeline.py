@@ -15,6 +15,7 @@ from activity.object_rules import ObjectRules
 from anomaly.engine import AnomalyAlert, AnomalyEngine
 from anomaly.fall_recovery import recover_pose
 from config.settings import ALL_OBJECT_CLASSES, COCO_OBJECTS, SentinelConfig
+from core.lost_tracks import FURNITURE, LostTracks
 from core.object_detector import ObjectDetector
 from events import Event, EventBus, EventStore
 from exam import ExamMonitor
@@ -58,6 +59,7 @@ class FrameResult:
     exam: dict | None = None  # Exam Hall: seats, setup check, calibration (exam mode)
     objects: list = field(default_factory=list)  # open-vocabulary objects (warehouse mode)
     balance: dict = field(default_factory=dict)  # track id -> balance risk, centre of mass, base (warehouse)
+    lost: list = field(default_factory=list)  # people lost from view while lying, kept at their last place
     mode: str = "warehouse"
 
     def to_dict(self) -> dict:
@@ -81,6 +83,7 @@ class FrameResult:
             "exam": self.exam,
             "objects": [o.to_dict() for o in self.objects],
             "balance": {str(k): v for k, v in self.balance.items()},
+            "lost": self.lost,
             "mode": self.mode,
         }
         # The JPEG is sent once, as the top-level "image" field of the WebSocket message.
@@ -149,6 +152,7 @@ class SentinelPipeline:
         self._alert_labels: dict = {}  # track id -> (reason text, show until), drawn next to the person
         self.object_rules = ObjectRules(hazard_classes=o.hazards)  # unsafe lift, on a chair, hand on a hazard
         self.balance = BalanceTracker()  # centre of mass vs base of support: "Losing balance"
+        self.lost_tracks = LostTracks()  # never silently drop a person who may be lying on the floor
         self.event_store = EventStore(config.output.db_path)
         self.rule_store = RuleStore(config.output.db_path)
         self.reload_rules()
@@ -216,6 +220,7 @@ class SentinelPipeline:
             alerts += self._evaluate_rules(poses, all_features, detections, timestamp)
             alerts += self.object_rules.update(poses, objects, timestamp)
             alerts += self.balance.update(poses, timestamp)
+            alerts += self._update_lost(detections, self._activity_labels(), frame, objects, timestamp)
             timings["ergonomics"] = self.anomaly_engine.last_ergo_ms  # included in "analytics"
             ergonomics = self.anomaly_engine.ergonomics_snapshot
             self._persist_ergo_time(timestamp)
@@ -245,6 +250,7 @@ class SentinelPipeline:
             annotated_frame = self._annotate_frame(frame.copy(), detections, poses, alerts, objects, timestamp)
             self._draw_person_tags(annotated_frame, detections, ergonomics, activity)
             self._draw_balance(annotated_frame, detections, self.balance.current)
+            self._draw_lost(annotated_frame, self.lost_tracks.snapshot(timestamp))
         else:
             annotated_frame = frame.copy()
             shown = ([poses[self._posture_id]] if self.mode == "posture" and self._posture_id in poses
@@ -305,6 +311,7 @@ class SentinelPipeline:
             exam=exam,
             objects=objects,
             balance=dict(self.balance.current) if self.mode == "warehouse" else {},
+            lost=self.lost_tracks.snapshot(timestamp) if self.mode == "warehouse" else [],
             posture=posture,
             mode=self.mode,
         )
@@ -584,6 +591,31 @@ class SentinelPipeline:
             top = max(0, y1 - 32 - h)  # above the balance bar
             cv2.rectangle(frame, (x1, top), (x1 + w + 8, top + h + 8), color, -1)
             cv2.putText(frame, text, (x1 + 4, top + h + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 1)
+
+    def _activity_labels(self) -> dict:
+        return {tid: st.label for tid, st in self.activity.tracks.items()}
+
+    def _update_lost(self, detections, labels, frame, objects, ts) -> list:
+        people = {d.track_id: d.bbox for d in detections.detections
+                  if d.class_name == "person" and d.track_id is not None}
+        fd = self.anomaly_engine.fall_detector
+        falls = {tid: fd.state_of(tid) for tid in people}
+        furniture = [(o.class_name, o.bbox) for o in objects if o.class_name in FURNITURE]
+        return self.lost_tracks.update(ts, people, labels, falls, furniture, frame.shape[1], frame.shape[0])
+
+    def _draw_lost(self, frame: np.ndarray, lost: list) -> None:
+        """A dashed box where a person was lost while lying, with how long ago."""
+        for item in lost:
+            x1, y1, x2, y2 = (int(v) for v in item["box"])
+            color = (0, 140, 255)
+            for x in range(x1, x2, 16):  # dashed outline
+                cv2.line(frame, (x, y1), (min(x + 8, x2), y1), color, 2)
+                cv2.line(frame, (x, y2), (min(x + 8, x2), y2), color, 2)
+            for y in range(y1, y2, 16):
+                cv2.line(frame, (x1, y), (x1, min(y + 8, y2)), color, 2)
+                cv2.line(frame, (x2, y), (x2, min(y + 8, y2)), color, 2)
+            text = f"Lost while lying {item['seconds']:.0f}s ({item['reason']})"
+            cv2.putText(frame, text, (x1 + 4, max(14, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
     @staticmethod
     def balance_color(risk: float) -> tuple[int, int, int]:

@@ -28,6 +28,7 @@ EVENT_TYPES = (
     "standing_on_chair",  # both ankles over a chair's seat
     "hazard_contact",     # a wrist on an object marked as a hazard
     "losing_balance",     # centre of mass at or past the edge of the base of support
+    "person_lost_lying",  # a person who was lying (or on/near a bed, couch, chair) left the detector's view
 )
 
 DEFAULT_CAMERA = "cam-0"

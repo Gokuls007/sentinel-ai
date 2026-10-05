@@ -7,10 +7,12 @@ from ergonomics.config import ErgonomicsConfig
 
 @dataclass
 class DetectorConfig:
-    model_path: str = "yolov8n.pt"
+    # Person detector + tracker. YOLO11m at 0.25 keeps people detected lying on a bed (1% of frames
+    # missed vs 83% for YOLOv8n at 0.5; docs/BENCHMARKS.md, "Person detection in hard poses").
+    model_path: str = "yolo11m.pt"
     pose_model_path: str = "yolov8n-pose.pt"
     ppe_model_path: str = "models/ppe_best.pt"
-    confidence_threshold: float = 0.5
+    confidence_threshold: float = 0.25
     iou_threshold: float = 0.45
     device: str = "auto"
     classes: list[int] = field(default_factory=lambda: [0])  # person only
