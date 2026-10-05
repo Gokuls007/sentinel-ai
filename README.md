@@ -163,6 +163,15 @@ Tracked here until fixed; each links to the numbers in [docs/BENCHMARKS.md](docs
   person isn't silently dropped, but there's no pose to judge. To revisit after the
   chair-slide/bed-exit work: the rotated-image recovery (`anomaly/fall_recovery.py`, off by
   default) or fine-tuning the detector on fall-dataset images.
+- **Falls: the track id changes mid-fall** with YOLO11m (17 of 30 URFD falls), so the new
+  track has no standing height and the fall isn't measured; URFD on-the-ground recall is 16/30.
+- **Kneeling on all fours or crouching to the floor and holding still confirms a fall** (4
+  CAUCAFall daily-activity clips). The steadier RTMPose keypoints pass the stillness check that
+  the old model's jitter used to break.
+- **Ceiling-height cameras:** walking is labelled Sitting in ~20% of frames (balance checks
+  off), and seated people often read as Bending; the shin/thigh seated cue only works at eye level.
+- **Slow slides out of a chair or off a bed raise no fall alert** (own chair/bed recording):
+  the descent is too slow for the fall rules. That is the chair-slide/bed-exit step.
 
 ### Known dependency risks
 - **The hosted LLM can disappear.** Search and the rule compiler use a hosted model, and

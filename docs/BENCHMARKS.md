@@ -558,3 +558,67 @@ RTMPose-m.** In the full pipeline (tracker included), no person box on the bed w
 as "lost while lying". Cost: ~4-6 ms more per frame. One person, two clips, short segments: a
 direction, not a measurement. The fall and activity benchmarks above were measured with
 YOLOv8n and need re-running.
+
+## Why the fall numbers moved with YOLO11m + RTMPose-m (investigation, no tuning)
+
+_Measured 2026-10-05 with `python training/regression_2x2.py`._ After the switch to YOLO11m @ 0.25
+and RTMPose-m, two numbers got worse: CAUCAFall subjects 1-5 confirmed false alarms went from 0 to
+44.6/h (3 clips), and URFD falls reaching the on-the-ground stage dropped (77% to 53%). Each change
+alone, same rules and replay (baseline, 1 s confirmation):
+
+| Detector + pose | URFD reached the ground | New track id after the fall onset | CAUCAFall daily activities: possible / confirmed fall |
+|---|---|---|---|
+| YOLOv8n @ 0.5 + YOLOv8n-pose (old) | 25 / 30 | 5 / 30 | 3 / 0 |
+| YOLOv8n @ 0.5 + RTMPose-m | 22 / 30 | 5 / 30 | 1 / 0 |
+| YOLO11m @ 0.25 + YOLOv8n-pose | 19 / 30 | 15 / 30 | 6 / 0 |
+| YOLO11m @ 0.25 + RTMPose-m (current) | 16 / 30 | 17 / 30 | 5 / 4 |
+
+(The old row is 25/30 here rather than the earlier 23/30 because the fall code has changed since;
+the clips and rules are the same in every row of this table.)
+
+**URFD: the person comes back under a new track id mid-fall.** With YOLO11m the tracker loses the
+person for 0.3-0.6 s during the fast part of the fall, then starts a new track (17 of 30 falls, vs 5
+with YOLOv8n). The new track has no standing height and no hip history, so the descent is never
+measured on it: "descent too slow" went from 1 to 5 clips. Calibrated height and the pre-fall box
+are the same in all four setups. A smaller part comes from the pose model: RTMPose's hips move
+smoothly, while YOLOv8n-pose's jumped (peak hip speeds of 4-11 body heights/s, faster than a real
+fall), and those jumps were starting some falls; "torso never horizontal" went from 0 to 2-4 clips.
+
+**CAUCAFall false alarms: hard negatives that only the old jitter rejected.** The four clips that
+now confirm (Subject.1/Kneel, Subject.3/Pick up object, Subject.3/Sit down, and held-out
+Subject.10/Kneel) show a person on all fours or crouched with the head near the floor: torso
+45-87 degrees, head about 1 body height below standing, hips 0.1-0.3 body heights above the feet,
+held still. Those are the on-the-ground signals. With either old model, the keypoints jittered
+enough to break the 1 s stillness check; RTMPose-m on YOLO11m boxes is steady, so it passes. The
+old 0/h was luck, not a rule that told kneeling from lying.
+
+Next (not done; fixes would be checked on URFD and subjects 1-5 only): hand a lost falling track's
+standing height and fall state to a new track that appears where it was lost within ~1 s; tell
+kneeling and crouching from lying (knees on the floor under the hips, compact box).
+
+## Seated rule on public footage (CAUCAFall Sit down / Walk)
+
+_Measured 2026-10-05 with `python scripts/validate_seated.py`._ Seated and standing intervals were
+marked by hand from contact sheets; Walk clips contain no sitting. Share of frames labelled Sitting:
+
+| Rules | Seated (1-5) | Standing (1-5) | Walking (1-5) | Seated (6-10) | Standing (6-10) | Walking (6-10) |
+|---|---|---|---|---|---|---|
+| Before the shin/thigh cue | 36% | 0% | 22% | 39% | 2% | 17% |
+| Current (shin/thigh cue) | 36% | 0% | 24% | 43% | 2% | 22% |
+
+**The shin/thigh cue doesn't transfer to a ceiling-height camera.** CAUCAFall's camera looks down
+from a top corner. Seated there, the shin is foreshortened rather than the thigh: median shin/thigh
+1.14 (1-5) and 0.99 (6-10), and only 11% of seated frames reach 1.3, against p10 1.56 on the own
+eye-level recordings. While walking, 5-7% of frames reach 1.3 and 2-4% reach 1.5. So on this view the
+cue adds little: it neither helps nor harms much.
+
+**The larger problems are older rules:**
+- **Walking is called Sitting in 17-24% of frames.** The hip-drop test compares the hip's image
+  height with its standing height, and walking toward the bottom of a high camera's view lowers
+  the hip in the image. Another part comes from hips passing over a chair or a false "toilet" box.
+  Sitting turns off the balance check, so this matters for fall prevention.
+- **Seated people are called Bending** (most of the missed seated frames): seen from above, the
+  seated torso looks short, and the "foreshortened torso = bending toward the camera" test runs
+  before the thigh-angle sitting test.
+- **The hips are never inside the chair box** (0 of 939 seated frames): from above, the person
+  hides the seat, and the visible part of the chair is behind them. So the seat rule never fires.
