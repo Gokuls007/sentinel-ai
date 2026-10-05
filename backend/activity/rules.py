@@ -30,9 +30,12 @@ Rules first (each needs only the body parts it uses, and isn't offered without t
   ``approach_rate`` per second.
 
 **Transitions** are reported next to the label (they're the risky moments for falls):
-"sit-to-stand" when someone seated in the last ``transition_window_s`` has their hips rising
-(by ``rise_torso`` x torso within ``rise_window_s``), "lying-to-sitting" when someone lying has
-their trunk coming upright by ``sit_up_deg``. A transition lasts ``transition_hold_s``. Balance
+"sit-to-stand" for someone seated in the last ``transition_window_s`` who either leans the trunk
+forward by ``lean_deg`` (within ``lean_window_s``) while still seated, the usual first stage of
+standing up, or whose hips have risen cumulatively by ``rise_torso`` x torso from their lowest
+point in the last ``rise_window_s`` (slow risers stand in 2-4 s, often in stages);
+"lying-to-sitting" when someone lying has their trunk coming upright by ``sit_up_deg``. A
+transition lasts ``transition_hold_s`` after the last frame that showed it. Balance
 checks stay on during transitions; only settled sitting or lying turns them off.
 
 Labels are smoothed (majority over ``smooth_s``) and each person keeps a short history
@@ -89,9 +92,11 @@ class ActivityConfig:
     lift_hip_drop: float = 0.25       # hips dropped more than this (x upright torso): not a lift
     seated_thigh: float = 0.55        # thigh shorter than this (x torso): pointing at the camera, seated
     seated_max_trunk: float = 60.0    # on a seat, leaning forward up to this still counts as sitting
-    transition_window_s: float = 2.0  # seated / lying this recently, then rising: a transition
-    rise_window_s: float = 0.8
-    rise_torso: float = 0.15          # hips up by this x torso within rise_window_s: standing up
+    transition_window_s: float = 3.0  # seated / lying this recently, then rising: a transition
+    rise_window_s: float = 3.0        # the hip rise is measured cumulatively over up to this long
+    rise_torso: float = 0.15          # hips up by this x torso from their lowest point: standing up
+    lean_deg: float = 15.0            # trunk tilting forward this much while still seated: about to stand
+    lean_window_s: float = 1.5
     sit_up_deg: float = 20.0          # trunk this much more upright (from reclined): sitting up
     transition_hold_s: float = 1.5
     legs_extended: float = 0.5        # knees this far below the hips (x torso): not sitting
@@ -206,8 +211,9 @@ class ActivityTracker:
                 approach = abs(math.log(s1 / s0)) / (t1 - t0)
         thigh_len = float(math.hypot(*(knee - hip))) if thigh is not None else 0.0
         torso_rel = torso / thigh_len if thigh_len > 0.2 * torso else None
-        # Upright reference: torso length and hip height while clearly standing.
-        if trunk <= 15 and (thigh is None or thigh <= 25):
+        # Upright reference: torso length and hip height while clearly standing (not from a seated
+        # person facing the camera, whose thigh is foreshortened: that would make standing look bent).
+        if trunk <= 15 and (thigh is None or (thigh <= 25 and thigh_len >= c.seated_thigh * torso)):
             st.torso_up = torso if st.torso_up is None else max(torso, 0.97 * st.torso_up + 0.03 * torso)
             st.hip_up = hip[1] if st.hip_up is None else 0.9 * st.hip_up + 0.1 * hip[1]
             if torso_rel is not None:
@@ -302,24 +308,40 @@ class ActivityTracker:
             st.posture.append((ts, float(hip[1]), float(math.hypot(*(sh - hip))), _angle_from_vertical(sh, hip), label))
         while st.posture and ts - st.posture[0][0] > c.transition_window_s + c.rise_window_s:
             st.posture.popleft()
-        if ts < st.transition_until:
-            return st.transition
         if len(st.posture) < 2 or label in (FALLEN,):
-            return None
+            return st.transition if ts < st.transition_until else None
         now = st.posture[-1]
-        then = next((p for p in st.posture if now[0] - p[0] <= c.rise_window_s), None)
         recent = [p for p in st.posture if now[0] - p[0] <= c.transition_window_s]
+        seated = [p for p in recent if p[4] == SITTING]
+        # Settled: a second upright (standing or walking, trunk near vertical) with the hips no longer
+        # rising. Then the stand-up is over.
+        last_s = [p for p in st.posture if now[0] - p[0] <= 1.0]
+        still_rising = bool(last_s) and last_s[0][1] - now[1] >= 0.05 * max(now[2], 1.0)
+        settled = (now[0] - st.posture[0][0] >= 1.0 and not still_rising
+                   and all(p[4] in (STANDING, WALKING) and p[3] <= 15 for p in last_s))
         kind = None
-        if then is not None and then is not now:
-            rising = then[1] - now[1] >= c.rise_torso * max(now[2], 1.0)  # image y grows downward
-            if rising and any(p[4] == SITTING for p in recent) and label != LYING:
+        if settled:
+            st.transition_until = 0.0
+        elif st.transition == "sit-to-stand" and still_rising and ts < st.transition_until + 1.0:
+            kind = "sit-to-stand"  # a slow rise in progress keeps going, however long ago the seat was
+        elif seated and label != LYING:
+            # Cumulative rise: hips up from their lowest (largest image y) point in the window.
+            window = [p for p in st.posture if now[0] - p[0] <= c.rise_window_s]
+            lowest = max(p[1] for p in window)
+            if lowest - now[1] >= c.rise_torso * max(now[2], 1.0):
                 kind = "sit-to-stand"
-            elif (any(p[4] == LYING for p in recent) and then[3] >= 45 and now[3] < 45
-                  and then[3] - now[3] >= c.sit_up_deg):
+            # Leaning forward while still seated: the first stage of standing up.
+            lean_from = [p[3] for p in recent if p[4] == SITTING and now[0] - p[0] <= c.lean_window_s]
+            if label == SITTING and lean_from and now[3] - min(lean_from) >= c.lean_deg:
+                kind = "sit-to-stand"
+        if kind is None and any(p[4] == LYING for p in recent):
+            reclined = max(p[3] for p in recent if p[4] == LYING)
+            if reclined >= 45 and now[3] < 45 and reclined - now[3] >= c.sit_up_deg:
                 kind = "lying-to-sitting"
         if kind:
-            st.transition_until = ts + c.transition_hold_s
-        return kind
+            st.transition, st.transition_until = kind, ts + c.transition_hold_s
+            return kind
+        return st.transition if ts < st.transition_until else None
 
     def update(self, tid: int, kp, ts: float, body_height: float, fallen: bool = False,
                objects: list | None = None, fall_state: str | None = None, box: tuple | None = None) -> dict:

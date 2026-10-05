@@ -218,9 +218,9 @@ def test_visible_parts():
 
 # --- seated, found automatically (furniture or a thigh pointing at the camera) ----------------
 
-def facing(thigh_px=80.0, trunk_deg=0.0):
+def facing(thigh_px=80.0, trunk_deg=0.0, top=100.0):
     """Front view: knees straight below the hips by ``thigh_px`` (short = the thigh points at the camera)."""
-    k = person(trunk_deg=trunk_deg)
+    k = person(trunk_deg=trunk_deg, top=top)
     for hip_i, knee_i, ank_i in ((11, 13, 15), (12, 14, 16)):
         k[knee_i, :2] = (k[hip_i, 0], k[hip_i, 1] + thigh_px)
         k[ank_i, :2] = (k[hip_i, 0], k[hip_i, 1] + thigh_px + 60)
@@ -324,3 +324,31 @@ def test_sitting_up_from_lying_is_a_transition():
     _, out = run(a, lambda tt: facing(thigh_px=40, trunk_deg=max(10.0, 70 - 120 * (tt - t0))), t, 0.6,
                  objects=[bed])
     assert out["transition"] == "lying-to-sitting"
+
+
+def test_slow_staged_stand_up_starts_at_the_forward_lean_and_lasts_through_the_rise():
+    """An elderly-style stand: lean forward ~1 s, pause, then the hips rise slowly in two stages
+    over ~3 s. The transition starts at the lean and stays on until standing has settled."""
+    a = ActivityTracker()
+    t, out = run(a, lambda _t: facing(thigh_px=40), 0.0, 2, objects=[CHAIR])
+    assert out["label"] == SITTING and out["transition"] is None
+    t0 = t
+    t, out = run(a, lambda tt: facing(thigh_px=40, trunk_deg=min(30.0, 30 * (tt - t0))), t, 1.0, objects=[CHAIR])
+    assert out["label"] == SITTING and out["transition"] == "sit-to-stand"  # on before the hips move
+    states = []
+    for stage in range(2):  # two slow stages, 1.5 s each, a pause between
+        t1 = t
+        for _ in range(15):
+            t += 0.1
+            lift = 35 * stage + 35 * (t - t1) / 1.5  # hips rise 70 px in all, slowly
+            states.append(a.update(1, facing(thigh_px=40 + lift, trunk_deg=30 - 10 * stage, top=100 - lift),
+                                   t, BH, objects=[CHAIR])["transition"])
+        for _ in range(5):
+            t += 0.1
+            lift = 35 * (stage + 1)
+            states.append(a.update(1, facing(thigh_px=40 + lift, trunk_deg=20 - 10 * stage, top=100 - lift),
+                                   t, BH, objects=[CHAIR])["transition"])
+    assert all(s == "sit-to-stand" for s in states)  # no gap during the slow rise
+    t, out = run(a, lambda _t: person(), t, 4)
+    assert out["transition"] is None  # settled standing
+
