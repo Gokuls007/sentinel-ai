@@ -118,12 +118,7 @@ class SentinelPipeline:
             classes=config.detector.classes
         )
         
-        self.pose_estimator = PoseEstimator(
-            model_path=config.detector.pose_model_path,
-            sequence_length=config.pose.sequence_length,
-            confidence_threshold=config.pose.confidence_threshold,
-            device=config.detector.device
-        )
+        self.pose_estimator, self.pose_status = self._make_pose_estimator(config)
         
         self.anomaly_engine = AnomalyEngine(config)
         # Plain-English rules (compiled once, checked here every frame in warehouse mode).
@@ -452,6 +447,24 @@ class SentinelPipeline:
                 cv2.putText(frame, line, (x1 + 4, top + h + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         return set(self._alert_labels)
 
+    @staticmethod
+    def _make_pose_estimator(config):
+        """RTMPose-m when POSE_BACKEND=rtmpose and it loads, else the YOLO pose model (and why)."""
+        status = "pose: yolov8n-pose"
+        if config.pose.backend == "rtmpose":
+            try:
+                from core.rtmpose_estimator import RTMPoseEstimator
+
+                est = RTMPoseEstimator(config.pose.rtmpose_model, sequence_length=config.pose.sequence_length,
+                                       device=config.detector.device)
+                return est, f"pose: rtmpose-m ({est.device})"
+            except Exception as e:  # rtmlib, onnxruntime or the weights missing: keep working
+                logger.warning("RTMPose unavailable (%s); using the YOLO pose model", e)
+                status = f"pose: yolov8n-pose (rtmpose off: {e})"
+        est = PoseEstimator(model_path=config.detector.pose_model_path, sequence_length=config.pose.sequence_length,
+                            confidence_threshold=config.pose.confidence_threshold, device=config.detector.device)
+        return est, status
+
     def _detect_objects(self, frame) -> list:
         """This mode's objects only (its own class list; none in a mode without one)."""
         det = getattr(self, "object_detector", None)
@@ -478,6 +491,9 @@ class SentinelPipeline:
         return f"Objects: {len(objects)} detected ({', '.join(names)})" + partial
 
     def _draw_status(self, frame, text: str) -> None:
+        pose = getattr(self, "pose_status", None)
+        if pose:
+            text = f"{text} | {pose}"
         (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         cv2.rectangle(frame, (8, 8), (8 + w + 10, 8 + h + 10), (20, 20, 20), -1)
         cv2.putText(frame, text, (13, 8 + h + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1)

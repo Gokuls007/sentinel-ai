@@ -51,5 +51,6 @@ def tmp_config(tmp_path):
     cfg.output.clips_dir = str(tmp_path / "clips")
     cfg.anomaly.lstm_model_path = str(tmp_path / "missing_lstm.pt")
     cfg.objects.enabled = False  # YOLO-World is mocked where it is tested (no weights in CI)
+    cfg.pose.backend = "yolo"  # RTMPose is mocked where it is tested (no rtmlib in CI)
     cfg.objects.cache_dir = str(tmp_path / "cache")
     return cfg

@@ -1,0 +1,6 @@
+# Optional: RTMPose-m pose backend (POSE_BACKEND=rtmpose). Without these the pipeline falls back
+# to the YOLO pose model. onnxruntime-gpu 1.23.x is the last build for CUDA 12 (1.24+ needs CUDA 13);
+# rtmlib is installed without its dependencies, which would add CPU onnxruntime and a second OpenCV:
+#   pip install onnxruntime-gpu==1.23.2 && pip install --no-deps rtmlib==0.0.16
+onnxruntime-gpu==1.23.2
+rtmlib==0.0.16

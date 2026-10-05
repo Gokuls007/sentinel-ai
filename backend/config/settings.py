@@ -28,6 +28,11 @@ class PoseConfig:
     sequence_length: int = 30
     num_keypoints: int = 17
     confidence_threshold: float = 0.3
+    # "rtmpose" (RTMPose-m via rtmlib/onnxruntime-gpu, top-down on the tracker's boxes) or "yolo"
+    # (the YOLOv8 pose model). RTMPose falls back to yolo, saying why, if it can't load.
+    backend: str = "rtmpose"
+    rtmpose_model: str = ("https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/"
+                          "rtmpose-m_simcc-body7_pt-body7_420e-256x192-e48f03d0_20230504.zip")
 
 @dataclass
 class FallDetectorConfig:
@@ -281,6 +286,8 @@ class SentinelConfig:
 
         cfg.detector.model_path = env("DETECTION_MODEL", str, cfg.detector.model_path)
         cfg.detector.pose_model_path = env("POSE_MODEL", str, cfg.detector.pose_model_path)
+        cfg.pose.backend = env("POSE_BACKEND", str, cfg.pose.backend).strip().lower()
+        cfg.pose.rtmpose_model = env("RTMPOSE_MODEL", str, cfg.pose.rtmpose_model)
         cfg.detector.confidence_threshold = env("DETECTION_CONFIDENCE", float,
                                                 cfg.detector.confidence_threshold)
         cfg.detector.iou_threshold = env("IOU_THRESHOLD", float, cfg.detector.iou_threshold)
