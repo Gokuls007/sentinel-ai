@@ -622,3 +622,56 @@ cue adds little: it neither helps nor harms much.
   before the thigh-angle sitting test.
 - **The hips are never inside the chair box** (0 of 939 seated frames): from above, the person
   hides the seat, and the visible part of the chair is behind them. So the seat rule never fires.
+
+## Fixes after the investigation (2026-10-05)
+
+_Measured with `python training/tracker_sweep.py` (tracker settings, offline on cached YOLO11m
+boxes) and `python training/sweep_fall_confirm.py` (fall rules on the rebuilt pose cache)._ Tuned on
+URFD and CAUCAFall subjects 1-5; subjects 6-10 reported only.
+
+**Tracker: identity kept through the fall.** ByteTrack's first-stage match required IoU x detection
+score >= 0.2 with the predicted box. During a fall the box turns from tall to wide and its score
+sags for 0.3-0.6 s, so the person came back as a new track. Now: IoU >= 0.1, not scaled by the
+score (`match_thresh: 0.9`, `fuse_score: false`). Tracker settings tried:
+
+| Setting | URFD falls: new id after onset | CAUCAFall 1-5 falls | URFD daily: ids per clip | Corridor (several people) |
+|---|---|---|---|---|
+| Before (IoU x score >= 0.2) | 16 / 30 | 7 / 25 | 1.25 | 6.5 ids, 0 jumps |
+| Score not fused | 6 / 30 | 5 / 25 | 1.12 | unchanged |
+| **IoU >= 0.1, score not fused (chosen)** | **4 / 30** | **2 / 25** | 1.12 | unchanged |
+| IoU x score >= 0.05 | 3 / 30 | 2 / 25 | 1.07 | unchanged |
+| Re-attach to a lost track by centre distance (0.75 box) | 4 / 30 | 6 / 25 | 1.18 | unchanged |
+| Re-attach to a lost track by expanded box (2x) | 3 / 30 | 6 / 25 | 1.18 | unchanged |
+
+A higher new-track threshold scored slightly better but would delay picking up a person first seen
+lying down, the reason for YOLO11m at 0.25, so it isn't used. No hand-off logic was needed.
+tests/test_tracker_config.py checks a tall-to-wide fall keeps its id (it fails with the old settings)
+and two people crossing keep theirs.
+
+**Fall rules: a box at the frame edge and more than half the frame tall** isn't evidence of lying
+when no torso is visible (someone sitting right in front of a webcam, hips out of view: the false
+fall at 65 s in an own recording). Narrower versions were needed: "any edge" cost a URFD fall whose
+feet were past the bottom of the picture, and "no-torso fallback, any edge" cost a real lie-down
+cut off at the bottom of the frame (20% of the frame tall, vs 88% for the person at the webcam).
+
+**Balance: only for someone standing on their legs.** Hips at least 0.8 of the leg's own length
+(thigh + shin, same frame) above the ankle. Own recordings: standing p10 0.99, seated on a couch
+edge (labelled Bending) 0.67, on the floor 0.19; CAUCAFall walking 95-98% of frames >= 0.85, seated
+85-100% below. Both own-recording "losing balance" false alerts are gone. (Hip height relative to
+the standing leg in pixels failed with camera distance; knee angle failed for a shin pointing at
+the camera.)
+
+Fall rules on the rebuilt cache, both edge fixes in:
+
+| | Before the tracker change | After |
+|---|---|---|
+| URFD falls: new track id after onset | 17 / 30 | 5 / 30 |
+| URFD falls reaching the ground | 16 / 30 | 21 / 30 |
+| URFD confirmed (clips end 1-2 s after the fall) | 3 / 30 | 2 / 30 |
+| CAUCAFall 1-5: reached ground / confirmed | 14 / 10 of 25 | 17 / 13 of 25 |
+| CAUCAFall 6-10 (held out): reached ground / confirmed | 11 / 11 of 25 | 16 / 14 of 25 |
+| Confirmed false alarms: URFD daily + clips / CAUCAFall 1-5 / 6-10 | 0 / 3 / 1 | 0 / 3 / 1 |
+
+The remaining CAUCAFall false alarms are the kneeling / all-fours clips (next fix). Own recordings
+in home mode: the 65 s fall and both balance alerts are gone; a staged lie-down still raises a
+possible fall (37.5 s) and is confirmed at 41 s; the chair slide raises nothing yet.

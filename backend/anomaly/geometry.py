@@ -1,5 +1,5 @@
 """Zone polygon checks: a zone whose edges cross itself has no clear inside, so it is rejected,
-with a suggested fix."""
+with a suggested fix. Also: whether a person is too close to the camera for their box's shape to mean anything."""
 
 from __future__ import annotations
 
@@ -73,3 +73,13 @@ def fix_polygon(points: list[Point]) -> tuple[list[Point], str]:
     if not self_intersections(ordered):
         return ordered, "reordered"
     return convex_hull(pts), "hull"
+
+
+def box_too_close(box, width: float, height: float, frac: float = 0.02, tall: float = 0.5) -> bool:
+    """The box reaches the frame edge (within ``frac``) and is more than ``tall`` of the frame
+    height: the person is too close to the camera for the box's shape (wide vs tall) to say anything
+    about posture, e.g. someone sitting right in front of a webcam with the hips out of view.
+    Someone lying on the floor gives a short box, even with the legs past the edge of the picture."""
+    x1, y1, x2, y2 = (float(v) for v in box[:4])
+    at_edge = x1 <= frac * width or y1 <= frac * height or x2 >= (1 - frac) * width or y2 >= (1 - frac) * height
+    return at_edge and (y2 - y1) > tall * height

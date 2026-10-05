@@ -15,5 +15,9 @@ new_track_thresh: 0.6   # ...but a new person needs more (+0.1, as in the ByteTr
                         # half-visible fragment of a tracked person (legs leaving the frame)
                         # must not become a second person with its own alerts
 track_buffer: 90        # keep a lost track ~3 s at 30 fps (~5 s at webcam speed) for re-association
-match_thresh: 0.8
-fuse_score: true
+match_thresh: 0.9      # first-stage match: box overlap (IoU) of at least 0.1 with the predicted box...
+fuse_score: false      # ...not scaled by the detection score. During a fall the box turns from tall to
+                       # wide and its score drops for 0.3-0.6 s; with IoU x score >= 0.2 the person
+                       # came back as a new track in 16 of 30 URFD falls (no standing height, so the
+                       # fall wasn't measured). With this: 4 / 30, CAUCAFall subjects 1-5 falls 7 -> 2
+                       # of 25, no change on multi-person corridor footage (training/tracker_sweep.py).

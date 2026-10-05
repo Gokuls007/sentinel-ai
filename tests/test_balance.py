@@ -86,3 +86,31 @@ def test_no_warning_mid_stride_while_walking():
         x = 200 + 30 * i
         alerts += b.update({1: stance(lean_px=110, feet=(x, x + 40))}, t)
     assert alerts == [] and b.current[1]["moving"] and b.current[1]["risk"] > 0.85  # the bar still shows it
+
+
+def folded(knee_dx=90.0, knee_y=320.0, ankle_y=430.0, lean_px=110.0):
+    """Seated on an edge (or propped on the floor): hips still above the ankles, but the thighs run
+    forward to the knees, so the hips are far less than a leg's length above the feet."""
+    p = stance(lean_px=lean_px)
+    k = p.keypoints
+    k[13, :2] = (k[11, 0] + knee_dx, knee_y)
+    k[14, :2] = (k[12, 0] + knee_dx, knee_y)
+    k[15, 1] = k[16, 1] = ankle_y
+    return p
+
+
+def test_leg_extension_is_about_one_standing_and_well_below_seated():
+    from activity.balance import leg_extension
+
+    assert leg_extension(stance().keypoints) == pytest.approx(1.0, abs=0.05)
+    assert leg_extension(folded().keypoints) < 0.8
+    assert leg_extension(folded(knee_y=300, ankle_y=320).keypoints) < 0.2  # on the floor
+
+
+@pytest.mark.parametrize("pose", [folded(), folded(knee_y=300, ankle_y=320)], ids=["couch edge", "on the floor"])
+def test_no_balance_warning_for_someone_not_standing_on_their_legs(pose):
+    """Leaning far past the feet while seated on an edge (labelled Bending) or propped on the
+    floor: the feet aren't holding the person up, so no bar and no "losing balance"."""
+    b = BalanceTracker()
+    _, alerts = run(b, lambda: pose, 3)
+    assert alerts == [] and 1 not in b.current

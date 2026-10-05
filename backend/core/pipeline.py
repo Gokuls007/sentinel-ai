@@ -220,6 +220,7 @@ class SentinelPipeline:
         posture = exam = None
         objects = self._detect_objects(frame)
         if self.mode in BODY_MODES:
+            self.anomaly_engine.fall_detector.frame_size = (frame.shape[1], frame.shape[0])
             recovered = self._recover_fallen(frame, poses, all_features, timestamp)
             alerts = self.anomaly_engine.process(poses, all_features, timestamp, recovered=recovered)
             if self.mode == "home":  # resting in bed isn't loitering; REBA is a workplace measure

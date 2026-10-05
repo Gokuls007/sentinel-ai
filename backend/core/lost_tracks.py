@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from anomaly.engine import AnomalyAlert
+from anomaly.geometry import box_too_close
 
 LYING_LABELS = ("Lying down", "Fallen")
 DOWN_STATES = ("falling", "fallen", "confirmed")
@@ -60,13 +61,13 @@ class LostTracks:
         self.seen: dict[int, _Seen] = {}
         self.lost: dict[int, LostTrack] = {}
 
-    def _why_lying(self, s: _Seen, furniture: list) -> str | None:
+    def _why_lying(self, s: _Seen, furniture: list, width: int, height: int) -> str | None:
         if s.label in LYING_LABELS:
             return s.label.lower()
         if s.fall in DOWN_STATES:
             return f"fall detector: {s.fall}"
         w, h = s.box[2] - s.box[0], s.box[3] - s.box[1]
-        if w > 1.2 * h:
+        if w > 1.2 * h and not box_too_close(s.box, width, height):  # right at the camera: shape means nothing
             return "lying (wide box)"
         for name, box in furniture:
             if _overlap(s.box, box) > 0.3:
@@ -98,7 +99,7 @@ class LostTracks:
             if tid in people:
                 continue
             del self.seen[tid]
-            reason = self._why_lying(s, furniture)
+            reason = self._why_lying(s, furniture, width, height)
             if reason and not self._walked_out(s, width, height):
                 self.lost[tid] = LostTrack(tid, s.box, s.ts, reason)
         for tid, box in people.items():

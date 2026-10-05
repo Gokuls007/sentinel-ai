@@ -59,6 +59,7 @@ class Cached:
     kind: str  # "fall" | "adl" | "sample" | "recording"
     fps: float
     onset_frame: int | None = None
+    frame_size: tuple[int, int] | None = None  # (width, height) the models saw
     # [(ts, active_ids, [(tid, PoseResult, standing_h)], {tid: {chain: PoseResult | None}})]
     frames: list = field(default_factory=list)
 
@@ -147,6 +148,7 @@ def cache_frames(models, frames_iter, name, kind, fps, onset_frame=None, resize=
         if resize and (frame.shape[1], frame.shape[0]) != resize:
             frame = cv2.resize(frame, resize)
         ts = (idx - 1) / fps
+        out.frame_size = (frame.shape[1], frame.shape[0])
         dets = det.detect_and_track(frame)
         people = [d for d in dets.detections if d.class_name == "person" and d.track_id is not None]
         poses = pose.estimate(frame, [d.track_id for d in people], [d.bbox for d in people], ts)
@@ -234,11 +236,25 @@ def make_detector(fall_cfg, confirm_s: float, fixes: Fixes = BASELINE):
     )
 
 
+def frame_size_of(video: Cached) -> tuple[int, int]:
+    """The frame size the models saw: recorded in newer caches; older ones ran URFD at its native
+    640x480 and resized everything else to the configured size."""
+    if getattr(video, "frame_size", None):
+        return video.frame_size
+    if video.kind in ("fall", "adl") and video.name.startswith(("fall-", "adl-")):
+        return (640, 480)
+    from config.settings import SentinelConfig
+
+    cfg = SentinelConfig()
+    return (cfg.frame_width, cfg.frame_height)
+
+
 def replay(video: Cached, detector, fixes: Fixes = BASELINE) -> dict:
     """Run the state machine over cached frames, in the order AnomalyEngine.process uses:
     first the people who are down but have no pose this frame (a recovered pose, if that fix
     is on and the pipeline would have retried, else held), then the tracked poses. It also
     follows the first track that reached the ground, to explain a missing alert."""
+    detector.frame_size = frame_size_of(video)
     alerts: list[float] = []
     possible: list[float] = []
     fallen_s = fallen_tid = None

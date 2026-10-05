@@ -12,6 +12,15 @@
   while the person is nearly still: in walking the COM leaves the base every step (dynamic
   balance), so the bar still shows but nobody is warned mid-stride.
 
+- **On the feet**: only checked for someone standing on their legs: the hips must be at least
+  ``on_feet_ratio`` of the leg's own length (hip-knee + knee-ankle, same frame) above the ankles.
+  Seated (even on a couch edge, labelled Bending) or on the floor, the leg is folded and the
+  hips are far lower than that, and the feet aren't what holds the person up. Measured as a
+  ratio within one frame, so camera distance and height don't matter: own recordings standing
+  p10 0.99, couch edge 0.67, on the floor 0.19; CAUCAFall (camera high in a corner) walking 95-98%
+  of frames >= 0.85, seated 85-100% below. (The knee angle doesn't work here: a shin pointing at
+  the camera looks straight.)
+
 This is a 2D, image-plane estimate: it sees sideways (left/right) balance in the camera's view,
 not forward/back balance toward the camera. A first version, to tune on recordings.
 """
@@ -54,6 +63,22 @@ class BalanceConfig:
     cooldown_s: float = 10.0
     warn_outside: float = 0.02   # x body height: the COM must be at least this far outside the base
     still_speed: float = 0.35    # body heights per second; faster = walking, no warning
+    on_feet_ratio: float = 0.8   # hips this far above the ankles (x the leg's own length) = standing on the legs
+
+
+def leg_extension(kp: np.ndarray, min_conf: float = 0.4) -> float | None:
+    """Height of the hips above the ankle over the leg's own length (thigh + shin), the straighter
+    leg of the two: ~1.0 standing, ~0.4-0.7 seated, ~0 or below on the floor. None without a leg."""
+    kp = np.asarray(kp, float)
+    best = None
+    for h, k, a in ((L_HIP, L_KNEE, L_ANK), (R_HIP, R_KNEE, R_ANK)):
+        if min(kp[h, 2], kp[k, 2], kp[a, 2]) < min_conf:
+            continue
+        length = float(np.hypot(*(kp[k, :2] - kp[h, :2])) + np.hypot(*(kp[a, :2] - kp[k, :2])))
+        if length > 1.0:
+            r = float(kp[a, 1] - kp[h, 1]) / length
+            best = r if best is None else max(best, r)
+    return best
 
 
 def centre_of_mass(kp: np.ndarray, min_conf: float = 0.4) -> np.ndarray | None:
@@ -134,6 +159,9 @@ class BalanceTracker:
         kp = np.asarray(kp, float)
         if kp[L_ANK, 2] < c.ankle_conf or kp[R_ANK, 2] < c.ankle_conf:
             return None
+        legs = leg_extension(kp, c.min_conf)
+        if legs is None or legs < c.on_feet_ratio:  # not standing on the legs: seated or on the floor
+            return None
         com = centre_of_mass(kp, c.min_conf)
         if com is None:
             return None
@@ -147,7 +175,7 @@ class BalanceTracker:
         return {"com": [round(float(com[0]), 1), round(float(com[1]), 1)],
                 "base": [round(float(left), 1), round(float(right), 1)],
                 "margin_px": round(float(margin), 1), "margin": round(float(margin / bh), 3), "raw_risk": raw,
-                "body_height": round(bh, 1)}
+                "body_height": round(bh, 1), "legs": round(legs, 2)}
 
     @staticmethod
     def _alert(tid, ts, view) -> AnomalyAlert:

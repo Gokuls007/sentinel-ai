@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from anomaly.geometry import box_too_close
 from core.pose_estimator import PoseResult, TrackFeatures
 
 
@@ -94,6 +95,8 @@ class FallDetector:
         self.fallen_timeout_seconds = fallen_timeout_seconds
         self.cooldown_seconds = cooldown_seconds
         self.tracks: dict[int, _TrackState] = {}
+        # (width, height) of the current frame, set by the caller; None = unknown, box shape always used.
+        self.frame_size: tuple[int, int] | None = None
         self.possible_events: list[FallEvent] = []  # drained by drain_possible()
 
     # -- public API ---------------------------------------------------------------------
@@ -242,11 +245,14 @@ class FallDetector:
         aspect_ratio = bbox_w / bbox_h if bbox_h > 0 else 0.0
 
         # Lying = the torso is near horizontal. Without a visible torso, fall back to a wide
-        # box. (A wide box alone also fits someone sitting close to a webcam, so when the
-        # torso is visible it must be tilted too.)
+        # box, unless the person is right in front of the camera: then its shape isn't the body's
+        # (someone sitting right in front of a webcam, hips out of view). A wide box alone also
+        # fits someone sitting close to a webcam, so when the torso is visible it must be tilted
+        # too.
         torso = getattr(pose, "torso_angle", None)
+        too_close = self._too_close(pose)
         wide = aspect_ratio > self.aspect_ratio_threshold
-        horizontal = wide if torso is None else (
+        horizontal = (wide and not too_close) if torso is None else (
             torso > self.LYING_TORSO_DEG or (wide and torso > self.TILTED_TORSO_DEG))
 
         head_known = pose.head_valid and st.upright_head_y is not None
@@ -284,6 +290,7 @@ class FallDetector:
             "spread": spread,
             "descent_speed": descent_speed,
             "aspect_ratio": aspect_ratio,
+            "too_close": too_close,
             "torso_angle": torso if torso is not None else -1.0,
             "horizontal_pose": horizontal,
             "head_known": head_known,
@@ -370,6 +377,9 @@ class FallDetector:
         high_hips = hip_h is not None and hip_h > self.HIP_HIGH
         return (torso_rule or (low and collapsed) or (collapsed and signals["head_dropped"])) and not high_hips
 
+    def _too_close(self, pose: PoseResult) -> bool:
+        return self.frame_size is not None and box_too_close(pose.bbox, *self.frame_size)
+
     def _box_scale(self, st: _TrackState, pose: PoseResult) -> float:
         """Head-to-ankle scale from upright boxes (taller than 1.6x their width) when the
         skeleton can't be measured: median of 10 samples, x0.9 (the box includes the crown and
@@ -378,7 +388,7 @@ class FallDetector:
             return st.box_scale
         w = float(pose.bbox[2] - pose.bbox[0])
         h = float(pose.bbox[3] - pose.bbox[1])
-        if w > 0 and h / w >= 1.6:
+        if w > 0 and h / w >= 1.6 and not self._too_close(pose):
             st.box_samples.append(0.9 * h)
             if len(st.box_samples) >= 10:
                 st.box_scale = float(np.median(st.box_samples))
