@@ -39,6 +39,7 @@ SEGMENTS = (
     (0.061, L_KNEE, L_ANK), (0.061, R_KNEE, R_ANK),       # shanks + feet
 )
 TRUNK = 0.497
+NOT_ON_FEET = ("Sitting", "Lying down", "Fallen", "Upper body only")
 
 
 @dataclass
@@ -79,8 +80,11 @@ class BalanceTracker:
         self.current: dict[int, dict] = {}       # track id -> latest view (for the overlay)
         self._com: dict[int, deque] = {}         # track id -> (ts, centre of mass, body height)
 
-    def update(self, poses: dict, ts: float) -> list[AnomalyAlert]:
+    def update(self, poses: dict, ts: float, labels: dict | None = None) -> list[AnomalyAlert]:
+        """``labels``: activity per track; seated or lying people aren't on their feet, so there is no
+        standing balance to estimate (no bar, no warning)."""
         c = self.cfg
+        labels = labels or {}
         for tid in [t for t in self._risk if t not in poses]:
             self._risk.pop(tid, None)
             self._high_since.pop(tid, None)
@@ -88,7 +92,8 @@ class BalanceTracker:
         self.current = {}
         alerts = []
         for tid, pose in poses.items():
-            view = self.measure(pose.keypoints, float(getattr(pose, "body_height", 0) or 0), pose.bbox)
+            view = (None if labels.get(tid) in NOT_ON_FEET
+                    else self.measure(pose.keypoints, float(getattr(pose, "body_height", 0) or 0), pose.bbox))
             if view is None:
                 self._risk.pop(tid, None)
                 self._high_since.pop(tid, None)

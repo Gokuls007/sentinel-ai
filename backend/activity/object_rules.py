@@ -106,8 +106,10 @@ class ObjectRules:
         self._since.pop(key, None)
         return True
 
-    def update(self, poses: dict, objects: list, ts: float) -> list[AnomalyAlert]:
+    def update(self, poses: dict, objects: list, ts: float, labels: dict | None = None) -> list[AnomalyAlert]:
+        """``labels``: activity per track; the unsafe-lift rule only checks people on their feet."""
         c = self.cfg
+        labels = labels or {}
         for tid in [t for t in self._upright if t not in poses]:
             del self._upright[tid]
         for tid in [t for t in self._hips if t not in poses]:
@@ -135,7 +137,8 @@ class ObjectRules:
             scale = max(torso, up * thigh) if up and thigh else torso  # the upright torso at this distance
             wrists = [kp[i, :2] for i in (L_WR, R_WR) if kp[i, 2] >= c.wrist_conf]
             moving = self._speed(tid, hip, pose.bbox, ts) > c.still_speed
-            alerts += self._unsafe_lift(tid, kp, wrists, trunk, ratio, scale, objects, ts)
+            if labels.get(tid) not in ("Sitting", "Lying down", "Fallen"):
+                alerts += self._unsafe_lift(tid, kp, wrists, trunk, ratio, scale, objects, ts)
             alerts += self._on_chair(tid, kp, pose.bbox, objects, ts)
             alerts += self._hazards(tid, wrists, scale, objects, ts, moving)
         return alerts

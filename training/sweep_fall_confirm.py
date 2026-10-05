@@ -113,7 +113,9 @@ CACHE_RECOVERY_S = 5.0  # cached retries cover this long after a track's last si
 def code_stamp() -> str:
     """Hash of the code and thresholds that produce the cached poses."""
     h = hashlib.sha256()
-    for rel in ("backend/core/pose_estimator.py", "backend/core/detector.py", "backend/config/settings.py",
+    h.update(os.environ.get("POSE_BACKEND", "").encode())
+    for rel in ("backend/core/pose_estimator.py", "backend/core/rtmpose_estimator.py", "backend/core/detector.py",
+                "backend/config/settings.py",
                 "backend/config/trackers/sentinel_bytetrack.yaml", "backend/anomaly/fall_recovery.py"):
         path = os.path.join(ROOT, rel)
         if os.path.isfile(path):
@@ -160,7 +162,8 @@ def cache_frames(models, frames_iter, name, kind, fps, onset_frame=None, resize=
             for tid in feats:
                 if tid in poses or tid not in seen or ts - seen[tid][0] > CACHE_RECOVERY_S:
                     continue
-                found, _how = recover_pose(pose.model, frame, tid, seen[tid][1], low_conf=conf or normal_conf,
+                found, _how = recover_pose(models.recovery_model, frame, tid, seen[tid][1],
+                                           low_conf=conf or normal_conf,
                                            try_low=try_low, try_rotated=try_rot)
                 recov.setdefault(tid, {})[chain] = found
                 if found is not None:

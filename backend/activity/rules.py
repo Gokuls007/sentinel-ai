@@ -20,7 +20,11 @@ Rules first (each needs only the body parts it uses, and isn't offered without t
   shoulders, holding a detected COCO object (backpack, handbag, suitcase); or walking with the
   hands together and raised (low confidence).
 - **Sitting**: thighs (hip -> knee) well off vertical, or the hips dropped by ``sit_drop`` of the
-  upright torso length, with an upright trunk.
+  upright torso length, with an upright trunk. Also, found automatically: the hips on a detected
+  chair, couch or bed (leaning forward up to ``seated_max_trunk`` still counts: reading), or,
+  facing the camera, a thigh foreshortened toward the lens (shorter than ``seated_thigh`` x torso).
+  Standing in front of a chair has long, vertical thighs, so it doesn't count. On a bed with the
+  trunk tilted past 45 degrees: Lying down.
 - **Walking / Standing**: upright, hip speed over / under ``walk_speed`` body heights per second,
   or growing/shrinking in the image (walking toward or away from the camera) faster than
   ``approach_rate`` per second.
@@ -52,6 +56,7 @@ STANDING, WALKING, SITTING, BENDING = "Standing", "Walking", "Sitting", "Bending
 LIFTING, CARRYING, REACHING, LYING, FALLEN = "Lifting", "Carrying", "Reaching overhead", "Lying down", "Fallen"
 UPPER_ONLY = "Upper body only"
 CARRY_CLASSES = ("backpack", "handbag", "suitcase", "cardboard box")  # COCO, plus YOLO-World's box
+SEATS = ("chair", "couch", "bed", "bench", "toilet")  # detected objects someone can sit or lie on
 # Detected objects nobody carries around: touching them isn't "Carrying".
 NOT_CARRIED = frozenset({
     "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light", "fire hydrant",
@@ -76,6 +81,8 @@ class ActivityConfig:
     bend_torso_ratio: float = 0.72    # torso this short vs upright: bending toward the camera
     lying_aspect: float = 1.3         # box width / height
     lift_hip_drop: float = 0.25       # hips dropped more than this (x upright torso): not a lift
+    seated_thigh: float = 0.55        # thigh shorter than this (x torso): pointing at the camera, seated
+    seated_max_trunk: float = 60.0    # on a seat, leaning forward up to this still counts as sitting
     legs_extended: float = 0.5        # knees this far below the hips (x torso): not sitting
     knee_margin: float = 0.0          # wrists at or below knee height (x torso): reaching low
     low_hold_s: float = 0.5           # hands low this long (not walking) before a rise counts as a lift
@@ -204,6 +211,19 @@ class ActivityTracker:
         # squat pick-up with an upright back (CAUCAFall "Pick up object" looks like this).
         legs_out = knee is not None and (knee[1] - hip[1]) >= c.legs_extended * torso
         low_reach = legs_out and len(wrists) > 0 and max(w[1] for w in wrists) >= knee[1] - c.knee_margin * torso
+        # Seated, found automatically: hips on a detected chair/couch/bed, or a thigh pointing at the
+        # camera. (Standing in front of a chair: long, vertical thighs, no hip drop: not seated.)
+        seat = next((name for name, (x1, y1, x2, y2) in (objects or [])
+                     if name in SEATS and x1 <= hip[0] <= x2 and y1 <= hip[1] <= y2), None)
+        short_thigh = thigh is not None and thigh_len < c.seated_thigh * torso
+        if seat and (short_thigh or thigh is None or thigh >= 30 or hip_drop >= 0.2):
+            if seat == "bed" and trunk >= 45:
+                return LYING, "bed", "high"
+            if trunk < c.seated_max_trunk:
+                st.carrying = False
+                return SITTING, seat, "high"
+        if short_thigh and trunk <= c.bend_deg and knee[1] >= hip[1] - 0.1 * torso:
+            return SITTING, None, "high"
         if trunk >= c.bend_deg or foreshortened or low_reach:
             st.carrying = False  # bending puts it down (or picks something else up)
             low_line = (hip[1] + c.lift_hands_low * (knee[1] - hip[1]) if knee is not None

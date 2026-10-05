@@ -47,7 +47,8 @@ export const ActivityPanel = ({ connected, activity, ergonomics }) => {
                   <span className="flex items-center gap-2">
                     <span className="text-[10px] mono text-white/40">{trackLabel(id)}</span>
                     <span className="text-sm font-semibold outfit text-white">
-                      {a.label === 'Carrying' && a.detail ? `Carrying ${a.detail}` : a.label}
+                      {a.label === 'Carrying' && a.detail ? `Carrying ${a.detail}`
+                        : ['Sitting', 'Lying down'].includes(a.label) && a.detail ? `${a.label.split(' ')[0]} on ${a.detail}` : a.label}
                     </span>
                     {a.confidence === 'low' && <span className="text-[9px] mono uppercase text-white/40">unsure</span>}
                   </span>

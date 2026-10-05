@@ -128,8 +128,9 @@ def main() -> int:
     ap.add_argument("--min-s", type=float, default=1.0)
     ap.add_argument("--device", default="auto")
     ap.add_argument("--write", metavar="MD")
-    ap.add_argument("--cache", default=os.path.join(ROOT, "outputs", "activity_cache"),
-                    help="per-clip keypoint cache (re-score rule changes without running the models)")
+    ap.add_argument("--cache", default=None,
+                    help="per-clip keypoint cache (re-score rule changes without running the models); default "
+                         "outputs/activity_cache/<detector-conf-pose>")
     args = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -141,6 +142,11 @@ def main() -> int:
     clips = [v for v in caucafall_videos() if int(v[2].split("/")[0].split(".")[1]) in subjects]
     import json
 
+    if args.cache is None:
+        from eval_fall import setup_tag
+
+        args.cache = os.path.join(ROOT, "outputs", "activity_cache", setup_tag())
+    print(f"keypoint cache: {args.cache}", flush=True)
     os.makedirs(args.cache, exist_ok=True)
     models = None
     rows = []

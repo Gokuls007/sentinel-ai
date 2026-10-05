@@ -128,19 +128,43 @@ class SequenceResult:
     reached_fallen: bool = False
 
 
+def setup_tag() -> str:
+    """Detector + pose setup as a short tag (for keypoint caches), from the production config."""
+    from config.settings import SentinelConfig
+
+    cfg = SentinelConfig.from_env(env_file=None)
+    d = cfg.detector
+    return f"{os.path.splitext(os.path.basename(d.model_path))[0]}-{d.confidence_threshold:g}-{cfg.pose.backend}"
+
+
 class Models:
     """Detector + pose model loaded once; tracker, pose history and fall state reset per sequence."""
 
     def __init__(self, device: str):
         from config.settings import SentinelConfig
         from core.detector import Detector
-        from core.pose_estimator import PoseEstimator
+        from core.pipeline import SentinelPipeline
 
-        self.cfg = SentinelConfig()
+        self.cfg = SentinelConfig.from_env(env_file=None)  # production defaults (+ POSE_BACKEND etc. if set)
+        self.cfg.detector.device = device
         d = self.cfg.detector
         self.detector = Detector(d.model_path, d.confidence_threshold, d.iou_threshold, device=device)
-        self.pose = PoseEstimator(d.pose_model_path, confidence_threshold=self.cfg.pose.confidence_threshold,
-                                  device=device)
+        # The production pose model (RTMPose-m by default, YOLO pose if it can't load).
+        self.pose, self.pose_status = SentinelPipeline._make_pose_estimator(self.cfg)
+        print(f"Models: {d.model_path} @ {d.confidence_threshold}, {self.pose_status}", flush=True)
+
+    @property
+    def recovery_model(self):
+        """YOLO pose for recovery retries on crops (RTMPose needs a box)."""
+        if getattr(self.pose, "name", None) != "rtmpose-m":
+            return self.pose.model
+        if getattr(self, "_recovery", None) is None:
+            from ultralytics import YOLO
+
+            self._recovery = YOLO(self.cfg.detector.pose_model_path)
+        return self._recovery
+
+
 
     def fresh(self):
         """Independent sequences: forget tracks, pose history and fall state."""

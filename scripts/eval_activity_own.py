@@ -76,7 +76,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("clip")
     ap.add_argument("--device", default="auto")
-    ap.add_argument("--cache", default=os.path.join(ROOT, "outputs", "activity_cache"))
+    ap.add_argument("--cache", default=None, help="default outputs/activity_cache/<detector-conf-pose>")
     ap.add_argument("--write", metavar="MD", help="add or replace this clip's section in a markdown file")
     ap.add_argument("--held-out", action="store_true", help="this clip was never used for tuning (say so)")
     args = ap.parse_args()
@@ -88,6 +88,10 @@ def main() -> int:
     stem = os.path.splitext(os.path.basename(args.clip))[0]
     with open(os.path.splitext(args.clip)[0] + ".labels.json", encoding="utf-8") as f:
         segments = json.load(f)["segments"]
+    if args.cache is None:
+        from eval_fall import setup_tag
+
+        args.cache = os.path.join(ROOT, "outputs", "activity_cache", setup_tag())
     os.makedirs(args.cache, exist_ok=True)
     cache = os.path.join(args.cache, f"own__{stem}.json")
     if os.path.isfile(cache):

@@ -218,9 +218,10 @@ class SentinelPipeline:
             if self.config.rules.builtins:  # the built-in rules replace these (no double alerts)
                 alerts = [a for a in alerts if a.alert_type not in ("fall", "zone_intrusion")]
             alerts += self._evaluate_rules(poses, all_features, detections, timestamp)
-            alerts += self.object_rules.update(poses, objects, timestamp)
-            alerts += self.balance.update(poses, timestamp)
-            alerts += self._update_lost(detections, self._activity_labels(), frame, objects, timestamp)
+            labels = self._activity_labels()  # last smoothed labels: balance and lift only check standing people
+            alerts += self.object_rules.update(poses, objects, timestamp, labels)
+            alerts += self.balance.update(poses, timestamp, labels)
+            alerts += self._update_lost(detections, labels, frame, objects, timestamp)
             timings["ergonomics"] = self.anomaly_engine.last_ergo_ms  # included in "analytics"
             ergonomics = self.anomaly_engine.ergonomics_snapshot
             self._persist_ergo_time(timestamp)
@@ -386,6 +387,17 @@ class SentinelPipeline:
             ))
         return alerts
 
+    def _recovery_model(self):
+        """A YOLO pose model for recovery retries (they search a crop for a person; RTMPose needs a
+        box). The pose estimator's own model when it is YOLO, else loaded on first use."""
+        if getattr(self.pose_estimator, "name", None) != "rtmpose-m":
+            return self.pose_estimator.model
+        if getattr(self, "_recovery_yolo", None) is None:
+            from ultralytics import YOLO
+
+            self._recovery_yolo = YOLO(self.config.detector.pose_model_path)
+        return self._recovery_yolo
+
     def _recover_fallen(self, frame, poses, features, timestamp) -> dict:
         """Retry pose on the region around falling/fallen people the detector lost this frame
         (anomaly/fall_recovery.py). Off unless FALL recovery settings enable it."""
@@ -402,7 +414,7 @@ class SentinelPipeline:
             if (bbox is None or st is None or timestamp - st.falling_since > f.recovery_window_seconds
                     or (st.last_seen is not None and timestamp - st.last_seen > max(f.lost_hold_seconds, 1.0))):
                 continue
-            pose, _how = recover_pose(self.pose_estimator.model, frame, tid, bbox,
+            pose, _how = recover_pose(self._recovery_model(), frame, tid, bbox,
                                       low_conf=f.recovery_low_conf or self.config.pose.confidence_threshold,
                                       try_low=f.recovery_low_conf > 0, try_rotated=f.recovery_rotated)
             if pose is not None:
@@ -570,6 +582,8 @@ class SentinelPipeline:
         label = act["label"] if act else None
         if label == "Carrying" and act.get("detail"):
             label = f"Carrying {act['detail']}"
+        elif label in ("Sitting", "Lying down") and act.get("detail"):
+            label = f"{label.split()[0]} on {act['detail']}"  # "Sitting on chair", "Lying on bed"
         parts = [label] if label else []
         if info and info.get("score") is not None and info.get("reliable"):
             parts.append(f"REBA {info['score']} {info['level_name'].replace('_', ' ').upper()}")

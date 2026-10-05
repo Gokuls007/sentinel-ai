@@ -214,3 +214,68 @@ def test_ergo_reasons(mutate, conf, box, reason):
 def test_visible_parts():
     p = visible_parts(person(legs=False))
     assert p["hips"] and p["shoulders"] and not p["knees"] and not p["ankles"]
+
+
+# --- seated, found automatically (furniture or a thigh pointing at the camera) ----------------
+
+def facing(thigh_px=80.0, trunk_deg=0.0):
+    """Front view: knees straight below the hips by ``thigh_px`` (short = the thigh points at the camera)."""
+    k = person(trunk_deg=trunk_deg)
+    for hip_i, knee_i, ank_i in ((11, 13, 15), (12, 14, 16)):
+        k[knee_i, :2] = (k[hip_i, 0], k[hip_i, 1] + thigh_px)
+        k[ank_i, :2] = (k[hip_i, 0], k[hip_i, 1] + thigh_px + 60)
+    return k
+
+
+CHAIR = ("chair", (250.0, 150.0, 360.0, 320.0))  # the hips (300, 250) are on its seat
+
+
+def test_seated_on_a_detected_chair_even_facing_the_camera():
+    a = ActivityTracker()
+    _, out = run(a, lambda _t: facing(thigh_px=40), 0.0, 1.5, objects=[CHAIR])
+    assert out["label"] == SITTING and out["detail"] == "chair"
+    _, out = run(ActivityTracker(), lambda _t: facing(thigh_px=40, trunk_deg=45), 0.0, 1.5, objects=[CHAIR])
+    assert out["label"] == SITTING  # leaning forward to read is still sitting
+
+
+def test_standing_in_front_of_a_chair_is_not_sitting():
+    _, out = run(ActivityTracker(), lambda _t: person(), 0.0, 1.5, objects=[CHAIR])
+    assert out["label"] == STANDING  # long, vertical thighs
+
+
+def test_a_thigh_pointing_at_the_camera_reads_as_sitting_without_furniture():
+    _, out = run(ActivityTracker(), lambda _t: facing(thigh_px=35), 0.0, 1.5)
+    assert out["label"] == SITTING
+    _, out = run(ActivityTracker(), lambda _t: facing(thigh_px=85), 0.0, 1.5)
+    assert out["label"] == STANDING
+
+
+def test_reclined_on_a_bed_is_lying_on_the_bed():
+    bed = ("bed", (150.0, 150.0, 600.0, 400.0))
+    _, out = run(ActivityTracker(), lambda _t: facing(thigh_px=40, trunk_deg=55), 0.0, 1.5, objects=[bed])
+    assert out["label"] == LYING and out["detail"] == "bed"
+
+
+def test_balance_and_lift_skip_people_who_are_not_on_their_feet():
+    from types import SimpleNamespace
+
+    from activity.balance import BalanceTracker
+    from activity.object_rules import ObjectRules
+    from core.object_detector import ObjectDetection
+    from core.pipeline import SentinelPipeline
+
+    pose = SimpleNamespace(keypoints=person(), bbox=(250, 80, 350, 400), body_height=300.0)
+    b = BalanceTracker()
+    b.update({1: pose}, 1.0, {1: "Sitting"})
+    assert b.current == {}
+    b.update({1: pose}, 1.1, {1: "Standing"})
+    assert 1 in b.current
+    bent = SimpleNamespace(keypoints=person(trunk_deg=70, wrists="low"), bbox=(250, 80, 420, 400))
+    box = ObjectDetection("cardboard box", 0.9, (300.0, 300.0, 500.0, 420.0))
+    r = ObjectRules()
+    alerts = []
+    for i in range(10):
+        alerts += r.update({1: bent}, [box], i / 10, {1: "Sitting"})
+    assert alerts == []
+    assert SentinelPipeline.person_tag({"label": "Sitting", "detail": "chair"}, None) == "Sitting on chair"
+    assert SentinelPipeline.person_tag({"label": "Lying down", "detail": "bed"}, None) == "Lying on bed"
