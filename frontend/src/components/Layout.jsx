@@ -29,6 +29,13 @@ const NAV_BY_MODE = {
     { to: '/analytics', label: 'Analytics', title: 'Analytics', icon: ChartColumn },
     SETTINGS,
   ],
+  home: [
+    { to: '/', label: 'Live', title: 'Live', icon: Video, end: true, cameraDot: true },
+    { to: '/events', label: 'Events', title: 'Event Log', icon: ListVideo, badge: true },
+    { to: '/search', label: 'Search', title: 'Search', icon: Search },
+    { to: '/analytics', label: 'Analytics', title: 'Analytics', icon: ChartColumn },
+    SETTINGS,
+  ],
   exam: [
     { to: '/exam', label: 'Exam Hall', title: 'Exam Hall', icon: GraduationCap },
     SETTINGS,
@@ -166,7 +173,7 @@ const Layout = () => {
   const nav = NAV_BY_MODE[mode] || NAV_BY_MODE.warehouse;
   const match = (n) => (n.end || n.to === '/' ? pathname === n.to : pathname.startsWith(n.to));
   const found = nav.find(match) || EXTRA_TITLES.find(match) || null;
-  const current = found && found.to === '/' && mode === 'warehouse'
+  const current = found && found.to === '/' && (mode === 'warehouse' || mode === 'home')
     ? { ...found, title: demoFootage ? 'Live: demo footage' : 'Live: your webcam' }
     : found;
 

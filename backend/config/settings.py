@@ -180,11 +180,13 @@ DEFAULT_OBJECT_CLASSES = ["cardboard box", "chair", "couch", "ladder", "tv", "la
 DEFAULT_HAZARD_CLASSES = ["tv", "knife", "scissors", "oven", "laptop"]
 # Each mode detects and draws only its own list (posture: none).
 DEFAULT_EXAM_OBJECTS = ["cell phone", "book", "paper", "earbuds", "headphones"]
-OBJECT_MODES = ("warehouse", "exam", "posture")
+DEFAULT_HOME_OBJECTS = ["bed", "chair", "couch"]  # home care: what people sit or lie on, found automatically
+OBJECT_MODES = ("warehouse", "home", "exam", "posture")
 
 
 def default_mode_classes() -> dict[str, list[str]]:
-    return {"warehouse": list(DEFAULT_OBJECT_CLASSES), "exam": list(DEFAULT_EXAM_OBJECTS), "posture": []}
+    return {"warehouse": list(DEFAULT_OBJECT_CLASSES), "home": list(DEFAULT_HOME_OBJECTS),
+            "exam": list(DEFAULT_EXAM_OBJECTS), "posture": []}
 
 
 @dataclass
@@ -312,7 +314,7 @@ class SentinelConfig:
         if raw_classes:
             cfg.objects.classes = [c.strip() for c in raw_classes.split(",") if c.strip()]
         cfg.objects.mode_classes["warehouse"] = list(cfg.objects.classes)
-        for mode in ("exam", "posture"):
+        for mode in ("home", "exam", "posture"):
             raw = env(f"OBJECT_CLASSES_{mode.upper()}", str, None)
             if raw is not None:
                 cfg.objects.mode_classes[mode] = [c.strip() for c in raw.split(",") if c.strip()]

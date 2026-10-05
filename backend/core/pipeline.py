@@ -89,6 +89,11 @@ class FrameResult:
         # The JPEG is sent once, as the top-level "image" field of the WebSocket message.
         return to_serializable(data)
 
+# Modes that run the pose-based body-risk engine (falls, balance, transitions, lost-while-lying).
+BODY_MODES = ("warehouse", "home")
+HOME_SKIPPED = ("loitering", "ergo_risk")
+
+
 class SentinelPipeline:
     skeleton_only: bool = False  # set per instance in __init__; a default for partly built test pipelines
     SKELETON: ClassVar[list[tuple[int, int]]] = [
@@ -208,18 +213,23 @@ class SentinelPipeline:
         lap("pose")
 
         # 3. Analytics. The mode decides what runs: warehouse = falls, zones, loitering,
-        #    ergonomics; posture = the desk posture coach only (no alerts); exam = nothing yet.
+        #    ergonomics, object rules; home = the same body-risk engine (falls, balance, transitions,
+        #    lost-while-lying, activity on bed/chair/couch) without the warehouse-only rules;
+        #    posture = the desk posture coach only (no alerts); exam = seats and calibration.
         all_features = self.pose_estimator.get_all_features()
         posture = exam = None
         objects = self._detect_objects(frame)
-        if self.mode == "warehouse":
+        if self.mode in BODY_MODES:
             recovered = self._recover_fallen(frame, poses, all_features, timestamp)
             alerts = self.anomaly_engine.process(poses, all_features, timestamp, recovered=recovered)
+            if self.mode == "home":  # resting in bed isn't loitering; REBA is a workplace measure
+                alerts = [a for a in alerts if a.alert_type not in HOME_SKIPPED]
             if self.config.rules.builtins:  # the built-in rules replace these (no double alerts)
                 alerts = [a for a in alerts if a.alert_type not in ("fall", "zone_intrusion")]
             alerts += self._evaluate_rules(poses, all_features, detections, timestamp)
             labels = self._activity_labels()  # last smoothed labels: balance and lift only check standing people
-            alerts += self.object_rules.update(poses, objects, timestamp, labels)
+            if self.mode == "warehouse":  # lifting, standing on chairs, hazards: workplace rules
+                alerts += self.object_rules.update(poses, objects, timestamp, labels)
             alerts += self.balance.update(poses, timestamp, labels)
             alerts += self._update_lost(detections, labels, frame, objects, timestamp)
             timings["ergonomics"] = self.anomaly_engine.last_ergo_ms  # included in "analytics"
@@ -247,7 +257,7 @@ class SentinelPipeline:
         lap("analytics")
 
         # 4. Annotation (clips and snapshots use the annotated frame)
-        if self.mode == "warehouse":
+        if self.mode in BODY_MODES:
             annotated_frame = self._annotate_frame(frame.copy(), detections, poses, alerts, objects, timestamp)
             self._draw_person_tags(annotated_frame, detections, ergonomics, activity)
             self._draw_balance(annotated_frame, detections, self.balance.current)
@@ -311,8 +321,8 @@ class SentinelPipeline:
             view=view,
             exam=exam,
             objects=objects,
-            balance=dict(self.balance.current) if self.mode == "warehouse" else {},
-            lost=self.lost_tracks.snapshot(timestamp) if self.mode == "warehouse" else [],
+            balance=dict(self.balance.current) if self.mode in BODY_MODES else {},
+            lost=self.lost_tracks.snapshot(timestamp) if self.mode in BODY_MODES else [],
             posture=posture,
             mode=self.mode,
         )

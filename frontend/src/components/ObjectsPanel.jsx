@@ -5,6 +5,7 @@ import { chipClass, inputClass } from '../lib/ui';
 
 const MODE_TABS = [
   { id: 'warehouse', label: 'Warehouse' },
+  { id: 'home', label: 'Home care' },
   { id: 'exam', label: 'Exam Hall' },
   { id: 'posture', label: 'Desk posture' },
 ];

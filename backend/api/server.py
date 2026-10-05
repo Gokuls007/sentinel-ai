@@ -625,7 +625,7 @@ def get_event(event_id: int):
 
 # --- App settings: mode and demo footage ------------------------------------------------------
 
-APP_MODES = ("posture", "warehouse", "exam")
+APP_MODES = ("posture", "warehouse", "home", "exam")
 APP_DEFAULTS = {
     "mode": "warehouse",
     "demo_footage": False,
@@ -672,7 +672,7 @@ def _load_app_settings() -> dict:
     if isinstance(classes, list):  # before per-mode lists: one list, for warehouse
         classes = {"warehouse": classes}
     out["object_classes"] = ({m: [str(c) for c in v][:120] for m, v in classes.items()
-                              if m in ("warehouse", "exam", "posture") and isinstance(v, list)}
+                              if m in ("warehouse", "home", "exam", "posture") and isinstance(v, list)}
                              if isinstance(classes, dict) else None) or None
     out["show_all_objects"] = bool(out["show_all_objects"])
     hazards = out.get("hazard_classes")
@@ -943,7 +943,7 @@ class HazardsIn(BaseModel):
 
 class ObjectClassesIn(BaseModel):
     classes: list[str] = Field(..., max_length=120)  # empty: this mode detects no objects
-    mode: str = Field("warehouse", pattern=r"^(warehouse|exam|posture)$")
+    mode: str = Field("warehouse", pattern=r"^(warehouse|home|exam|posture)$")
 
     @field_validator("classes")
     @classmethod
@@ -952,7 +952,7 @@ class ObjectClassesIn(BaseModel):
 
 
 @app.get("/api/objects")
-def get_objects(mode: str = Query("warehouse", pattern=r"^(warehouse|exam|posture)$")):
+def get_objects(mode: str = Query("warehouse", pattern=r"^(warehouse|home|exam|posture)$")):
     """What a mode looks for besides people (each mode has its own list), and whether the
     detectors are running."""
     from config.settings import default_mode_classes
@@ -1116,13 +1116,13 @@ def _apply_privacy(settings: dict, pipelines: list | None = None) -> None:
 
 
 class AppSettingsIn(BaseModel):
-    mode: str | None = Field(None, pattern=r"^(posture|warehouse|exam)$")
+    mode: str | None = Field(None, pattern=r"^(posture|warehouse|home|exam)$")
     demo_footage: bool | None = None
 
 
 @app.get("/api/app")
 def get_app_settings():
-    """The app mode (posture | warehouse | exam) and whether the demo footage runs."""
+    """The app mode (posture | warehouse | home | exam) and whether the demo footage runs."""
     return _app_view(_load_app_settings())
 
 
