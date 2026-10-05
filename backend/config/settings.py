@@ -151,6 +151,65 @@ class RulesConfig:
     compile_rate_limit_per_min: int = 10
 
 
+# The 80 COCO classes except "person" (people come from the tracker, with stable ids), plus
+# warehouse extras. "couch" competes for sofas so they don't read as chairs.
+COCO_OBJECTS = [
+    "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard",
+    "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
+    "scissors", "teddy bear", "hair drier", "toothbrush",
+]
+WAREHOUSE_OBJECTS = ["pillow", "cardboard box", "ladder", "hard hat", "safety vest", "forklift"]
+# Everything both detectors know (Settings > "Show all objects", a debug view).
+ALL_OBJECT_CLASSES = COCO_OBJECTS + [c for c in WAREHOUSE_OBJECTS if c not in COCO_OBJECTS]
+# Warehouse default: safety-relevant classes only.
+DEFAULT_OBJECT_CLASSES = ["cardboard box", "chair", "couch", "ladder", "tv", "laptop", "knife", "scissors", "oven",
+                          "pillow", "bottle", "hard hat", "safety vest", "forklift"]
+DEFAULT_HAZARD_CLASSES = ["tv", "knife", "scissors", "oven", "laptop"]
+# Each mode detects and draws only its own list (posture: none).
+DEFAULT_EXAM_OBJECTS = ["cell phone", "book", "paper", "earbuds", "headphones"]
+OBJECT_MODES = ("warehouse", "exam", "posture")
+
+
+def default_mode_classes() -> dict[str, list[str]]:
+    return {"warehouse": list(DEFAULT_OBJECT_CLASSES), "exam": list(DEFAULT_EXAM_OBJECTS), "posture": []}
+
+
+@dataclass
+class ObjectsConfig:
+    """Objects in Warehouse mode, next to the person tracker and pose: COCO classes from a
+    COCO-trained detector, the rest (pillow, cardboard box...) from YOLO-World."""
+    enabled: bool = True
+    model_path: str = "yolov8s-worldv2.pt"  # YOLO-World, for the classes COCO doesn't have
+    coco_model_path: str = "yolo11m.pt"     # the 80 COCO classes (better on small handheld things)
+    classes: list[str] = field(default_factory=lambda: list(DEFAULT_OBJECT_CLASSES))  # = mode_classes["warehouse"]
+    mode_classes: dict[str, list[str]] = field(default_factory=default_mode_classes)
+    confidence: float = 0.3  # open-vocabulary scores run low; below ~0.3 a soft bag can read as a box
+    every_n_frames: int = 1  # run on every Nth frame (the last result is reused in between)
+    # Several prompts per class (YOLO-World is sensitive to wording); the best one wins per object.
+    synonyms: dict[str, list[str]] = field(default_factory=lambda: {
+        "chair": ["chair", "office chair", "gaming chair", "wooden chair"],
+        "cardboard box": ["cardboard box", "shipping box", "carton"],
+        "couch": ["couch", "sofa"],
+        "paper": ["paper", "sheet of paper", "notes"],
+        "earbuds": ["earbuds", "earphones", "wireless earbuds"],
+        "headphones": ["headphones", "headset"],
+    })
+    # Per-class confidence floors (others use ``confidence``); set from the smoke test.
+    floors: dict[str, float] = field(default_factory=lambda: {"chair": 0.25, "cardboard box": 0.25})
+    vote_window: int = 15  # frames: the class shown is the one given most often over this window
+    min_hits: int = 3      # sightings before an object is shown (drops one-frame false hits)
+    # Touching one of these (a wrist inside its box) alerts: "Hand on knife (hazard)".
+    hazards: list[str] = field(default_factory=lambda: list(DEFAULT_HAZARD_CLASSES))
+    imgsz: int = 640
+    cache_dir: str = "data/cache"  # encoded class names (CLIP runs only when the list changes)
+
+
 @dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
@@ -173,6 +232,7 @@ class SentinelConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     rules: RulesConfig = field(default_factory=RulesConfig)
+    objects: ObjectsConfig = field(default_factory=ObjectsConfig)
     
     source: str = "0"
     camera_id: str = "cam-0"  # recorded on every event; one pipeline = one camera
@@ -224,6 +284,29 @@ class SentinelConfig:
         cfg.detector.confidence_threshold = env("DETECTION_CONFIDENCE", float,
                                                 cfg.detector.confidence_threshold)
         cfg.detector.iou_threshold = env("IOU_THRESHOLD", float, cfg.detector.iou_threshold)
+        cfg.objects.enabled = env("OBJECTS_ENABLED", bool, cfg.objects.enabled)
+        cfg.objects.model_path = env("OBJECT_MODEL", str, cfg.objects.model_path)
+        cfg.objects.coco_model_path = env("OBJECT_COCO_MODEL", str, cfg.objects.coco_model_path)
+        cfg.objects.confidence = env("OBJECT_CONFIDENCE", float, cfg.objects.confidence)
+        cfg.objects.every_n_frames = max(1, env("OBJECT_EVERY_N_FRAMES", int, cfg.objects.every_n_frames))
+        raw_syn = env("OBJECT_SYNONYMS", str, "")  # JSON, e.g. {"chair": ["chair", "stool"]}
+        if raw_syn:
+            cfg.objects.synonyms = {str(k): [str(x) for x in v] for k, v in json.loads(raw_syn).items()}
+        raw_floors = env("OBJECT_FLOORS", str, "")  # e.g. chair=0.25,cardboard box=0.25
+        if raw_floors:
+            cfg.objects.floors = {k.strip(): float(v) for k, v in
+                                  (pair.split("=", 1) for pair in raw_floors.split(",") if "=" in pair)}
+        raw_hazards = env("HAZARD_CLASSES", str, "")
+        if raw_hazards:
+            cfg.objects.hazards = [c.strip() for c in raw_hazards.split(",") if c.strip()]
+        raw_classes = env("OBJECT_CLASSES", str, "")
+        if raw_classes:
+            cfg.objects.classes = [c.strip() for c in raw_classes.split(",") if c.strip()]
+        cfg.objects.mode_classes["warehouse"] = list(cfg.objects.classes)
+        for mode in ("exam", "posture"):
+            raw = env(f"OBJECT_CLASSES_{mode.upper()}", str, None)
+            if raw is not None:
+                cfg.objects.mode_classes[mode] = [c.strip() for c in raw.split(",") if c.strip()]
         if env("FORCE_CPU", bool, False):
             cfg.detector.device = "cpu"
 

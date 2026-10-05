@@ -160,7 +160,14 @@ const CameraFeed = ({ cam }) => {
           <ErgonomicsPanel connected={status === 'live'} ergonomics={frameData ? frameData.ergonomics : null} />
         </div>
       )}
-      <ZoneEditor camera={LAPTOP} frame={frame} onDrawingChange={setDrawing} />
+      <details className="border border-white/10 bg-black/30 open:pb-2" open={drawing || undefined}>
+        <summary className="cursor-pointer px-3 py-2 text-[11px] mono uppercase text-white/60 hover:text-white/80">
+          Optional: zones (restricted areas, time limits, one-way lanes)
+        </summary>
+        <div className="px-2 pt-2">
+          <ZoneEditor camera={LAPTOP} frame={frame} onDrawingChange={setDrawing} />
+        </div>
+      </details>
     </div>
   );
 };

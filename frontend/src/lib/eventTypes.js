@@ -1,6 +1,10 @@
 // Human labels for backend event types; unknown types fall back to "snake case" -> words.
 const TYPE_LABELS = {
   ergo_risk: 'Ergonomic risk',
+  unsafe_lift: 'Unsafe lift',
+  standing_on_chair: 'Standing on chair',
+  hazard_contact: 'Hand on hazard',
+  losing_balance: 'Losing balance',
   fall: 'Confirmed fall',
   possible_fall: 'Possible fall',
 };

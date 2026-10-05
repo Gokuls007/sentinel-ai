@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
-  Shield, Video, ListVideo, Search, ScrollText, ChartColumn, Settings, PersonStanding, GraduationCap,
+  Shield, Video, ListVideo, Search, ScrollText, ChartColumn, Settings, PersonStanding, GraduationCap, Volume2, VolumeX,
 } from 'lucide-react';
 import { MODES, useAppMode } from '../context/appMode';
 import StatusBadge from './StatusBadge';
@@ -12,6 +12,7 @@ import { useFeed } from '../context/liveFeed';
 import { loadStored, saveStored, usePoll } from '../lib/api';
 import { stopLaptopCamera } from '../lib/laptopCamera';
 import { isTestAlert } from '../lib/eventTypes';
+import { useVoiceAlerts } from '../lib/voice';
 
 const SETTINGS = { to: '/settings', label: 'Settings', title: 'Settings', icon: Settings };
 // Each mode shows only its own pages.
@@ -161,6 +162,7 @@ const Layout = () => {
   const { data: cams } = usePoll(`/api/cameras?r=${camReload}`, 3000, connected);
   const cameraOn = Array.isArray(cams) && cams.some((c) => c.id === 'laptop' && ['running', 'starting'].includes(c.status));
   const { mode, demoFootage } = useAppMode();
+  const voice = useVoiceAlerts();
   const nav = NAV_BY_MODE[mode] || NAV_BY_MODE.warehouse;
   const match = (n) => (n.end || n.to === '/' ? pathname === n.to : pathname.startsWith(n.to));
   const found = nav.find(match) || EXTRA_TITLES.find(match) || null;
@@ -190,6 +192,14 @@ const Layout = () => {
                   setCamReload((n) => n + 1);
                 }} />
               </span>
+            )}
+            {voice.supported && (
+              <button type="button" onClick={() => voice.setMuted(!voice.muted)} aria-pressed={!voice.muted}
+                title={voice.muted ? 'Voice warnings off: click to speak alerts aloud' : 'Voice warnings on: click to mute'}
+                className={`flex items-center gap-1.5 px-2 py-1 border text-[10px] mono uppercase ${voice.muted ? 'border-white/20 text-white/50' : 'border-cyan-400/50 text-cyan-300'}`}>
+                {voice.muted ? <VolumeX className="w-3.5 h-3.5" aria-hidden="true" /> : <Volume2 className="w-3.5 h-3.5" aria-hidden="true" />}
+                {voice.muted ? 'Voice off' : 'Voice on'}
+              </button>
             )}
             <ModeSwitcher />
             <StatusBadge />

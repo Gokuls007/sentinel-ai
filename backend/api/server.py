@@ -90,6 +90,7 @@ def start_pipeline(cfg: SentinelConfig) -> SentinelPipeline:
     _attach(pipeline, primary=True)
     _apply_app_settings(pipeline, _load_app_settings())
     _exam_attach(pipeline)
+    _apply_object_classes(pipeline, _load_app_settings())
     _start_retention()
     thread = threading.Thread(target=pipeline.run, daemon=True, name="sentinel-pipeline")
     thread.start()
@@ -299,6 +300,7 @@ def _run_camera(camera_id: str, cfg: SentinelConfig, mode: str | None = None) ->
         p = SentinelPipeline(cfg)  # loads the models: a few seconds
         p.skeleton_only = _load_app_settings()["skeleton_only"]
         _exam_attach(p)
+        _apply_object_classes(p, _load_app_settings())
         if camera_id == TEST_CAMERA:
             p.event_bus.unsubscribe("store")  # test footage never enters the event history or analytics
             p.save_clips = False  # ... and never writes clips or snapshots
@@ -632,6 +634,9 @@ APP_DEFAULTS = {
     "retention_days": 30,
     "privacy_seen": False,
     "skeleton_only": False,  # never store video or images: events keep keypoints only
+    "object_classes": None,  # {mode: [classes]} overrides; None = OBJECT_CLASSES* / the defaults
+    "hazard_classes": None,  # objects whose touch alerts; None = HAZARD_CLASSES / the defaults
+    "show_all_objects": False,  # debug: warehouse detects all 85 classes instead of its list
 }
 RETENTION_MAX_DAYS = 3650
 
@@ -663,6 +668,15 @@ def _load_app_settings() -> dict:
         out["retention_days"] = APP_DEFAULTS["retention_days"]
     out["privacy_seen"] = bool(out["privacy_seen"])
     out["skeleton_only"] = bool(out["skeleton_only"])
+    classes = out.get("object_classes")
+    if isinstance(classes, list):  # before per-mode lists: one list, for warehouse
+        classes = {"warehouse": classes}
+    out["object_classes"] = ({m: [str(c) for c in v][:120] for m, v in classes.items()
+                              if m in ("warehouse", "exam", "posture") and isinstance(v, list)}
+                             if isinstance(classes, dict) else None) or None
+    out["show_all_objects"] = bool(out["show_all_objects"])
+    hazards = out.get("hazard_classes")
+    out["hazard_classes"] = [str(c) for c in hazards][:120] if isinstance(hazards, list) else None
     return out
 
 
@@ -876,6 +890,122 @@ def exam_end(session_id: int, request: Request):
     _exam_store().update_session(session_id, status="ended", ended_at=time.time())
     _exam_reload(s["camera_id"])
     return _exam_json(_exam_session_or_404(session_id))
+
+
+# --- Warehouse objects (YOLO-World) -----------------------------------------------------------
+
+def _mode_classes(settings: dict | None = None) -> dict[str, list[str]]:
+    """Each mode's object list: the config's (OBJECT_CLASSES*), overridden by Settings."""
+    from config.settings import default_mode_classes
+
+    base = {m: list(v) for m, v in (config.objects.mode_classes if config else default_mode_classes()).items()}
+    saved = (settings or _load_app_settings()).get("object_classes") or {}
+    return {**base, **saved}
+
+
+def _apply_object_classes(p, settings: dict) -> None:
+    if hasattr(p, "mode_classes"):
+        p.mode_classes = _mode_classes(settings)  # the detector switches lists on the next frame
+        p.show_all_objects = bool(settings.get("show_all_objects"))
+    rules = getattr(p, "object_rules", None)
+    if rules is not None and settings.get("hazard_classes") is not None:
+        rules.hazard_classes = list(settings["hazard_classes"])
+
+
+def _hazards() -> list[str]:
+    from config.settings import DEFAULT_HAZARD_CLASSES
+
+    saved = _load_app_settings()["hazard_classes"]
+    if saved is not None:
+        return saved
+    return config.objects.hazards if config else list(DEFAULT_HAZARD_CLASSES)
+
+
+def _clean_names(names: list[str]) -> list[str]:
+    out = []
+    for c in names:
+        c = " ".join(c.split()).lower()
+        if not c or len(c) > 40 or not all(ch.isalnum() or ch in " -'" for ch in c):
+            raise ValueError(f"not a class name: {c!r} (letters, digits, spaces, - and ')")
+        if c not in out:
+            out.append(c)
+    return out
+
+
+class HazardsIn(BaseModel):
+    hazards: list[str] = Field(..., max_length=120)
+
+    @field_validator("hazards")
+    @classmethod
+    def _clean(cls, hazards):
+        return _clean_names(hazards)
+
+
+class ObjectClassesIn(BaseModel):
+    classes: list[str] = Field(..., max_length=120)  # empty: this mode detects no objects
+    mode: str = Field("warehouse", pattern=r"^(warehouse|exam|posture)$")
+
+    @field_validator("classes")
+    @classmethod
+    def _clean(cls, classes):
+        return _clean_names(classes)
+
+
+@app.get("/api/objects")
+def get_objects(mode: str = Query("warehouse", pattern=r"^(warehouse|exam|posture)$")):
+    """What a mode looks for besides people (each mode has its own list), and whether the
+    detectors are running."""
+    from config.settings import default_mode_classes
+
+    o = config.objects if config else None
+    det = getattr(pipeline, "object_detector", None) if pipeline else None
+    lists = _mode_classes()
+    return {"enabled": bool(o and o.enabled), "mode": mode, "classes": lists.get(mode, []), "modes": lists,
+            "show_all": _load_app_settings()["show_all_objects"],
+            "defaults": default_mode_classes().get(mode, []),
+            "confidence": o.confidence if o else None, "model": o.model_path if o else None,
+            "synonyms": o.synonyms if o else {}, "floors": o.floors if o else {}, "hazards": _hazards(),
+            "error": det.error if det else None}
+
+
+@app.put("/api/objects")
+def put_objects(body: ObjectClassesIn, request: Request):
+    """Change the class list. Re-encoding new names takes a few seconds once (then cached)."""
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "object classes")
+    s = _load_app_settings()
+    s["object_classes"] = {**(s.get("object_classes") or {}), body.mode: body.classes}
+    _save_app_settings(s)
+    for p in _all_pipelines():
+        _apply_object_classes(p, s)
+    return get_objects(body.mode)
+
+
+class ShowAllIn(BaseModel):
+    on: bool
+
+
+@app.put("/api/objects/show-all")
+def put_show_all(body: ShowAllIn, request: Request):
+    """Debug: warehouse detects every class both detectors know (85) instead of its list."""
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "object classes")
+    s = _load_app_settings()
+    s["show_all_objects"] = body.on
+    _save_app_settings(s)
+    for p in _all_pipelines():
+        _apply_object_classes(p, s)
+    return get_objects("warehouse")
+
+
+@app.put("/api/objects/hazards")
+def put_hazards(body: HazardsIn, request: Request):
+    """Which detected objects count as hazards (touching one alerts)."""
+    _check_local_json(request, bool(config and config.allow_remote_camera_control), "object classes")
+    s = _load_app_settings()
+    s["hazard_classes"] = body.hazards
+    _save_app_settings(s)
+    for p in _all_pipelines():
+        _apply_object_classes(p, s)
+    return get_objects("warehouse")
 
 
 # --- Privacy: retention ------------------------------------------------------------------

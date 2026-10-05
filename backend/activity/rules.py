@@ -51,7 +51,18 @@ L_HIP, R_HIP, L_KNEE, R_KNEE, L_ANK, R_ANK = 11, 12, 13, 14, 15, 16
 STANDING, WALKING, SITTING, BENDING = "Standing", "Walking", "Sitting", "Bending"
 LIFTING, CARRYING, REACHING, LYING, FALLEN = "Lifting", "Carrying", "Reaching overhead", "Lying down", "Fallen"
 UPPER_ONLY = "Upper body only"
-CARRY_CLASSES = ("backpack", "handbag", "suitcase")
+CARRY_CLASSES = ("backpack", "handbag", "suitcase", "cardboard box")  # COCO, plus YOLO-World's box
+# Detected objects nobody carries around: touching them isn't "Carrying".
+NOT_CARRIED = frozenset({
+    "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light", "fire hydrant",
+    "stop sign", "parking meter", "bench", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe",
+    "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "microwave", "oven", "toaster",
+    "sink", "refrigerator", "forklift", "ladder",
+})
+
+
+def carryable(name: str) -> bool:
+    return name not in NOT_CARRIED
 
 
 @dataclass
@@ -227,16 +238,19 @@ class ActivityTracker:
                                      or (parts["knees"] and hip_drop >= c.sit_drop)):
             return SITTING, None, "high"
         walking = (speed >= c.walk_speed or approach >= c.approach_rate) and (parts["knees"] or parts["ankles"])
+        # A carryable object at one of the hands, e.g. "Carrying pillow".
+        in_hand = next((name for name, (x1, y1, x2, y2) in (objects or [])
+                        if carryable(name) and any(x1 - 0.1 * bh <= w[0] <= x2 + 0.1 * bh
+                                                   and y1 - 0.1 * bh <= w[1] <= y2 + 0.1 * bh for w in wrists)), None)
         if st.carrying and trunk <= c.upright_deg:
-            return CARRYING, None, "high"
+            return CARRYING, in_hand, "high"
 
+        if wrists and trunk <= c.upright_deg:
+            at_body = any(sh[1] - 0.05 * bh <= w[1] <= hip[1] + 0.25 * bh for w in wrists)
+            if in_hand and at_body:
+                return CARRYING, in_hand, "high"
         if wrists and len(wrists) == 2 and trunk <= c.upright_deg:
             between = all(sh[1] - 0.05 * bh <= w[1] <= hip[1] + 0.1 * bh for w in wrists)
-            held = [name for name, (x1, y1, x2, y2) in (objects or [])
-                    if name in CARRY_CLASSES and any(x1 - 0.1 * bh <= w[0] <= x2 + 0.1 * bh
-                                                     and y1 - 0.1 * bh <= w[1] <= y2 + 0.1 * bh for w in wrists)]
-            if between and held:
-                return CARRYING, held[0], "high"
             together = math.hypot(*(wrists[0] - wrists[1])) <= 0.3 * bh
             raised = all(w[1] <= hip[1] - 0.1 * bh for w in wrists)  # hanging arms (side view) overlap too
             if between and together and raised and walking and speed >= c.carry_walk_speed:

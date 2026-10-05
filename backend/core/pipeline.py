@@ -10,9 +10,12 @@ import cv2
 import numpy as np
 
 from activity import CARRY_CLASSES, ActivityTracker, ViewCheck
+from activity.balance import BalanceTracker
+from activity.object_rules import ObjectRules
 from anomaly.engine import AnomalyAlert, AnomalyEngine
 from anomaly.fall_recovery import recover_pose
-from config.settings import SentinelConfig
+from config.settings import ALL_OBJECT_CLASSES, COCO_OBJECTS, SentinelConfig
+from core.object_detector import ObjectDetector
 from events import Event, EventBus, EventStore
 from exam import ExamMonitor
 from notifications import NotificationDispatcher, build_notifiers
@@ -53,6 +56,8 @@ class FrameResult:
     view: dict = field(default_factory=dict)  # the camera-view check (upper body only?)
     posture: dict | None = None  # desk posture coach snapshot (posture mode)
     exam: dict | None = None  # Exam Hall: seats, setup check, calibration (exam mode)
+    objects: list = field(default_factory=list)  # open-vocabulary objects (warehouse mode)
+    balance: dict = field(default_factory=dict)  # track id -> balance risk, centre of mass, base (warehouse)
     mode: str = "warehouse"
 
     def to_dict(self) -> dict:
@@ -74,6 +79,8 @@ class FrameResult:
             "view": self.view,
             "posture": self.posture,
             "exam": self.exam,
+            "objects": [o.to_dict() for o in self.objects],
+            "balance": {str(k): v for k, v in self.balance.items()},
             "mode": self.mode,
         }
         # The JPEG is sent once, as the top-level "image" field of the WebSocket message.
@@ -134,6 +141,19 @@ class SentinelPipeline:
             fps=config.target_fps
         )
         self.skeleton_recorder = SkeletonRecorder(config.output.clips_dir)
+        o = config.objects
+        self.mode_classes = {m: list(v) for m, v in o.mode_classes.items()}  # each mode: its own objects
+        self.show_all_objects = False  # Settings debug toggle: warehouse uses every class both detectors know
+        self.object_detector = (ObjectDetector(self.mode_classes.get("warehouse", o.classes), o.model_path,
+                                               o.coco_model_path, COCO_OBJECTS,
+                                               confidence=o.confidence, imgsz=o.imgsz, device=config.detector.device,
+                                               cache_dir=o.cache_dir, every_n_frames=o.every_n_frames,
+                                               synonyms=o.synonyms, floors=o.floors, vote_window=o.vote_window,
+                                               min_hits=o.min_hits)
+                                if o.enabled else None)
+        self._alert_labels: dict = {}  # track id -> (reason text, show until), drawn next to the person
+        self.object_rules = ObjectRules(hazard_classes=o.hazards)  # unsafe lift, on a chair, hand on a hazard
+        self.balance = BalanceTracker()  # centre of mass vs base of support: "Losing balance"
         self.event_store = EventStore(config.output.db_path)
         self.rule_store = RuleStore(config.output.db_path)
         self.reload_rules()
@@ -192,16 +212,19 @@ class SentinelPipeline:
         #    ergonomics; posture = the desk posture coach only (no alerts); exam = nothing yet.
         all_features = self.pose_estimator.get_all_features()
         posture = exam = None
+        objects = self._detect_objects(frame)
         if self.mode == "warehouse":
             recovered = self._recover_fallen(frame, poses, all_features, timestamp)
             alerts = self.anomaly_engine.process(poses, all_features, timestamp, recovered=recovered)
             if self.config.rules.builtins:  # the built-in rules replace these (no double alerts)
                 alerts = [a for a in alerts if a.alert_type not in ("fall", "zone_intrusion")]
             alerts += self._evaluate_rules(poses, all_features, detections, timestamp)
+            alerts += self.object_rules.update(poses, objects, timestamp)
+            alerts += self.balance.update(poses, timestamp)
             timings["ergonomics"] = self.anomaly_engine.last_ergo_ms  # included in "analytics"
             ergonomics = self.anomaly_engine.ergonomics_snapshot
             self._persist_ergo_time(timestamp)
-            activity, view = self._activity(poses, detections, timestamp), self.view_check.snapshot()
+            activity, view = self._activity(poses, detections, timestamp, objects), self.view_check.snapshot()
         else:
             alerts, ergonomics = [], {}
             activity, view = {}, {}
@@ -224,8 +247,9 @@ class SentinelPipeline:
 
         # 4. Annotation (clips and snapshots use the annotated frame)
         if self.mode == "warehouse":
-            annotated_frame = self._annotate_frame(frame.copy(), detections, poses, alerts)
+            annotated_frame = self._annotate_frame(frame.copy(), detections, poses, alerts, objects, timestamp)
             self._draw_person_tags(annotated_frame, detections, ergonomics, activity)
+            self._draw_balance(annotated_frame, detections, self.balance.current)
         else:
             annotated_frame = frame.copy()
             shown = ([poses[self._posture_id]] if self.mode == "posture" and self._posture_id in poses
@@ -234,6 +258,9 @@ class SentinelPipeline:
                 self._draw_skeleton(annotated_frame, pose)
             if self.mode == "posture":
                 self._draw_ghost(annotated_frame, self.posture.ghost())
+            if getattr(self, "mode_classes", {}).get(self.mode):  # this mode looks for objects: draw them
+                self._draw_objects(annotated_frame, objects)
+                self._draw_status(annotated_frame, self.objects_status(objects))
         lap("annotate")
 
         # 5. Events: clip + snapshot, then publish (store -> notifications -> WebSocket)
@@ -281,6 +308,8 @@ class SentinelPipeline:
             activity=activity,
             view=view,
             exam=exam,
+            objects=objects,
+            balance=dict(self.balance.current) if self.mode == "warehouse" else {},
             posture=posture,
             mode=self.mode,
         )
@@ -378,10 +407,84 @@ class SentinelPipeline:
                 out[tid] = pose
         return out
 
-    def _annotate_frame(self, frame, detections, poses, alerts) -> np.ndarray:
-        # 1. Draw Zone Overlays
-        zones = self.anomaly_engine.zone_overlay_data
-        for zone in zones:
+    OBJECT_COLORS: ClassVar[dict[str, tuple[int, int, int]]] = {  # BGR
+        "cardboard box": (60, 140, 220), "chair": (200, 160, 60), "ladder": (40, 200, 240),
+        "backpack": (180, 90, 200), "hard hat": (0, 215, 255), "safety vest": (0, 240, 160),
+        "forklift": (50, 110, 255), "couch": (150, 150, 150),
+    }
+    ALERT_LABEL_S = 4.0  # how long a rule's reason stays next to the person
+
+    @classmethod
+    def object_color(cls, name: str) -> tuple[int, int, int]:
+        if name in cls.OBJECT_COLORS:
+            return cls.OBJECT_COLORS[name]
+        h = sum(ord(c) * (i + 1) for i, c in enumerate(name))  # stable colour for custom classes
+        return (60 + h % 180, 60 + (h // 7) % 180, 60 + (h // 49) % 180)
+
+    def _draw_objects(self, frame, objects) -> None:
+        for o in objects:
+            x1, y1, x2, y2 = (int(v) for v in o.bbox)
+            c = self.object_color(o.class_name)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), c, 2)
+            text = f"{o.class_name} {o.confidence:.2f}"
+            (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            top = max(0, y1 - h - 6)
+            cv2.rectangle(frame, (x1, top), (x1 + w + 6, top + h + 6), c, -1)
+            cv2.putText(frame, text, (x1 + 3, top + h + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 1)
+
+    def _draw_alert_reasons(self, frame, detections, alerts, ts) -> set:
+        """Each alert's rule name and reason (with the measured values) under its person's box,
+        for a few seconds. Returns the track ids that have one showing."""
+        for a in alerts:
+            tid = getattr(a, "track_id", None)
+            if tid is not None:
+                self._alert_labels[tid] = (a.message, ts + self.ALERT_LABEL_S)
+        self._alert_labels = {k: v for k, v in self._alert_labels.items() if v[1] >= ts}
+        boxes = {d.track_id: d.bbox for d in detections.detections if d.track_id is not None}
+        for tid, (text, _until) in self._alert_labels.items():
+            if tid not in boxes:
+                continue
+            x1, _y1, _x2, y2 = (int(v) for v in boxes[tid])
+            for i, line in enumerate(_wrap(text, 48)[:3]):
+                (w, h), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                top = min(frame.shape[0] - h - 6, y2 + 4 + i * (h + 8))
+                cv2.rectangle(frame, (x1, top), (x1 + w + 8, top + h + 6), (0, 0, 200), -1)
+                cv2.putText(frame, line, (x1 + 4, top + h + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        return set(self._alert_labels)
+
+    def _detect_objects(self, frame) -> list:
+        """This mode's objects only (its own class list; none in a mode without one)."""
+        det = getattr(self, "object_detector", None)
+        wanted = getattr(self, "mode_classes", {}).get(self.mode, [])
+        if self.mode == "warehouse" and getattr(self, "show_all_objects", False):
+            wanted = ALL_OBJECT_CLASSES
+        if det is None or not wanted:
+            return []
+        if det.classes != wanted:
+            det.set_classes(wanted)  # switching modes: instant (YOLO-World prompts are cached)
+        return det.detect(frame)
+
+    def objects_status(self, objects) -> str:
+        """One line for the feed: is open-vocabulary detection running, and what it sees."""
+        det = self.object_detector
+        if det is None:
+            return "Objects: off (OBJECTS_ENABLED=false)"
+        if det.error:
+            return f"Objects off: {det.error.removeprefix('objects off: ')}"
+        partial = " · " + "; ".join(getattr(det, "errors", [])) if getattr(det, "errors", None) else ""
+        if not objects:
+            return "Objects: 0 detected" + partial
+        names = sorted({o.class_name for o in objects})
+        return f"Objects: {len(objects)} detected ({', '.join(names)})" + partial
+
+    def _draw_status(self, frame, text: str) -> None:
+        (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        cv2.rectangle(frame, (8, 8), (8 + w + 10, 8 + h + 10), (20, 20, 20), -1)
+        cv2.putText(frame, text, (13, 8 + h + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1)
+
+    def _annotate_frame(self, frame, detections, poses, alerts, objects=(), ts: float = 0.0) -> np.ndarray:
+        # 1. Zones: every active zone (any of them can alert), none when there are none
+        for zone in self.anomaly_engine.zone_overlay_data:
             poly = np.array(zone["polygon"])
             overlay = frame.copy()
             
@@ -399,8 +502,10 @@ class SentinelPipeline:
             cv2.putText(frame, zone["name"], (poly[0][0], poly[0][1] - 10), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-        # 2. Draw Detections & Skeletons
-        alerted_track_ids = [getattr(a, 'track_id', -1) for a in alerts]
+        # 2. Objects, then people (red while a rule's reason is showing for them)
+        self._draw_objects(frame, objects)
+        alerted_track_ids = self._draw_alert_reasons(frame, detections, alerts, ts)
+        self._draw_status(frame, self.objects_status(objects))
         
         for det in detections.detections:
             tid = det.track_id
@@ -418,33 +523,18 @@ class SentinelPipeline:
             if tid in poses:
                 self._draw_skeleton(frame, poses[tid])
 
-        # 3. Draw Alert Banners (Top of frame)
-        severity_colors = {
-            "critical": (0, 0, 255),  # Red
-            "high": (0, 69, 255),     # Orange-Red
-            "medium": (0, 165, 255),  # Orange
-            "low": (0, 255, 255)      # Yellow
-        }
-        
-        for i, alert in enumerate(alerts[:3]): # Max 3 banners
-            color = severity_colors.get(alert.severity, (255, 255, 255))
-            # Background bar
-            cv2.rectangle(frame, (10, 10 + i * 40), (450, 45 + i * 40), color, -1)
-            # Text
-            cv2.putText(frame, f"ALERT: {alert.message}", (15, 35 + i * 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
         return frame
 
     ERGO_COLORS: ClassVar[dict[int, tuple[int, int, int]]] = {
         1: (80, 200, 80), 2: (80, 200, 80), 3: (0, 215, 255), 4: (0, 140, 255), 5: (0, 0, 230),
     }  # BGR: negligible/low green, medium yellow, high orange, very high red
 
-    def _activity(self, poses, detections, timestamp: float) -> dict:
+    def _activity(self, poses, detections, timestamp: float, found: list | None = None) -> dict:
         """Live activity per tracked person, and the scene view check."""
         fd = self.anomaly_engine.fall_detector
         objects = [(d.class_name, tuple(float(v) for v in d.bbox)) for d in detections.detections
                    if d.class_name in CARRY_CLASSES]
+        objects += [(o.class_name, o.bbox) for o in found or []]  # the activity rules decide what's carryable
         self.view_check.update({tid: p.keypoints for tid, p in poses.items()}, timestamp)
         self.activity.prune(poses.keys())
         return {tid: self.activity.update(tid, p.keypoints, timestamp, float(p.body_height),
@@ -454,7 +544,10 @@ class SentinelPipeline:
     @staticmethod
     def person_tag(act: dict | None, info: dict | None) -> str:
         """e.g. "Bending · REBA 9 HIGH · back" (REBA only when it can be trusted)."""
-        parts = [act["label"]] if act else []
+        label = act["label"] if act else None
+        if label == "Carrying" and act.get("detail"):
+            label = f"Carrying {act['detail']}"
+        parts = [label] if label else []
         if info and info.get("score") is not None and info.get("reliable"):
             parts.append(f"REBA {info['score']} {info['level_name'].replace('_', ' ').upper()}")
             if info.get("dominant"):
@@ -465,16 +558,45 @@ class SentinelPipeline:
         """A tag above each person: what they're doing, plus REBA when it can be trusted."""
         for det in detections.detections:
             info, act = ergonomics.get(det.track_id), activity.get(det.track_id)
-            text = self.person_tag(act, info)
+            text = self.person_tag(act, info).replace(" · ", " | ")  # OpenCV's font has no "·"
             if not text:
                 continue
             x1, y1 = int(det.bbox[0]), int(det.bbox[1])
             reliable = bool(info and info.get("reliable") and info.get("level"))
             color = self.ERGO_COLORS.get(info["level"], (160, 160, 160)) if reliable else (200, 200, 200)
             (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-            top = max(0, y1 - 24 - h)
+            top = max(0, y1 - 32 - h)  # above the balance bar
             cv2.rectangle(frame, (x1, top), (x1 + w + 8, top + h + 8), color, -1)
             cv2.putText(frame, text, (x1 + 4, top + h + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 1)
+
+    @staticmethod
+    def balance_color(risk: float) -> tuple[int, int, int]:
+        """BGR from green (steady) through yellow to red (losing balance)."""
+        r = max(0.0, min(1.0, risk))
+        return (40, int(200 * (1 - r) + 40 * r), int(60 + 195 * min(1.0, 2 * r)))
+
+    def _draw_balance(self, frame: np.ndarray, detections, balance: dict) -> None:
+        """A risk bar above each person (fills as the balance margin shrinks), the centre of mass
+        as a dot and the base of support as a line at the ankles."""
+        boxes = {d.track_id: d.bbox for d in detections.detections if d.track_id is not None}
+        for tid, b in balance.items():
+            if tid not in boxes:
+                continue
+            x1, y1, x2, _y2 = (int(v) for v in boxes[tid])
+            risk = b.get("risk", b.get("raw_risk", 0.0))
+            color = self.balance_color(risk)
+            w = max(60, x2 - x1)
+            top = max(0, y1 - 10)
+            cv2.rectangle(frame, (x1, top), (x1 + w, top + 6), (60, 60, 60), -1)
+            cv2.rectangle(frame, (x1, top), (x1 + int(w * risk), top + 6), color, -1)
+            cv2.putText(frame, f"balance risk {risk:.0%}", (x1 + w + 4, top + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                        color, 1)
+            cx, cy = (int(v) for v in b["com"])
+            left, right = (int(v) for v in b["base"])
+            cv2.circle(frame, (cx, cy), 5, color, -1)
+            foot_y = int(_y2) - 4
+            cv2.line(frame, (left, foot_y), (right, foot_y), color, 3)
+            cv2.line(frame, (cx, cy), (cx, foot_y), color, 1)
 
     def _persist_ergo_time(self, timestamp: float, every_s: float = 10.0) -> None:
         """Flush accumulated time at risk to the store every ``every_s`` (and at stop)."""
@@ -600,3 +722,14 @@ class SentinelPipeline:
             "active_tracks": len(self.pose_estimator.get_all_features()),
             "notifications": dict(self.notifier.stats),
         }
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    lines, line = [], ""
+    for word in text.split():
+        if line and len(line) + 1 + len(word) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = f"{line} {word}".strip()
+    return [*lines, line] if line else lines
