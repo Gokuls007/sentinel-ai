@@ -132,3 +132,55 @@ def test_prune_forgets_missing_tracks():
     det.check(2, make_pose(track_id=2), make_features(track_id=2), 0.0)
     det.prune({2})
     assert set(det.tracks) == {2}
+
+
+# --- seated close to a webcam (own recording, 2026-10-06) ------------------------------
+
+
+def webcam_closeup(hips_visible=True, hip_y=700.0, ankle_y=None):
+    """Upper body filling the right half of a 1280x720 webcam frame, cut by the bottom edge."""
+    import numpy as np
+
+    from core.pose_estimator import PoseResult
+
+    kp = np.zeros((17, 3), np.float32)
+    kp[0] = (1000, 200, 0.9)
+    kp[5], kp[6] = (920, 420, 0.9), (1120, 420, 0.9)
+    if hips_visible:
+        kp[11], kp[12] = (1180, hip_y, 0.4), (990, hip_y, 0.4)
+    if ankle_y is not None:  # a guessed "ankle" at hip height
+        kp[16] = (834, ankle_y, 0.35)
+    return PoseResult(track_id=1, keypoints=kp, bbox=np.array([777, 95, 1279, 711], np.float32))
+
+
+def test_hips_flickering_in_and_out_of_view_is_not_a_fall():
+    det = FallDetector()
+    det.frame_size = (1280, 720)
+    feat = make_features(standing_height=897.0)  # the torso-estimated height seen on that recording
+    t = 0.0
+    for i in range(60):  # hips visible, then the box centre, then visible again...
+        assert det.check(1, webcam_closeup(hips_visible=i % 3 != 0), feat, t) is None
+        t += 0.067
+    assert det.state_of(1) == FallDetector.UPRIGHT
+
+
+def test_someone_filling_the_picture_is_never_judged_fallen():
+    """Even when a guessed ankle at hip height makes the hips look 'on the floor'."""
+    det = FallDetector()
+    det.frame_size = (1280, 720)
+    feat = make_features(standing_height=897.0)
+    t = 0.0
+    for _ in range(150):  # 10 s still, with the misleading ankle
+        assert det.check(1, webcam_closeup(ankle_y=694.0), feat, t) is None
+        t += 0.067
+    assert det.state_of(1) == FallDetector.UPRIGHT
+    assert det.drain_possible() == []
+
+
+def test_a_real_fall_still_counts_without_a_frame_size():
+    sim = Sim()
+    sim.hold(STAND, 1.0)
+    sim.move(STAND, LIE, 0.2)
+    sim.hold(LIE, 5.0)
+    assert len(sim.events) == 1
+

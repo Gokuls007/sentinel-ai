@@ -119,6 +119,20 @@ class FallDetector:
         signals = self._compute_signals(st, pose, body_h, timestamp)
         event = None
 
+        if signals["too_close"] and st.state in (self.UPRIGHT, self.FALLING, self.FALLEN):
+            # Right in front of the camera (box at the image edge and over half the picture tall,
+            # e.g. seated at a laptop webcam): the body below the frame is guesswork. The pose model
+            # invents knees and ankles there and the hips flicker in and out of view, which read as
+            # 5 body-heights/s "descents" and as hips level with the "ankles" (on the ground): 2
+            # false confirmed falls in 64 s on an own recording. So no fall stage starts or goes on
+            # while that close. A real fall near the camera ends lying down, in a short box that is
+            # not "too close", and is judged from there.
+            st.state = self.UPRIGHT
+            st.still_since = None
+            self._remember(st, pose, timestamp)
+            st.last_seen, st.last_pose, st.last_signals = timestamp, pose, signals
+            return None
+
         if st.state == self.UPRIGHT:
             if not signals["horizontal_pose"] and pose.head_valid:
                 # Track the standing head height slowly, so a fall can't drag it down.
