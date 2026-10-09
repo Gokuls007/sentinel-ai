@@ -31,10 +31,12 @@ from dataclasses import dataclass
 import numpy as np
 
 from anomaly.engine import AnomalyAlert
+from config.settings import DEFAULT_HAZARD_CLASSES
 
 L_SH, R_SH, L_WR, R_WR = 5, 6, 9, 10
 L_HIP, R_HIP, L_KNEE, R_KNEE, L_ANK, R_ANK = 11, 12, 13, 14, 15, 16
-DEFAULT_HAZARDS = ["tv", "knife", "scissors", "oven", "laptop"]
+# One list for the whole app (config/settings.py): a second copy here had drifted.
+DEFAULT_HAZARDS = DEFAULT_HAZARD_CLASSES
 
 
 @dataclass

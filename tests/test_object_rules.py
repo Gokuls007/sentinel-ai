@@ -145,13 +145,13 @@ def test_person_tag_reads_carrying_pillow():
 
 
 def test_walking_past_a_hazard_is_not_touching_it():
-    tv = ObjectDetection("tv", 0.9, (300.0, 400.0, 700.0, 480.0))
+    oven = ObjectDetection("oven", 0.9, (300.0, 400.0, 700.0, 480.0))
     r = ObjectRules()
     alerts, t = [], 0.0
     for i in range(20):  # 2 s walking across, a hand passing over the TV in the image
         t += 0.1
         x = 300 + 20 * i
-        alerts += r.update({1: body(hip=(x, 400.0), wrist=(x + 10, 440.0))}, [tv], t)
+        alerts += r.update({1: body(hip=(x, 400.0), wrist=(x + 10, 440.0))}, [oven], t)
     assert alerts == []
 
 
@@ -168,3 +168,17 @@ def test_walking_away_from_the_camera_is_not_a_bend_toward_it():
         return k
     _, alerts = run(r, far, [BOX], 1, t)
     assert alerts == []
+
+
+def test_monitors_and_laptops_are_not_hazards_by_default():
+    from config.settings import DEFAULT_HAZARD_CLASSES
+
+    assert "tv" not in DEFAULT_HAZARD_CLASSES and "laptop" not in DEFAULT_HAZARD_CLASSES
+    tv = ObjectDetection("tv", 0.9, (300.0, 300.0, 700.0, 480.0))
+    r = ObjectRules()
+    alerts, t = [], 0.0
+    for _ in range(30):  # 3 s with a hand resting on the monitor
+        t += 0.1
+        alerts += r.update({1: body(hip=(500.0, 400.0), wrist=(500.0, 380.0))}, [tv], t)
+    assert alerts == []
+

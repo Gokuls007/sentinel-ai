@@ -177,7 +177,10 @@ ALL_OBJECT_CLASSES = COCO_OBJECTS + [c for c in WAREHOUSE_OBJECTS if c not in CO
 # Warehouse default: safety-relevant classes only.
 DEFAULT_OBJECT_CLASSES = ["cardboard box", "chair", "couch", "ladder", "tv", "laptop", "knife", "scissors", "oven",
                           "pillow", "bottle", "hard hat", "safety vest", "forklift"]
-DEFAULT_HAZARD_CLASSES = ["tv", "knife", "scissors", "oven", "laptop"]
+# Touching these alerts. Not "tv"/"laptop": COCO calls a computer monitor "tv", so anyone at a
+# desk raised "Hand on tv (hazard)" (own recording, touching the monitor). Add more with
+# HAZARD_CLASSES or the Objects panel.
+DEFAULT_HAZARD_CLASSES = ["knife", "scissors", "oven"]
 # Each mode detects and draws only its own list (posture: none).
 DEFAULT_EXAM_OBJECTS = ["cell phone", "book", "paper", "earbuds", "headphones"]
 DEFAULT_HOME_OBJECTS = ["bed", "chair", "couch"]  # home care: what people sit or lie on, found automatically
