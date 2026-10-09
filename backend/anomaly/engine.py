@@ -196,7 +196,9 @@ class AnomalyEngine:
                 track_id=event.track_id,
                 timestamp=event.timestamp,
                 confidence=event.confidence,
-                message="Possible fall: person went down, checking whether they stay down",
+                message=("Possible fall: person found on the floor, checking whether they stay down"
+                         if event.signals.get("fall_not_seen")
+                         else "Possible fall: person went down, checking whether they stay down"),
                 details={**event.signals, "peak_descent_speed": event.velocity},
             ))
         return alerts
@@ -256,12 +258,14 @@ class AnomalyEngine:
 
     def _fall_alert(self, tid: int, timestamp: float, fall_event) -> AnomalyAlert:
         held = bool(fall_event.signals.get("held_while_lost"))
+        unseen = bool(fall_event.signals.get("fall_not_seen"))
         return self._create_alert(
             alert_type="fall",
             track_id=tid,
             timestamp=timestamp,
             confidence=fall_event.confidence,
             message=("Fall detected: person went down and is no longer visible" if held
+                     else "Person found on the floor and not moving (the fall itself wasn't seen)" if unseen
                      else "Fall detected: person down and not moving"),
             details={**fall_event.signals, "peak_descent_speed": fall_event.velocity},
         )

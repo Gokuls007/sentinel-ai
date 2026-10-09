@@ -52,6 +52,8 @@ class _TrackState:
     floor_y: float | None = None  # where the feet were while standing (image y)
     box_samples: list = field(default_factory=list)  # upright box heights (box calibration)
     box_scale: float = 0.0
+    inherited_at: float | None = None  # took over a lost person's identity at this time (inherit())
+    fall_not_seen: bool = False  # the current fall was found on the floor, not seen happening
 
 
 class FallDetector:
@@ -61,6 +63,10 @@ class FallDetector:
     CONFIRMED = "confirmed"
 
     FALLING_WINDOW_S = 1.5  # a fall must reach the ground within this time
+    # A track that took over a lost person's identity (inherit()) and is on the ground within this
+    # time: they went down while not seen (out of view or between track ids). The descent can't be
+    # checked, so the on-the-ground stage starts here; stillness still has to confirm it.
+    FOUND_WINDOW_S = 3.0
     LYING_TORSO_DEG = 60.0  # torso this far from vertical = lying
     TILTED_TORSO_DEG = 35.0  # a wide box counts as lying only with the torso at least this tilted
     STILLNESS_WINDOW_S = 0.5
@@ -143,6 +149,11 @@ class FallDetector:
                 st.falling_since = timestamp
                 st.peak_descent = signals["descent_speed"]
                 st.anchor = None
+                st.fall_not_seen = False
+            elif (st.inherited_at is not None and timestamp - st.inherited_at <= self.FOUND_WINDOW_S
+                  and self._on_ground(signals)):
+                st.fall_not_seen = True
+                self._enter_fallen(st, track_id, timestamp, signals, pose)
 
         elif st.state == self.FALLING:
             st.peak_descent = max(st.peak_descent, signals["descent_speed"])
@@ -175,6 +186,23 @@ class FallDetector:
         self._remember(st, pose, timestamp)
         st.last_seen, st.last_pose, st.last_signals = timestamp, pose, signals
         return event
+
+    def inherit(self, new_id: int, old_id: int, timestamp: float) -> None:
+        """``new_id`` is the same person as ``old_id``, whose track was lost (the tracker gave a new
+        id). Carry over what was learned while they stood (head height, floor level, box scale) and
+        the fall state and cooldowns, so a fall that continues under the new id isn't re-alerted
+        and one that happened unseen can still be found (FOUND_WINDOW_S)."""
+        old = self.tracks.get(old_id)
+        if old is None:
+            return
+        st = self.tracks.setdefault(new_id, _TrackState())
+        st.upright_head_y, st.floor_y = old.upright_head_y, old.floor_y
+        st.box_scale, st.box_samples = old.box_scale, list(old.box_samples)
+        st.last_alert_time = max(st.last_alert_time, old.last_alert_time)
+        st.last_possible_time = max(st.last_possible_time, old.last_possible_time)
+        if old.state in (self.FALLEN, self.CONFIRMED):
+            st.state, st.fallen_since, st.still_since = old.state, old.fallen_since, old.still_since
+        st.inherited_at = timestamp
 
     def is_down(self, track_id: int) -> bool:
         """Falling or on the ground (where losing the person must not lose the fall)."""
@@ -428,6 +456,8 @@ class FallDetector:
 
     def _make_event(self, track_id: int, timestamp: float, st: _TrackState, signals,
                     pose: PoseResult) -> FallEvent:
+        if st.fall_not_seen:
+            signals = {**signals, "fall_not_seen": True}
         # Confidence grows with how many independent signals agreed.
         agreeing = 1 + int(signals["head_dropped"]) + int(st.peak_descent > 2 * self.descent_speed_threshold)
         confidence = round(min(0.99, 0.7 + 0.1 * agreeing), 2)

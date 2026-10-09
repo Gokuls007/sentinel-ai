@@ -158,6 +158,9 @@ class SentinelPipeline:
         self.object_rules = ObjectRules(hazard_classes=o.hazards)  # unsafe lift, on a chair, hand on a hazard
         self.balance = BalanceTracker()  # centre of mass vs base of support: "Losing balance"
         self.lost_tracks = LostTracks()  # never silently drop a person who may be lying on the floor
+        # Identity hand-over: last box of each calibrated person, and new ids already checked.
+        self._last_boxes: dict[int, tuple[np.ndarray, float]] = {}
+        self._handover_checked: set[int] = set()
         self.event_store = EventStore(config.output.db_path)
         self.rule_store = RuleStore(config.output.db_path)
         self.reload_rules()
@@ -221,6 +224,7 @@ class SentinelPipeline:
         objects = self._detect_objects(frame)
         if self.mode in BODY_MODES:
             self.anomaly_engine.fall_detector.frame_size = (frame.shape[1], frame.shape[0])
+            self._hand_over_identities(poses, all_features, timestamp)
             recovered = self._recover_fallen(frame, poses, all_features, timestamp)
             alerts = self.anomaly_engine.process(poses, all_features, timestamp, recovered=recovered)
             if self.mode == "home":  # resting in bed isn't loitering; REBA is a workplace measure
@@ -625,6 +629,55 @@ class SentinelPipeline:
         """Last smoothed label per track; a transition (standing up, sitting up) overrides it, so the
         balance check stays on while someone gets up and only settled sitting/lying is gated off."""
         return {tid: self.TRANSITION_LABELS.get(st.transition, st.label) for tid, st in self.activity.tracks.items()}
+
+    HANDOVER_S = 8.0  # a new id can take over a person who vanished this recently...
+    HANDOVER_NEW_S = 1.0  # ...within its own first second
+
+    def _hand_over_identities(self, poses: dict, features: dict, ts: float) -> None:
+        """The tracker sometimes gives a person a new id (lost during a fall, occluded, behind
+        furniture). Without its standing height a new id can't be judged for falls until it has
+        stood upright for 10 frames, which someone on the floor never does. So a new, uncalibrated
+        id whose box overlaps where a calibrated person disappeared in the last HANDOVER_S takes
+        over that person's calibration and fall state (FallDetector.inherit)."""
+        from core.lost_tracks import _overlap
+
+        fd = self.anomaly_engine.fall_detector
+        for tid, pose in poses.items():
+            feat = features.get(tid)
+            if tid in self._handover_checked or feat is None:
+                continue
+            if feat.initial_standing_height > 0 or ts - feat.first_seen > self.HANDOVER_NEW_S:
+                self._handover_checked.add(tid)  # calibrated already, or too old to be a hand-over
+                continue
+            box = np.asarray(pose.bbox, float)
+            best = None
+            for old_id, (old_box, seen) in self._last_boxes.items():
+                old = features.get(old_id)
+                if (old_id in poses or old is None or old.initial_standing_height <= 0
+                        or ts - seen > self.HANDOVER_S):
+                    continue
+                # Same place: overlapping boxes, or (standing box -> lying box, which overlap
+                # little) centres within 3/4 of the old box's height.
+                dist = float(np.hypot((box[0] + box[2] - old_box[0] - old_box[2]) / 2,
+                                      (box[1] + box[3] - old_box[1] - old_box[3]) / 2))
+                near = (max(_overlap(box, old_box), _overlap(old_box, box)) > 0.3
+                        or dist <= 0.75 * (old_box[3] - old_box[1]))
+                if near and (best is None or seen > best[1]):
+                    best = (old_id, seen)
+            if best is not None:
+                old_id = best[0]
+                old = features[old_id]
+                feat.initial_standing_height = old.initial_standing_height
+                feat._height_samples = list(old._height_samples)
+                fd.inherit(tid, old_id, ts)
+                logger.info("track %s takes over track %s (lost %.1fs ago)", tid, old_id, ts - best[1])
+                self._handover_checked.add(tid)
+        for tid, pose in poses.items():
+            feat = features.get(tid)
+            if feat is not None and feat.initial_standing_height > 0:
+                self._last_boxes[tid] = (np.asarray(pose.bbox, float), ts)
+        self._last_boxes = {t: v for t, v in self._last_boxes.items() if ts - v[1] <= self.HANDOVER_S}
+        self._handover_checked &= set(features)  # bounded: forget ids that are gone
 
     def _update_lost(self, detections, labels, frame, objects, ts) -> list:
         people = {d.track_id: d.bbox for d in detections.detections
