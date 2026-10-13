@@ -54,3 +54,23 @@ def test_an_upright_person_vanishing_mid_room_is_not_flagged():
     step(lt, 0.0, {1: (500.0, 100.0, 650.0, 600.0)}, labels={1: "Standing"})
     step(lt, 0.1, {})
     assert lt.snapshot(0.1) == []
+
+
+def test_head_at_standing_height_is_not_lost_while_lying():
+    # Live webcam, 2026-10-12: bent over a sink behind a couch, only head and shoulders showing.
+    lt = LostTracks()
+    box = (115.0, 421.0, 217.0, 478.0)  # wide box
+    lt.update(0.0, {16: box}, {}, {}, [], W, H, heads_up={16}, posed={16})
+    lt.update(0.1, {}, {}, {}, [], W, H)
+    assert lt.snapshot(0.1) == []
+
+
+def test_posture_never_measured_is_not_lost_while_lying_but_a_lying_label_is():
+    lt = LostTracks()
+    couch = [("couch", (950.0, 250.0, 1280.0, 700.0))]
+    lt.update(0.0, {4: (1014.0, 215.0, 1201.0, 577.0)}, {}, {}, couch, W, H, posed=set())
+    lt.update(0.1, {}, {}, {}, couch, W, H, posed=set())
+    assert lt.snapshot(0.1) == []
+    lt.update(1.0, {5: (400.0, 500.0, 800.0, 650.0)}, {5: "Lying down"}, {}, [], W, H, posed=set())
+    lt.update(1.1, {}, {}, {}, [], W, H, posed=set())
+    assert lt.snapshot(1.1)[0]["reason"] == "lying down"

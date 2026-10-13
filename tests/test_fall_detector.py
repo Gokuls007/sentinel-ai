@@ -184,3 +184,26 @@ def test_a_real_fall_still_counts_without_a_frame_size():
     sim.hold(LIE, 5.0)
     assert len(sim.events) == 1
 
+
+
+def ground_signals(**kw):
+    s = {"horizontal_pose": False, "head_dropped": False, "head_known": True, "hip_height": 0.05,
+         "spread": 0.4, "torso_angle": 5.0, "feet_seen": True}
+    s.update(kw)
+    return s
+
+
+def test_low_hips_with_the_head_at_standing_height_is_not_on_the_ground():
+    # Live webcam, 2026-10-12: washing dishes behind a couch, legs hidden, the pose invents ankles
+    # at the bottom of the box, so the hips read as level with the feet.
+    fd = FallDetector(ground_mode="combined")
+    assert not fd._on_ground(ground_signals())
+    assert not fd._on_ground(ground_signals(torso_angle=40.0, horizontal_pose=True))  # bent over
+    assert fd._on_ground(ground_signals(head_dropped=True))  # sitting on the floor after a fall
+
+
+def test_low_hips_without_a_known_head_need_feet_or_a_tilted_torso():
+    fd = FallDetector(ground_mode="combined")
+    assert not fd._on_ground(ground_signals(head_known=False, feet_seen=False))
+    assert fd._on_ground(ground_signals(head_known=False, feet_seen=True))
+    assert fd._on_ground(ground_signals(head_known=False, feet_seen=False, torso_angle=50.0))

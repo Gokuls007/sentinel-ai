@@ -37,6 +37,8 @@ class _Seen:
     label: str | None = None
     fall: str | None = None
     prev_box: tuple | None = None
+    head_up: bool = False
+    posed: bool = True
 
 
 @dataclass
@@ -66,6 +68,16 @@ class LostTracks:
             return s.label.lower()
         if s.fall in DOWN_STATES:
             return f"fall detector: {s.fall}"
+        if not s.posed:
+            # Posture never measured (height not yet known: live webcam, 2026-10-12, people
+            # walking past the couch toward the kitchen): box shape and nearby furniture alone
+            # are not enough. A "Lying down" label above still counts.
+            return None
+        if s.head_up:
+            # Head last seen at standing height: standing or bent over, e.g. behind a couch or at
+            # a sink with the legs hidden (live webcam, 2026-10-12), not lying, so neither the
+            # box shape nor nearby furniture says otherwise.
+            return None
         w, h = s.box[2] - s.box[0], s.box[3] - s.box[1]
         if w > 1.2 * h and not box_too_close(s.box, width, height):  # right at the camera: shape means nothing
             return "lying (wide box)"
@@ -88,8 +100,11 @@ class LostTracks:
         return (at_left and moving_left) or (at_right and moving_right) or at_top or (at_bottom and not s.label)
 
     def update(self, ts: float, people: dict, labels: dict, falls: dict, furniture: list,
-               width: int, height: int) -> list[AnomalyAlert]:
-        """``people``: {track id: box} seen this frame. Returns new "lost while lying" alerts."""
+               width: int, height: int, heads_up: set | None = None,
+               posed: set | None = None) -> list[AnomalyAlert]:
+        """``people``: {track id: box} seen this frame; ``heads_up``: ids whose head is at
+        standing height; ``posed``: ids whose posture the fall detector has measured (None: all). Returns new "lost
+        while lying" alerts."""
         alerts = []
         # Seen again where they were lost: no longer lost (the tracker may give a new id).
         for tid, lt in list(self.lost.items()):
@@ -105,7 +120,8 @@ class LostTracks:
         for tid, box in people.items():
             prev = self.seen.get(tid)
             self.seen[tid] = _Seen(tuple(float(v) for v in box), ts, labels.get(tid), falls.get(tid),
-                                   prev.box if prev else None)
+                                   prev.box if prev else None, tid in (heads_up or ()),
+                                   posed is None or tid in posed)
         for tid, lt in list(self.lost.items()):
             age = ts - lt.since
             if age > self.keep_s:

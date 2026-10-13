@@ -206,6 +206,7 @@ class SentinelPipeline:
         lap("detect_track")
 
         # 2. Pose estimation
+        self._drop_edge_slivers(detections, frame.shape[1])
         person_detections = [d for d in detections.detections if d.class_name == "person" and d.track_id is not None]
         track_ids = [d.track_id for d in person_detections]
         bboxes = [d.bbox for d in person_detections]
@@ -684,8 +685,10 @@ class SentinelPipeline:
                   if d.class_name == "person" and d.track_id is not None}
         fd = self.anomaly_engine.fall_detector
         falls = {tid: fd.state_of(tid) for tid in people}
+        heads_up = {tid for tid in people if fd.head_up(tid)}
         furniture = [(o.class_name, o.bbox) for o in objects if o.class_name in FURNITURE]
-        return self.lost_tracks.update(ts, people, labels, falls, furniture, frame.shape[1], frame.shape[0])
+        return self.lost_tracks.update(ts, people, labels, falls, furniture, frame.shape[1], frame.shape[0],
+                                       heads_up=heads_up, posed={tid for tid in people if fd.judged(tid)})
 
     def _draw_lost(self, frame: np.ndarray, lost: list) -> None:
         """A dashed box where a person was lost while lying, with how long ago."""
@@ -745,6 +748,27 @@ class SentinelPipeline:
     def flush_ergo_time(self) -> None:
         if self.anomaly_engine.ergo is not None:
             self.event_store.add_ergo_time(self.config.camera_id, self.anomaly_engine.ergo.drain_time())
+
+    SLIVER_WIDTH = 0.06  # of the frame width
+    SLIVER_ASPECT = 0.3  # box width / height
+
+    @classmethod
+    def is_edge_sliver(cls, bbox, frame_width: int) -> bool:
+        """A thin strip at the left or right edge of the picture: too little of a body to judge
+        (posture, falls), and often not a person at all. Live webcam, 2026-10-12: a 42 px strip of
+        couch at the left edge was tracked as a person and labelled "Lying down", then "Fallen".
+        A real person walking in from the side is picked up once more than a strip is visible."""
+        x1, y1, x2, y2 = (float(v) for v in bbox[:4])
+        w, h = x2 - x1, y2 - y1
+        at_side = x1 <= 0.01 * frame_width or x2 >= 0.99 * frame_width
+        return at_side and (w < cls.SLIVER_WIDTH * frame_width or (h > 0 and w / h < cls.SLIVER_ASPECT))
+
+    def _drop_edge_slivers(self, detections, frame_width: int) -> None:
+        kept = [d for d in detections.detections
+                if not (d.class_name == "person" and self.is_edge_sliver(d.bbox, frame_width))]
+        if len(kept) != len(detections.detections):
+            detections.detections = kept
+            detections.person_count = sum(1 for d in kept if d.class_name == "person")
 
     @staticmethod
     def confident_person(track_id, detections, threshold: float) -> bool:

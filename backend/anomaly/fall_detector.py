@@ -54,6 +54,8 @@ class _TrackState:
     box_scale: float = 0.0
     inherited_at: float | None = None  # took over a lost person's identity at this time (inherit())
     fall_not_seen: bool = False  # the current fall was found on the floor, not seen happening
+    head_up: bool = False  # head last found near standing height (kept while the head flickers out)
+    head_seen_at: float | None = None
 
 
 class FallDetector:
@@ -111,6 +113,21 @@ class FallDetector:
         st = self.tracks.get(track_id)
         return st.state if st else self.UPRIGHT
 
+    HEAD_UP_DROP = 0.25  # head within this (x body height) of standing level: not lying low
+    HEAD_UP_FOR_S = 1.0  # ...still trusted this long after the head was last found
+
+    def head_up(self, track_id: int) -> bool:
+        """The head last found near standing height: standing or bent over, not lying, whatever
+        the box looks like."""
+        st = self.tracks.get(track_id)
+        return bool(st and st.head_up and st.last_seen is not None and st.head_seen_at is not None
+                    and st.last_seen - st.head_seen_at <= self.HEAD_UP_FOR_S)
+
+    def judged(self, track_id: int) -> bool:
+        """Posture measured at least once (the person's height is known)."""
+        st = self.tracks.get(track_id)
+        return bool(st and st.last_signals is not None)
+
     def check(self, track_id: int, pose: PoseResult, features: TrackFeatures,
               timestamp: float) -> FallEvent | None:
         """Advance the state machine for one person; returns an event on a confirmed fall."""
@@ -151,7 +168,10 @@ class FallDetector:
                 st.anchor = None
                 st.fall_not_seen = False
             elif (st.inherited_at is not None and timestamp - st.inherited_at <= self.FOUND_WINDOW_S
-                  and self._on_ground(signals)):
+                  and self._on_ground(signals) and signals["head_dropped"]):
+                # No descent was seen, so ask for more: the head seen well below standing height.
+                # A horizontal torso with no head found is also someone bent over a sink or table
+                # (live webcam, 2026-10-12: face down over the dishes, legs hidden by a couch).
                 st.fall_not_seen = True
                 self._enter_fallen(st, track_id, timestamp, signals, pose)
 
@@ -299,6 +319,8 @@ class FallDetector:
 
         head_known = pose.head_valid and st.upright_head_y is not None
         head_drop = (pose.head_y - st.upright_head_y) / body_h if head_known else 0.0
+        if head_known:
+            st.head_up, st.head_seen_at = head_drop < self.HEAD_UP_DROP, timestamp
 
         # Stillness over a short window, not frame to frame: keypoints jitter by a few
         # pixels per frame, which at 30 fps alone exceeds the speed threshold.
@@ -329,6 +351,7 @@ class FallDetector:
 
         return {
             "hip_height": hip_height,
+            "feet_seen": bool(len(ankles)),
             "spread": spread,
             "descent_speed": descent_speed,
             "aspect_ratio": aspect_ratio,
@@ -414,7 +437,18 @@ class FallDetector:
             return torso_rule
         hip_h = signals.get("hip_height")
         spread = signals.get("spread")
-        low = hip_h is not None and hip_h < self.HIP_LOW
+        # Low hips alone are not enough while the head stays at standing height: behind a couch or
+        # counter (live webcam, 2026-10-12: people washing dishes, legs hidden, bending over the
+        # sink) the floor is guessed or the pose invents ankles at the bottom of the box, and a
+        # standing person reads as "hips on the floor". Someone really down has the head well
+        # below standing height. Without a known head, an upright torso needs the feet seen.
+        torso = signals.get("torso_angle", -1.0)
+        upright_torso = torso is not None and 0 <= torso < self.TILTED_TORSO_DEG
+        if signals["head_known"]:
+            low_ok = signals["head_dropped"]
+        else:
+            low_ok = signals.get("feet_seen", True) or not upright_torso
+        low = hip_h is not None and hip_h < self.HIP_LOW and low_ok
         collapsed = spread is not None and spread < self.SPREAD_COLLAPSED
         high_hips = hip_h is not None and hip_h > self.HIP_HIGH
         return (torso_rule or (low and collapsed) or (collapsed and signals["head_dropped"])) and not high_hips
