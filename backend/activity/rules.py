@@ -186,8 +186,14 @@ class ActivityTracker:
 
     def classify(self, tid: int, kp, ts: float, body_height: float, fallen: bool = False,
                  objects: list[tuple[str, tuple]] | None = None, fall_state: str | None = None,
-                 box: tuple | None = None) -> tuple[str, str | None, str]:
-        """(label, detail, confidence "high"/"low") for this frame, before smoothing."""
+                 box: tuple | None = None, legs_hidden: bool = False) -> tuple[str, str | None, str]:
+        """(label, detail, confidence "high"/"low") for this frame, before smoothing.
+
+        ``legs_hidden``: the box ends on furniture the room map learned (scene/room_model.py): the
+        legs are behind it, so missing knees say nothing about sitting. Kitchen recording
+        (2026-10-12): people standing at the sink behind a couch were "Sitting on couch" in 1180
+        of 1400 frames, because their hips fell inside the couch's box with no knees in view.
+        """
         c = self.cfg
         kp = np.asarray(kp, float)
         st = self.tracks.setdefault(tid, _Track())
@@ -257,8 +263,8 @@ class ActivityTracker:
         low_reach = legs_out and len(wrists) > 0 and max(w[1] for w in wrists) >= knee[1] - c.knee_margin * torso
         # Seated, found automatically: hips on a detected chair/couch/bed, or a thigh pointing at the
         # camera. (Standing in front of a chair: long, vertical thighs, no hip drop: not seated.)
-        seat = next((name for name, (x1, y1, x2, y2) in (objects or [])
-                     if name in SEATS and x1 <= hip[0] <= x2 and y1 <= hip[1] <= y2), None)
+        seat = None if legs_hidden else next((name for name, (x1, y1, x2, y2) in (objects or [])
+                                              if name in SEATS and x1 <= hip[0] <= x2 and y1 <= hip[1] <= y2), None)
         foreshort_thigh = shank is not None and shank >= c.seat_shank_ratio
         if seat and (foreshort_thigh or thigh is None or thigh >= 30 or hip_drop >= 0.2):
             if seat == "bed" and trunk >= 45:
@@ -266,7 +272,7 @@ class ActivityTracker:
             if trunk < c.seated_max_trunk:
                 st.carrying = False
                 return SITTING, seat, "high"
-        if shank is not None and shank >= c.facing_shank_ratio and trunk <= c.bend_deg:
+        if shank is not None and shank >= c.facing_shank_ratio and trunk <= c.bend_deg and not legs_hidden:
             return SITTING, None, "high"
         if trunk >= c.bend_deg or foreshortened or low_reach:
             st.carrying = False  # bending puts it down (or picks something else up)
@@ -298,8 +304,8 @@ class ActivityTracker:
                 if ts - st.hang_since >= c.hang_s:
                     st.carrying = False
 
-        if trunk <= c.bend_deg and ((thigh is not None and thigh >= c.sit_thigh_deg)
-                                     or (parts["knees"] and hip_drop >= c.sit_drop)):
+        if not legs_hidden and trunk <= c.bend_deg and ((thigh is not None and thigh >= c.sit_thigh_deg)
+                                                         or (parts["knees"] and hip_drop >= c.sit_drop)):
             return SITTING, None, "high"
         walking = (speed >= c.walk_speed or approach >= c.approach_rate) and (parts["knees"] or parts["ankles"])
         # A carryable object at one of the hands, e.g. "Carrying pillow".
@@ -319,6 +325,8 @@ class ActivityTracker:
             raised = all(w[1] <= hip[1] - 0.1 * bh for w in wrists)  # hanging arms (side view) overlap too
             if between and together and raised and walking and speed >= c.carry_walk_speed:
                 return CARRYING, None, "low"
+        if legs_hidden:  # neither sitting nor walking can be read: the hips jitter along the furniture edge
+            return UPPER_ONLY, "behind furniture", "low"
         if not (parts["knees"] or parts["ankles"]):
             return UPPER_ONLY, None, "low"
         return (WALKING if walking else STANDING), None, "high"
@@ -396,10 +404,11 @@ class ActivityTracker:
         return st.transition if ts < st.transition_until else None
 
     def update(self, tid: int, kp, ts: float, body_height: float, fallen: bool = False,
-               objects: list | None = None, fall_state: str | None = None, box: tuple | None = None) -> dict:
+               objects: list | None = None, fall_state: str | None = None, box: tuple | None = None,
+               legs_hidden: bool = False) -> dict:
         """Classify, smooth, keep the history; returns the person's live activity."""
         c = self.cfg
-        label, detail, conf = self.classify(tid, kp, ts, body_height, fallen, objects, fall_state, box)
+        label, detail, conf = self.classify(tid, kp, ts, body_height, fallen, objects, fall_state, box, legs_hidden)
         st = self.tracks[tid]
         st.raw.append((ts, label))
         while st.raw and ts - st.raw[0][0] > c.smooth_s:

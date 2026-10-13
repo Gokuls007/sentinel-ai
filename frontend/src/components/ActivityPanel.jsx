@@ -50,7 +50,9 @@ export const ActivityPanel = ({ connected, activity, ergonomics }) => {
                       {a.transition === 'sit-to-stand' ? 'Standing up'
                         : a.transition === 'lying-to-sitting' ? 'Sitting up'
                         : a.label === 'Carrying' && a.detail ? `Carrying ${a.detail}`
-                        : ['Sitting', 'Lying down'].includes(a.label) && a.detail ? `${a.label.split(' ')[0]} on ${a.detail}` : a.label}
+                        : ['Sitting', 'Lying down'].includes(a.label) && a.detail ? `${a.label.split(' ')[0]} on ${a.detail}`
+                        : a.detail === 'behind furniture' ? 'Legs hidden by furniture'
+                        : a.label}
                     </span>
                     {a.confidence === 'low' && <span className="text-[9px] mono uppercase text-white/40">unsure</span>}
                   </span>

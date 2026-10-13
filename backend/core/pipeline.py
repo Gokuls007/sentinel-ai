@@ -606,7 +606,8 @@ class SentinelPipeline:
         self.view_check.update({tid: p.keypoints for tid, p in poses.items()}, timestamp)
         self.activity.prune(poses.keys())
         return {tid: self.activity.update(tid, p.keypoints, timestamp, float(p.body_height),
-                                          fallen=fd.state_of(tid) == fd.CONFIRMED, objects=objects)
+                                          fallen=fd.state_of(tid) == fd.CONFIRMED, objects=objects,
+                                          legs_hidden=tid in fd.legs_hidden_ids)
                 for tid, p in poses.items()}
 
     @staticmethod
@@ -619,6 +620,8 @@ class SentinelPipeline:
             label = f"Carrying {act['detail']}"
         elif label in ("Sitting", "Lying down") and act.get("detail"):
             label = f"{label.split()[0]} on {act['detail']}"  # "Sitting on chair", "Lying on bed"
+        elif act and act.get("detail") == "behind furniture":  # room map: legs behind a couch or counter
+            label = "Legs hidden by furniture"
         parts = [label] if label else []
         if info and info.get("score") is not None and info.get("reliable"):
             parts.append(f"REBA {info['score']} {info['level_name'].replace('_', ' ').upper()}")

@@ -367,3 +367,22 @@ def test_slow_staged_stand_up_starts_at_the_forward_lean_and_lasts_through_the_r
     t, out = run(a, lambda _t: person(), t, 4)
     assert out["transition"] is None  # settled standing
 
+
+
+def test_legs_behind_learned_furniture_are_not_read_as_sitting():
+    # Kitchen recording (2026-10-12): standing at the sink behind a couch, hips inside the couch's
+    # box and no knees in view: "Sitting on couch" in 1180 of 1400 frames before the room map.
+    couch = [("couch", (200.0, 230.0, 420.0, 400.0))]
+    hidden = lambda _t: person(legs=False)  # noqa: E731
+    a = ActivityTracker()
+    _, out = run(a, hidden, 0.0, 2, objects=couch)
+    assert out["label"] == SITTING and out["detail"] == "couch"  # without the room map
+    b = ActivityTracker()
+    _, out = run(b, hidden, 0.0, 2, objects=couch, legs_hidden=True)
+    assert out["label"] == UPPER_ONLY and out["detail"] == "behind furniture"
+
+
+def test_bending_behind_furniture_is_still_bending():
+    a = ActivityTracker()
+    _, out = run(a, lambda _t: person(trunk_deg=55.0, legs=False), 0.0, 2, legs_hidden=True)
+    assert out["label"] == BENDING
