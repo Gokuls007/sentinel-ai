@@ -1782,6 +1782,46 @@ def put_zones(body: ZonesIn, request: Request, camera: str = Query(...)):
     return to_serializable(monitor.get_zones_for_overlay())
 
 
+# --- Room map ---------------------------------------------------------------------------
+
+class RoomMapIn(BaseModel):
+    show: bool
+
+
+def _room_view(p) -> dict:
+    room = p.room
+    status = room.status() if room is not None else {
+        "samples": 0, "floor_cells": 0, "furniture_cells": 0, "height_ready": False, "height_error": None}
+    return {**status, "show": bool(p.show_room_map)}
+
+
+@app.get("/api/room")
+def get_room(camera: str | None = None):
+    """What the camera has learned about the room (scene/room_model.py): floor, leg-hiding
+    furniture, standing height by position."""
+    return _room_view(_pipeline_for(camera))
+
+
+@app.put("/api/room")
+def put_room(body: RoomMapIn, request: Request, camera: str | None = None):
+    """Show or hide the room map on the video."""
+    _check_camera_control(request)
+    p = _pipeline_for(camera)
+    p.show_room_map = body.show
+    return _room_view(p)
+
+
+@app.post("/api/room/reset")
+def reset_room(request: Request, camera: str | None = None):
+    """Forget the room map (after moving furniture or the camera) and learn again."""
+    _check_camera_control(request)
+    p = _pipeline_for(camera)
+    if p.room is not None:
+        p.room.reset()
+        p.room.save()
+    return _room_view(p)
+
+
 # --- Ergonomics (REBA) ------------------------------------------------------------------
 
 def _all_pipelines() -> list[SentinelPipeline]:

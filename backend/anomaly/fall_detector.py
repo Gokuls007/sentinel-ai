@@ -133,6 +133,9 @@ class FallDetector:
         self.frame_size: tuple[int, int] | None = None
         self.possible_events: list[FallEvent] = []  # drained by drain_possible()
         self.near_fall_events: list[FallEvent] = []  # drained by drain_near_falls()
+        # Set by the caller each frame: people whose box ends on furniture the room map learned
+        # (scene/room_model.py), so their legs are out of sight rather than folded under them.
+        self.legs_hidden_ids: set[int] = set()
 
     # -- public API ---------------------------------------------------------------------
 
@@ -167,6 +170,12 @@ class FallDetector:
             return None
 
         signals = self._compute_signals(st, pose, body_h, timestamp)
+        if track_id in self.legs_hidden_ids:
+            # Behind a couch or counter the box is cut by the furniture: its shape, the hips and
+            # the "feet" (invented at the box bottom) say nothing. Only the torso and head count.
+            signals["legs_hidden"] = True
+            signals["horizontal_by_box"] = signals["horizontal_pose"]  # kept for diagnostics
+            signals["horizontal_pose"] = signals["torso_angle"] > self.LYING_TORSO_DEG
         event = None
 
         if signals["too_close"] and st.state in (self.UPRIGHT, self.FALLING, self.FALLEN):
@@ -504,6 +513,8 @@ class FallDetector:
     SPREAD_COLLAPSED = 0.5
 
     def _on_ground(self, signals) -> bool:
+        if signals.get("legs_hidden"):
+            return signals["horizontal_pose"] and signals["head_known"] and signals["head_dropped"]
         torso_rule = signals["horizontal_pose"] and (signals["head_dropped"] or not signals["head_known"])
         if self.ground_mode != "combined":
             return torso_rule

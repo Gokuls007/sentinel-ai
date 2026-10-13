@@ -8,6 +8,7 @@ import ZoneEditor from '../components/ZoneEditor';
 import ErgonomicsPanel from '../components/ErgonomicsPanel';
 import { ActivityPanel, ViewBanner } from '../components/ActivityPanel';
 import DemoFootagePanel from '../components/DemoFootagePanel';
+import RoomMapPanel from '../components/RoomMapPanel';
 import { useFeed } from '../context/liveFeed';
 import {
   BACKEND_START_HINT, describeError, formatDuration, isOfflineError, postJson, saveStored, useNow,
@@ -160,6 +161,7 @@ const CameraFeed = ({ cam }) => {
           <ErgonomicsPanel connected={status === 'live'} ergonomics={frameData ? frameData.ergonomics : null} />
         </div>
       )}
+      {!drawing && <RoomMapPanel camera={LAPTOP} enabled={status === 'live'} />}
       <details className="border border-white/10 bg-black/30 open:pb-2" open={drawing || undefined}>
         <summary className="cursor-pointer px-3 py-2 text-[11px] mono uppercase text-white/60 hover:text-white/80">
           Optional: zones (restricted areas, time limits, one-way lanes)

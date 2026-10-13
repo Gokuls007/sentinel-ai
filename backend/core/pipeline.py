@@ -28,6 +28,7 @@ from rules.dsl import OBJECT_CLASSES
 from rules.presets import builtin_event_type, builtin_rules
 from rules.signals import head_turn, holding, looking_down
 from rules.store import RuleStore
+from scene.room_model import RoomModel
 
 from .detector import Detector, FrameDetections
 from .pose_estimator import PoseEstimator, PoseResult
@@ -177,6 +178,10 @@ class SentinelPipeline:
         self.mode = getattr(config, "mode", "warehouse")
         data_dir = os.path.dirname(os.path.abspath(config.output.db_path))
         self.posture = PostureCoach(baseline_path=os.path.join(data_dir, f"posture_baseline_{config.camera_id}.json"))
+        # Room map: floor, leg-hiding furniture and standing height by position, learned from people.
+        self._room_path = os.path.join(data_dir, f"room_{config.camera_id}.json")
+        self.room: RoomModel | None = None  # made on the first frame, at its size
+        self.show_room_map = False
         self.exam = ExamMonitor()  # Exam Hall: seats and calibration; sessions are loaded by the server
         self.save_clips = True  # forensic clips and snapshots (off for "Test with demo footage")
         # Skeleton-only (privacy): never write video or images; events keep keypoints instead.
@@ -225,6 +230,7 @@ class SentinelPipeline:
         objects = self._detect_objects(frame)
         if self.mode in BODY_MODES:
             self.anomaly_engine.fall_detector.frame_size = (frame.shape[1], frame.shape[0])
+            self._update_room(frame, poses, timestamp)
             self._hand_over_identities(poses, all_features, timestamp)
             recovered = self._recover_fallen(frame, poses, all_features, timestamp)
             alerts = self.anomaly_engine.process(poses, all_features, timestamp, recovered=recovered)
@@ -533,7 +539,18 @@ class SentinelPipeline:
         cv2.rectangle(frame, (8, 8), (8 + w + 10, 8 + h + 10), (20, 20, 20), -1)
         cv2.putText(frame, text, (13, 8 + h + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1)
 
+    def _update_room(self, frame, poses, timestamp) -> None:
+        h, w = frame.shape[:2]
+        if self.room is None or (self.room.width, self.room.height) != (w, h):
+            self.room = RoomModel(w, h, path=self._room_path)
+        self.room.update(poses, timestamp, frame)
+        self.anomaly_engine.fall_detector.legs_hidden_ids = {
+            tid for tid, pose in poses.items() if self.room.legs_hidden(pose.bbox)}
+
     def _annotate_frame(self, frame, detections, poses, alerts, objects=(), ts: float = 0.0) -> np.ndarray:
+        room = getattr(self, "room", None)
+        if getattr(self, "show_room_map", False) and room is not None:
+            room.draw(frame)
         # 1. Zones: every active zone (any of them can alert), none when there are none
         for zone in self.anomaly_engine.zone_overlay_data:
             poly = np.array(zone["polygon"])
@@ -859,6 +876,8 @@ class SentinelPipeline:
         self.clip_recorder.flush()
         self.skeleton_recorder.flush()
         self.flush_ergo_time()
+        if self.room is not None:
+            self.room.save()
         self.notifier.close()
         uptime = time.time() - self.start_time
         logger.info(
