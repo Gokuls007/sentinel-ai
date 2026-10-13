@@ -174,8 +174,10 @@ COCO_OBJECTS = [
 WAREHOUSE_OBJECTS = ["pillow", "cardboard box", "ladder", "hard hat", "safety vest", "forklift"]
 # Everything both detectors know (Settings > "Show all objects", a debug view).
 ALL_OBJECT_CLASSES = COCO_OBJECTS + [c for c in WAREHOUSE_OBJECTS if c not in COCO_OBJECTS]
-# Warehouse default: safety-relevant classes only.
-DEFAULT_OBJECT_CLASSES = ["cardboard box", "chair", "couch", "ladder", "tv", "laptop", "knife", "scissors", "oven",
+# Warehouse default: safety-relevant classes only. Not "tv"/"laptop": not safety objects, and the
+# COCO detector's nearest match for a dark window is "tv" (live webcam, 2026-10-12: the kitchen
+# window labelled tv all evening). Add them back in the Objects panel if needed.
+DEFAULT_OBJECT_CLASSES = ["cardboard box", "chair", "couch", "ladder", "knife", "scissors", "oven",
                           "pillow", "bottle", "hard hat", "safety vest", "forklift"]
 # Touching these alerts. Not "tv"/"laptop": COCO calls a computer monitor "tv", so anyone at a
 # desk raised "Hand on tv (hazard)" (own recording, touching the monitor). Add more with
