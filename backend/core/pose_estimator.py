@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 
+from anomaly.geometry import box_too_close
+
 # Constants
 KEYPOINT_NAMES = [
     "nose", "left_eye", "right_eye", "left_ear", "right_ear",
@@ -190,7 +192,7 @@ class PoseEstimator:
 
     def estimate(self, frame: np.ndarray, track_ids: list[int], bboxes: list[np.ndarray], 
                  timestamp: float) -> dict[int, PoseResult]:
-        
+        self.frame_size = (frame.shape[1], frame.shape[0])
         # Run pose model on full frame
         results = self.model(frame, conf=self.conf_threshold, verbose=False)
         
@@ -262,6 +264,16 @@ class PoseEstimator:
             bw, bh = pose.bbox[2] - pose.bbox[0], pose.bbox[3] - pose.bbox[1]
             upright = bh > 0 and bw / bh < 1.0
         scale = pose.scale_estimate
+        # Not while filling the picture with the feet out of view: the height is extrapolated
+        # then. Own recording (2026-10-04): calibrated at 1007 px while right at the camera, then
+        # judged at ~500 px tall across the room, so a fast drop to the floor read as a slow 0.4
+        # body heights/s and was never seen as going down. With both ankles seen inside the
+        # picture the height is measured, close or not (URFD: people often over half the frame).
+        size = getattr(self, "frame_size", None)
+        if size is not None and box_too_close(pose.bbox, *size):
+            ank = pose.keypoints[[15, 16]]
+            feet_in_view = bool((ank[:, 2] >= 0.5).all() and (ank[:, 1] < 0.98 * size[1]).all())
+            upright = upright and feet_in_view
         if feat.initial_standing_height == 0.0 and upright and scale > 0:
             feat._height_samples.append(scale)
             if len(feat._height_samples) >= 10:

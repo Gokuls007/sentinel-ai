@@ -43,6 +43,7 @@ class AnomalyEngine:
     SEVERITY_MAP: ClassVar[dict[str, str]] = {
         "fall": "critical",
         "possible_fall": "medium",
+        "near_fall": "medium",
         "zone_intrusion": "high",
         "time_exceeded": "medium",
         "wrong_direction": "medium",
@@ -94,6 +95,10 @@ class AnomalyEngine:
         self.loiter_anchor: dict[int, tuple[np.ndarray, float]] = {}
         self.last_loiter_alert: dict[int, float] = {}
         self.loiter_cooldown = 60.0
+
+        # Near falls on this camera in the last hour (track ids change, so counted per camera):
+        # one is worth a look, a second one in the hour is a warning sign.
+        self.near_fall_times: list[float] = []
 
     def process(self, poses: dict[int, PoseResult], features: dict[int, TrackFeatures],
                 timestamp: float, recovered: dict[int, PoseResult] | None = None) -> list[AnomalyAlert]:
@@ -201,7 +206,31 @@ class AnomalyEngine:
                          else "Possible fall: person went down, checking whether they stay down"),
                 details={**event.signals, "peak_descent_speed": event.velocity},
             ))
+        for event in self.fall_detector.drain_near_falls():
+            alerts.append(self._near_fall_alert(event))
         return alerts
+
+    NEAR_FALL_REPEAT_S = 3600.0
+
+    def _near_fall_alert(self, event) -> AnomalyAlert:
+        """Went down suddenly and got back up: no emergency, but a near fall is the strongest sign
+        that a real fall may follow, so it is reported (and escalated when it happens again)."""
+        ts = event.timestamp
+        self.near_fall_times = [t for t in self.near_fall_times if ts - t <= self.NEAR_FALL_REPEAT_S] + [ts]
+        n = len(self.near_fall_times)
+        down = event.signals.get("down_for_s")
+        msg = "Near fall: went down suddenly and got back up"
+        if down is not None and down >= 1.5:
+            msg += f" after {down:.0f}s"
+        if n >= 2:
+            msg += f", {n} near falls in the last hour: check on them"
+        alert = self._create_alert(
+            alert_type="near_fall", track_id=event.track_id, timestamp=ts, confidence=event.confidence,
+            message=msg,
+            details={**event.signals, "peak_descent_speed": event.velocity, "near_falls_last_hour": n},
+        )
+        alert.severity = "high" if n >= 2 else "medium"
+        return alert
 
     @property
     def ergonomics_snapshot(self) -> dict[int, dict]:

@@ -51,6 +51,7 @@ class RTMPoseEstimator(PoseEstimator):
     def estimate(self, frame: np.ndarray, track_ids: list[int], bboxes: list[np.ndarray],
                  timestamp: float) -> dict[int, PoseResult]:
         results: dict[int, PoseResult] = {}
+        self.frame_size = (frame.shape[1], frame.shape[0])
         if track_ids:  # rtmlib treats "no boxes" as "the whole image": never call it empty
             boxes = [np.asarray(b, float).tolist() for b in bboxes]
             kps, scores = self.model(frame, bboxes=boxes)

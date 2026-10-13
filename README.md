@@ -141,6 +141,34 @@ hour and one fall is 4 points of recall.
   factor. Details, the confirmation-time sweep and the URFD numbers are in
   [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
+### Near falls: a warning before the real fall
+A near fall (going down and getting back up) is the strongest sign that a real fall may follow,
+so it is reported as **Near fall**: medium severity, and high, with "check on them", when it is
+the second on that camera within an hour.
+
+- **It is judged by what follows, not by the start of the movement.** On URFD and CAUCAFall,
+  picking something up, sitting down and hopping reach the same torso, hip and head speeds as
+  the first second of a fall. A sudden-movement rule would fire all day. Instead, a near fall
+  is:
+  1. a fast descent that is seen and reaches the on-the-ground stage;
+  2. then standing again for 1 s, within 10 s, with no confirmed fall.
+- **Getting up must be seen.** The head must rise at least 0.3 body heights back to near
+  standing level. The box must be clearly taller than wide, and the torso within 25° of
+  vertical. From a camera high in a corner, someone lying straight along the picture's
+  up-down axis otherwise looks like they are standing.
+- **Measured (2026-10-13):**
+  - On cached poses:
+    - 0 near falls on 90 everyday-activity videos (hop, kneel, pick up, sit down, walk);
+    - 0 on 80 falls where the person stays down.
+  - Through the live pipeline on 9 own recordings: 0 near falls. Fall alerts are unchanged.
+  - One recording has a staged drop to the floor and straight back up. The cached poses caught
+    it, but the live pipeline measures it as a controlled descent, under the 1.2 body
+    heights/s that marks a fall-like drop.
+
+  So there is no confirmed real-world catch yet. Recall needs staged near falls (trips that are
+  caught, stumbles onto the knees) to measure. A near fall is only reported when the descent
+  was as fast as a fall's.
+
 ### Honest limitations
 - **Falls are not in the bundled demos.** The sample videos have no falls. The fall datasets
   are downloaded by `training/eval_fall.py --download` (URFD) and

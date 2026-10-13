@@ -17,6 +17,7 @@ SEVERITIES = ("low", "medium", "high", "critical")
 EVENT_TYPES = (
     "fall",
     "possible_fall",  # reached the ground, not yet confirmed: dashboard only, no notification
+    "near_fall",      # went down suddenly (descent seen) and got back up: a warning sign for a real fall
     "zone_intrusion",
     "time_exceeded",
     "wrong_direction",

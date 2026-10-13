@@ -8,6 +8,7 @@ const TYPE_LABELS = {
   person_lost_lying: 'Lost while lying',
   fall: 'Confirmed fall',
   possible_fall: 'Possible fall',
+  near_fall: 'Near fall',
 };
 
 export function eventTypeLabel(type) {

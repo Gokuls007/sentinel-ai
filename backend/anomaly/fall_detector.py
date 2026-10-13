@@ -2,6 +2,7 @@
 
     UPRIGHT --rapid descent--> FALLING --lying / head low--> FALLEN  ("possible fall" here)
     FALLEN --still for stillness_seconds--> CONFIRMED  ("confirmed fall" alert here)
+    FALLEN (descent seen) --standing again, held--> "near fall" event (went down, got back up)
     FALLING/FALLEN --stands up or times out--> UPRIGHT
     CONFIRMED --stands up--> UPRIGHT
 
@@ -23,7 +24,7 @@ class FallEvent:
     track_id: int
     timestamp: float
     confidence: float
-    stage: str  # "possible" (reached the ground) | "confirmed" (stayed down, still)
+    stage: str  # "possible" (reached the ground) | "confirmed" (stayed down, still) | "near_fall" (got back up)
     signals: dict[str, float]
     head_y: float
     hip_y: float
@@ -56,6 +57,10 @@ class _TrackState:
     fall_not_seen: bool = False  # the current fall was found on the floor, not seen happening
     head_up: bool = False  # head last found near standing height (kept while the head flickers out)
     head_seen_at: float | None = None
+    near_fall_since: float | None = None  # went down (descent seen) at this time; watching for getting up
+    near_fall_up_since: float | None = None
+    near_fall_low: float = 0.0  # lowest head (largest head drop) seen since going down
+    last_near_fall_time: float = field(default=-1e18)
 
 
 class FallDetector:
@@ -73,6 +78,27 @@ class FallDetector:
     TILTED_TORSO_DEG = 35.0  # a wide box counts as lying only with the torso at least this tilted
     STILLNESS_WINDOW_S = 0.5
     POSSIBLE_COOLDOWN_S = 10.0  # at most one "possible fall" per person per 10 s
+    # Near fall: a sudden descent seen reaching the on-the-ground stage, then the person stands
+    # again (head back near standing height, torso not lying, not filling the picture) for
+    # NEAR_FALL_HOLD_S, within NEAR_FALL_WINDOW_S, with no confirmed fall. The start of a fall can't
+    # be told from picking something up, sitting down or hopping by how fast the body moves (on
+    # URFD + CAUCAFall the everyday actions reach the same torso, hip and head speeds), so the
+    # event is judged by what follows. Cached poses (2026-10-12): 0 on 90 everyday-activity videos
+    # (hop, kneel, pick up, sit down, walk), 0 on 80 falls where the person stays down.
+    NEAR_FALL_WINDOW_S = 10.0
+    NEAR_FALL_HOLD_S = 1.0
+    NEAR_FALL_COOLDOWN_S = 30.0
+    # Getting up must be seen: the head was this far (x body height) below where it is when
+    # "standing" again. From a camera high in a corner, someone lying along the floor in the
+    # picture's up-down direction has the head where a standing person's would be (CAUCAFall
+    # subject 2, "Fall sitting": lying still, read as standing again); a real get-up lifts the head.
+    NEAR_FALL_RISE = 0.3
+    # ...and the body must look upright on its own terms: a box clearly taller than wide and a
+    # near-vertical torso. That same lying person (straight, seen from above) had legs fully
+    # extended and the head at standing height, but a box 1.1x wider than tall and the torso
+    # tilted 35-40 degrees; a real get-up (own recording) had 0.41-0.48 and under 20 degrees.
+    NEAR_FALL_MAX_ASPECT = 0.8
+    NEAR_FALL_MAX_TORSO_DEG = 25.0
 
     def __init__(self, descent_speed_threshold: float = 1.2, aspect_ratio_threshold: float = 1.2,
                  head_drop_ratio: float = 0.5, stillness_seconds: float = 1.0,
@@ -106,6 +132,7 @@ class FallDetector:
         # (width, height) of the current frame, set by the caller; None = unknown, box shape always used.
         self.frame_size: tuple[int, int] | None = None
         self.possible_events: list[FallEvent] = []  # drained by drain_possible()
+        self.near_fall_events: list[FallEvent] = []  # drained by drain_near_falls()
 
     # -- public API ---------------------------------------------------------------------
 
@@ -152,6 +179,7 @@ class FallDetector:
             # not "too close", and is judged from there.
             st.state = self.UPRIGHT
             st.still_since = None
+            st.near_fall_up_since = None  # standing up can't be judged this close either
             self._remember(st, pose, timestamp)
             st.last_seen, st.last_pose, st.last_signals = timestamp, pose, signals
             return None
@@ -179,6 +207,7 @@ class FallDetector:
             st.peak_descent = max(st.peak_descent, signals["descent_speed"])
             if self._on_ground(signals):
                 self._enter_fallen(st, track_id, timestamp, signals, pose)
+                st.near_fall_since, st.near_fall_up_since, st.near_fall_low = timestamp, None, 0.0
             elif timestamp - st.falling_since > self.FALLING_WINDOW_S:
                 st.state = self.UPRIGHT  # e.g. sat down or crouched quickly
 
@@ -194,6 +223,7 @@ class FallDetector:
                                      timestamp - st.still_since >= self.stillness_seconds)
                 if still_long_enough and timestamp - st.last_alert_time >= self.cooldown_seconds:
                     st.state = self.CONFIRMED
+                    st.near_fall_since = None  # stayed down: a fall, not a near fall
                     st.last_alert_time = timestamp
                     event = self._make_event(track_id, timestamp, st, signals, pose)
                 elif timestamp - st.fallen_since > self.fallen_timeout_seconds and not still_long_enough:
@@ -203,9 +233,46 @@ class FallDetector:
             if self._upright_held(st, signals, timestamp):
                 st.state = self.UPRIGHT
 
+        self._near_fall_step(st, track_id, timestamp, signals, pose)
         self._remember(st, pose, timestamp)
         st.last_seen, st.last_pose, st.last_signals = timestamp, pose, signals
         return event
+
+    def _near_fall_step(self, st: _TrackState, track_id: int, timestamp: float, signals, pose) -> None:
+        if st.near_fall_since is None:
+            return
+        if st.state == self.CONFIRMED or timestamp - st.near_fall_since > self.NEAR_FALL_WINDOW_S:
+            st.near_fall_since = st.near_fall_up_since = None  # stayed down: a fall, not a near fall
+            return
+        if signals["head_known"]:
+            st.near_fall_low = max(st.near_fall_low, signals["head_drop"])
+        standing = (signals["head_known"] and signals["head_drop"] < self.HEAD_UP_DROP
+                    and st.near_fall_low - signals["head_drop"] >= self.NEAR_FALL_RISE
+                    and signals["aspect_ratio"] < self.NEAR_FALL_MAX_ASPECT
+                    and 0 <= signals["torso_angle"] < self.NEAR_FALL_MAX_TORSO_DEG
+                    and not signals["horizontal_pose"] and not signals["too_close"])
+        if not standing:
+            st.near_fall_up_since = None
+            return
+        st.near_fall_up_since = st.near_fall_up_since if st.near_fall_up_since is not None else timestamp
+        if timestamp - st.near_fall_up_since < self.NEAR_FALL_HOLD_S:
+            return
+        down_at = st.near_fall_since
+        st.near_fall_since = st.near_fall_up_since = None
+        if timestamp - st.last_near_fall_time < self.NEAR_FALL_COOLDOWN_S:
+            return
+        st.last_near_fall_time = timestamp
+        event = self._make_event(track_id, timestamp, st,
+                                 {**signals, "down_at": round(down_at, 2),
+                                  "down_for_s": round(timestamp - self.NEAR_FALL_HOLD_S - down_at, 2)}, pose)
+        event.stage = "near_fall"
+        event.confidence = round(min(event.confidence, 0.7), 2)
+        self.near_fall_events.append(event)
+
+    def drain_near_falls(self) -> list[FallEvent]:
+        """Near falls (went down suddenly, got back up) since the last call."""
+        events, self.near_fall_events = self.near_fall_events, []
+        return events
 
     def inherit(self, new_id: int, old_id: int, timestamp: float) -> None:
         """``new_id`` is the same person as ``old_id``, whose track was lost (the tracker gave a new
@@ -222,6 +289,9 @@ class FallDetector:
         st.last_possible_time = max(st.last_possible_time, old.last_possible_time)
         if old.state in (self.FALLEN, self.CONFIRMED):
             st.state, st.fallen_since, st.still_since = old.state, old.fallen_since, old.still_since
+        if old.state != self.CONFIRMED:  # getting up may finish under the new id
+            st.near_fall_since, st.near_fall_low = old.near_fall_since, old.near_fall_low
+        st.last_near_fall_time = max(st.last_near_fall_time, old.last_near_fall_time)
         st.inherited_at = timestamp
 
     def is_down(self, track_id: int) -> bool:
@@ -253,6 +323,7 @@ class FallDetector:
         if (timestamp - st.still_since >= self.stillness_seconds
                 and timestamp - st.last_alert_time >= self.cooldown_seconds):
             st.state = self.CONFIRMED
+            st.near_fall_since = None  # stayed down: a fall, not a near fall
             st.last_alert_time = timestamp
             signals = {**(st.last_signals or {}), "held_while_lost": True}
             event = self._make_event(track_id, timestamp, st, signals, st.last_pose)
@@ -410,6 +481,7 @@ class FallDetector:
         if (timestamp - st.still_since >= self.stillness_seconds
                 and timestamp - st.last_alert_time >= self.cooldown_seconds):
             st.state = self.CONFIRMED
+            st.near_fall_since = None  # stayed down: a fall, not a near fall
             st.last_alert_time = timestamp
             signals = {**(st.last_signals or {}), "recovered": True}
             event = self._make_event(track_id, timestamp, st, signals, st.last_pose or pose)
