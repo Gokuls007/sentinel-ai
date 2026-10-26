@@ -12,6 +12,7 @@ import numpy as np
 from activity import CARRY_CLASSES, ActivityTracker, ViewCheck
 from activity.balance import BalanceTracker
 from activity.object_rules import ObjectRules
+from activity.prevention import PreventionTracker
 from anomaly.engine import AnomalyAlert, AnomalyEngine
 from anomaly.fall_recovery import recover_pose
 from config.settings import ALL_OBJECT_CLASSES, COCO_OBJECTS, SentinelConfig
@@ -159,6 +160,7 @@ class SentinelPipeline:
         self.object_rules = ObjectRules(hazard_classes=o.hazards)  # unsafe lift, on a chair, hand on a hazard
         self.balance = BalanceTracker()  # centre of mass vs base of support: "Losing balance"
         self.lost_tracks = LostTracks()  # never silently drop a person who may be lying on the floor
+        self.prevention = PreventionTracker()  # home: getting out of bed, slipping out of a seat, on the floor
         # Identity hand-over: last box of each calibrated person, and new ids already checked.
         self._last_boxes: dict[int, tuple[np.ndarray, float]] = {}
         self._handover_checked: set[int] = set()
@@ -248,6 +250,10 @@ class SentinelPipeline:
             ergonomics = self.anomaly_engine.ergonomics_snapshot if self.mode != "home" else {}
             self._persist_ergo_time(timestamp)
             activity, view = self._activity(poses, detections, timestamp, objects), self.view_check.snapshot()
+            if self.mode == "home":  # fall prevention: warnings before a fall
+                fd = self.anomaly_engine.fall_detector
+                down = {tid for tid in poses if fd.state_of(tid) in (fd.FALLING, fd.FALLEN, fd.CONFIRMED)}
+                alerts += self.prevention.update(poses, activity, objects, timestamp, down, self.room)
         else:
             alerts, ergonomics = [], {}
             activity, view = {}, {}

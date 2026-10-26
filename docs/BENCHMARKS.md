@@ -675,3 +675,31 @@ Fall rules on the rebuilt cache, both edge fixes in:
 The remaining CAUCAFall false alarms are the kneeling / all-fours clips (next fix). Own recordings
 in home mode: the 65 s fall and both balance alerts are gone; a staged lie-down still raises a
 possible fall (37.5 s) and is confirmed at 41 s; the chair slide raises nothing yet.
+
+## Fall prevention warnings (home mode)
+
+_Measured 2026-10-25: full pipeline in home mode, current code._ Own recordings (labelled segments)
+and all CAUCAFall (50) and URFD (40) daily-activity clips, 13.5 min.
+
+| Footage | Warnings |
+|---|---|
+| Own chair / bed recording (4 Oct) | slipping out of a seat at 45.8 s (slide 1, reached the floor ~48 s) and 65.7 s (slide 2, at its start); on the floor at 68.5 s (after slide 2); getting out of bed at 88.8 s (legs over the near edge, rolled off at 91.5 s) |
+| Own pose recording (4 Oct) | none (the staged lie-down is the fall detector's: possible 37.5 s, confirmed 41 s) |
+| Own bedroom recording (6 Oct) | on the floor at 52.7 s (kneeling, 38% of standing height there); the lie-down is the fall detector's |
+| Own kitchen recording (12 Oct, 3-4 people, 2 min) | none |
+| CAUCAFall daily activities (50 clips) | on the floor: Kneel 3 / 10 (held several seconds; by design) |
+| URFD daily activities (40 clips, incl. lying on bed and sofa) | none |
+
+Measured on the own chair recording: settled sitting moved the hips at most 0.29 torso lengths
+below where the person sat, lying on a bed 0.19, the two slides 1.4-2.1 (threshold 0.5). Missed:
+on the floor by the chair (48-53 s) and after rolling off the bed (legs not in view, and the room
+map had no height fit yet in that clip: it needs people seen standing with their feet visible in a
+few places first). Earlier versions and why they changed: a slide reads as "Walking" for a moment
+(standing up is now judged by the hips rising, not the label); a "Sitting" label alone came from
+walking under CAUCAFall's high camera (a seat stay now starts on a detected seat); a slow pick-up
+with the head down reads as lying for 3-5 s (lying by label alone now needs 6 s).
+
+Tried and not shipped: a fall-risk score from walking speed, step variability, stand-up time and
+sway. On this footage walking speed and step timing were never measurable (no clearly sideways
+walks; other directions need a ground-plane calibration), stand-up time came out ~2.5 s long, and
+sway was mostly keypoint noise (1.5-3.5% of height vs ~1% real).

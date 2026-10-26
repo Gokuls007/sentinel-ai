@@ -9,6 +9,9 @@ const TYPE_LABELS = {
   fall: 'Confirmed fall',
   possible_fall: 'Possible fall',
   near_fall: 'Near fall',
+  bed_exit: 'Getting out of bed',
+  chair_slip: 'Slipping out of seat',
+  on_the_floor: 'On the floor',
 };
 
 export function eventTypeLabel(type) {

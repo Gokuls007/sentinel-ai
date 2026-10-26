@@ -169,6 +169,22 @@ the second on that camera within an hour.
   caught, stumbles onto the knees) to measure. A near fall is only reported when the descent
   was as fast as a fall's.
 
+### Fall prevention: warnings before the fall (home mode)
+Three warnings for the moments before a fall, while someone can still help. Each one fires once
+per episode, says what it measured, and is spoken aloud if voice warnings are on.
+
+| Warning | When | Severity |
+|---|---|---|
+| **Getting out of bed** | someone settled in bed (hips on a detected bed, lying or sitting, 2 s) puts a foot over the side, or is up off the bed | high |
+| **Slipping out of a seat** | someone settled on a chair or couch has their hips sink half a torso below where they sat, for 0.5 s, without standing up | high |
+| **On the floor** | off any seat and down for 3 s: hips near the feet, or much shorter than a standing person at that spot (the room map learns that), or lying for 6 s | medium |
+
+Checked on own recordings and public footage (`docs/BENCHMARKS.md`): both chair slides in an own
+recording warned, the first ~2 s before reaching the floor; a person kneeling on the floor was
+flagged; 13.5 min of CAUCAFall and URFD daily activities (sitting, kneeling, picking things up,
+lying on beds and sofas) raised only "on the floor" for 3 of 10 long kneels, by design. Getting out
+of bed has been seen once, rolling off a bed; it hasn't been tested on a normal bed exit yet.
+
 ### Honest limitations
 - **Falls are not in the bundled demos.** The sample videos have no falls. The fall datasets
   are downloaded by `training/eval_fall.py --download` (URFD) and

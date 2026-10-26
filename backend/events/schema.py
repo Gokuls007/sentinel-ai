@@ -30,6 +30,9 @@ EVENT_TYPES = (
     "hazard_contact",     # a wrist on an object marked as a hazard
     "losing_balance",     # centre of mass at or past the edge of the base of support
     "person_lost_lying",  # a person who was lying (or on/near a bed, couch, chair) left the detector's view
+    "bed_exit",           # home: settled in bed, then a foot over the side or starting to stand up
+    "chair_slip",         # home: settled on a seat, then the hips sliding down off it
+    "on_the_floor",       # home: down on the floor (kneeling, crawling, sitting or lying there) for a while
 )
 
 DEFAULT_CAMERA = "cam-0"
