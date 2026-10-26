@@ -245,7 +245,7 @@ class SentinelPipeline:
             alerts += self.balance.update(poses, timestamp, labels)
             alerts += self._update_lost(detections, labels, frame, objects, timestamp)
             timings["ergonomics"] = self.anomaly_engine.last_ergo_ms  # included in "analytics"
-            ergonomics = self.anomaly_engine.ergonomics_snapshot
+            ergonomics = self.anomaly_engine.ergonomics_snapshot if self.mode != "home" else {}
             self._persist_ergo_time(timestamp)
             activity, view = self._activity(poses, detections, timestamp, objects), self.view_check.snapshot()
         else:
@@ -578,7 +578,13 @@ class SentinelPipeline:
         for det in detections.detections:
             tid = det.track_id
             bbox = det.bbox.astype(int)
-            
+            if det.class_name != "person":
+                # A bag the detector tracks for "Carrying": an object, not a person. Home mode's
+                # object list is the furniture people sit or lie on, so bags aren't drawn there.
+                if self.mode != "home":
+                    self._draw_objects(frame, [det])
+                continue
+
             # Highlight red if alert active for this track
             is_alerted = tid in alerted_track_ids
             color = (0, 0, 255) if is_alerted else (0, 255, 0)

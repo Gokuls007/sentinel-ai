@@ -207,6 +207,27 @@ def test_every_active_zone_is_drawn_and_none_without_zones():
         assert bool(frame[100:250, 100:250].any()) is drawn  # the zone's fill
 
 
+def test_a_tracked_bag_is_drawn_as_an_object_not_a_person_and_not_at_all_in_home_mode():
+    """The detector tracks bags for "Carrying"; drawn with the person style they looked like extra
+    people (a backpack on the floor with an "ID:11 0.31" box for the whole recording)."""
+    from core.pipeline import SentinelPipeline
+
+    p = SentinelPipeline.__new__(SentinelPipeline)
+    p._alert_labels = {}
+    p.object_detector = None
+    p.anomaly_engine = SimpleNamespace(zone_overlay_data=[])
+    bag = SimpleNamespace(class_name="backpack", track_id=11, confidence=0.31,
+                          bbox=np.array([300.0, 300.0, 400.0, 400.0]))
+    drawn = {}
+    p._draw_objects = lambda frame, objs: drawn.setdefault("objects", []).extend(o.class_name for o in objs)
+    for mode in ("warehouse", "home"):
+        drawn.clear()
+        p.mode = mode
+        frame = p._annotate_frame(np.zeros((480, 640, 3), np.uint8), SimpleNamespace(detections=[bag]), {}, [])
+        assert not frame[295:305, 295:405, 1].any()  # no green person box
+        assert drawn.get("objects", []) == (["backpack"] if mode == "warehouse" else [])
+
+
 class FakeCoco:
     """Stands in for ultralytics.YOLO (a COCO model): a mouse, and a chair overlapping YOLO-World's."""
 
