@@ -175,7 +175,7 @@ def test_each_mode_detects_only_its_own_list():
 
     p.mode, p.show_all_objects = "warehouse", True  # the debug toggle: every class
     p._detect_objects(None)
-    assert calls[-1] == ALL_OBJECT_CLASSES and len(ALL_OBJECT_CLASSES) == 85
+    assert calls[-1] == ALL_OBJECT_CLASSES and len(ALL_OBJECT_CLASSES) == 87  # 79 COCO + 6 warehouse + 2 home extras
 
 
 def test_feed_status_line_says_whether_objects_run_and_what_they_see():

@@ -12,6 +12,9 @@ const TYPE_LABELS = {
   bed_exit: 'Getting out of bed',
   chair_slip: 'Slipping out of seat',
   on_the_floor: 'On the floor',
+  trip_hazard: 'Trip hazard',
+  watch_step: 'Watch your step',
+  dark_room: 'Dark room',
 };
 
 export function eventTypeLabel(type) {

@@ -173,7 +173,8 @@ COCO_OBJECTS = [
 ]
 WAREHOUSE_OBJECTS = ["pillow", "cardboard box", "ladder", "hard hat", "safety vest", "forklift"]
 # Everything both detectors know (Settings > "Show all objects", a debug view).
-ALL_OBJECT_CLASSES = COCO_OBJECTS + [c for c in WAREHOUSE_OBJECTS if c not in COCO_OBJECTS]
+HOME_EXTRA_OBJECTS = ["shoe", "clothes"]  # YOLO-World: loose things on the floor (trip hazards)
+ALL_OBJECT_CLASSES = COCO_OBJECTS + [c for c in WAREHOUSE_OBJECTS + HOME_EXTRA_OBJECTS if c not in COCO_OBJECTS]
 # Warehouse default: safety-relevant classes only. Not "tv"/"laptop": not safety objects, and the
 # COCO detector's nearest match for a dark window is "tv" (live webcam, 2026-10-12: the kitchen
 # window labelled tv all evening). Add them back in the Objects panel if needed.
@@ -185,7 +186,9 @@ DEFAULT_OBJECT_CLASSES = ["cardboard box", "chair", "couch", "ladder", "knife", 
 DEFAULT_HAZARD_CLASSES = ["knife", "scissors", "oven"]
 # Each mode detects and draws only its own list (posture: none).
 DEFAULT_EXAM_OBJECTS = ["cell phone", "book", "paper", "earbuds", "headphones"]
-DEFAULT_HOME_OBJECTS = ["bed", "chair", "couch"]  # home care: what people sit or lie on, found automatically
+# Home care: what people sit or lie on, and loose things that become trip hazards on the floor.
+DEFAULT_HOME_OBJECTS = ["bed", "chair", "couch", "backpack", "handbag", "suitcase", "pillow", "cardboard box", "shoe",
+                        "clothes"]
 OBJECT_MODES = ("warehouse", "home", "exam", "posture")
 
 
@@ -210,6 +213,8 @@ class ObjectsConfig:
         "chair": ["chair", "office chair", "gaming chair", "wooden chair"],
         "cardboard box": ["cardboard box", "shipping box", "carton"],
         "couch": ["couch", "sofa"],
+        "shoe": ["shoe", "sneaker", "slipper"],
+        "clothes": ["pile of clothes", "clothes on the floor", "towel on the floor"],
         "paper": ["paper", "sheet of paper", "notes"],
         "earbuds": ["earbuds", "earphones", "wireless earbuds"],
         "headphones": ["headphones", "headset"],

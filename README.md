@@ -185,6 +185,20 @@ flagged; 13.5 min of CAUCAFall and URFD daily activities (sitting, kneeling, pic
 lying on beds and sofas) raised only "on the floor" for 3 of 10 long kneels, by design. Getting out
 of bed has been seen once, rolling off a bed; it hasn't been tested on a normal bed exit yet.
 
+### Safe path: preventing the trip (home mode)
+The camera learns where people walk (where their feet have been) and watches those paths:
+
+| Warning | When | Severity |
+|---|---|---|
+| **Trip hazard** | a bag, pillow, box, shoe or clothes lying still for 10 s on a walking path (not on furniture, not on a person, not standing tall); once per spot | low |
+| **Watch your step** | someone walking whose next second of travel reaches a trip hazard; spoken | high |
+| **Dark room** | getting out of bed or standing up while the picture is dark: "turn on a light" | medium |
+
+Hazards are drawn as dashed orange boxes. On own recordings: the bag left on the kitchen floor (12 Oct)
+was reported once, and "watch your step" fired when someone walked toward it; the bedroom clips report
+the clothes, bag and box really lying on the floor (3-4 spots each). Shoes and clothes come from YOLO-World
+prompts, so small or partly hidden items can be missed; nothing is learned about who walked where.
+
 ### Honest limitations
 - **Falls are not in the bundled demos.** The sample videos have no falls. The fall datasets
   are downloaded by `training/eval_fall.py --download` (URFD) and

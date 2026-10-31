@@ -33,6 +33,9 @@ EVENT_TYPES = (
     "bed_exit",           # home: settled in bed, then a foot over the side or starting to stand up
     "chair_slip",         # home: settled on a seat, then the hips sliding down off it
     "on_the_floor",       # home: down on the floor (kneeling, crawling, sitting or lying there) for a while
+    "trip_hazard",        # home: a loose object lying on the floor where people walk
+    "watch_step",         # home: someone walking toward a trip hazard
+    "dark_room",          # home: getting out of bed or standing up in the dark
 )
 
 DEFAULT_CAMERA = "cam-0"

@@ -13,6 +13,7 @@ from activity import CARRY_CLASSES, ActivityTracker, ViewCheck
 from activity.balance import BalanceTracker
 from activity.object_rules import ObjectRules
 from activity.prevention import PreventionTracker
+from activity.trip_hazards import TripHazards
 from anomaly.engine import AnomalyAlert, AnomalyEngine
 from anomaly.fall_recovery import recover_pose
 from config.settings import ALL_OBJECT_CLASSES, COCO_OBJECTS, SentinelConfig
@@ -161,6 +162,7 @@ class SentinelPipeline:
         self.balance = BalanceTracker()  # centre of mass vs base of support: "Losing balance"
         self.lost_tracks = LostTracks()  # never silently drop a person who may be lying on the floor
         self.prevention = PreventionTracker()  # home: getting out of bed, slipping out of a seat, on the floor
+        self.trips: TripHazards | None = None  # home: trip hazards on walking paths, "watch your step", dark room
         # Identity hand-over: last box of each calibrated person, and new ids already checked.
         self._last_boxes: dict[int, tuple[np.ndarray, float]] = {}
         self._handover_checked: set[int] = set()
@@ -253,7 +255,16 @@ class SentinelPipeline:
             if self.mode == "home":  # fall prevention: warnings before a fall
                 fd = self.anomaly_engine.fall_detector
                 down = {tid for tid in poses if fd.state_of(tid) in (fd.FALLING, fd.FALLEN, fd.CONFIRMED)}
-                alerts += self.prevention.update(poses, activity, objects, timestamp, down, self.room)
+                warnings = self.prevention.update(poses, activity, objects, timestamp, down, self.room)
+                alerts += warnings
+                h, w = frame.shape[:2]
+                if self.trips is None or (self.trips.width, self.trips.height) != (w, h):
+                    self.trips = TripHazards(w, h)
+                risky = [(a.track_id, "getting out of bed") for a in warnings if a.alert_type == "bed_exit"]
+                risky += [(tid, "standing up") for tid, act in activity.items()
+                          if act.get("transition") == "sit-to-stand"]
+                brightness = float(frame[::8, ::8].mean())  # cheap: every 8th pixel
+                alerts += self.trips.update(poses, activity, objects, timestamp, brightness, risky)
                 for tid, seen in self.prevention.current.items():  # "Sitting" on the floor reads wrong
                     if seen.get("on_floor_s", 0.0) >= 1.0 and tid in activity:
                         activity[tid] = {**activity[tid], "label": "On the floor", "detail": None}
@@ -283,6 +294,8 @@ class SentinelPipeline:
             self._draw_person_tags(annotated_frame, detections, ergonomics, activity)
             self._draw_balance(annotated_frame, detections, self.balance.current)
             self._draw_lost(annotated_frame, self.lost_tracks.snapshot(timestamp))
+            if self.mode == "home" and self.trips is not None:
+                self._draw_hazards(annotated_frame, self.trips.hazards)
         else:
             annotated_frame = frame.copy()
             shown = ([poses[self._posture_id]] if self.mode == "posture" and self._posture_id in poses
@@ -476,6 +489,20 @@ class SentinelPipeline:
             top = max(0, y1 - h - 6)
             cv2.rectangle(frame, (x1, top), (x1 + w + 6, top + h + 6), c, -1)
             cv2.putText(frame, text, (x1 + 3, top + h + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 1)
+
+    def _draw_hazards(self, frame, hazards: list) -> None:
+        """Home care: trip hazards on walking paths, a dashed orange box with the object's name."""
+        color = (0, 140, 255)
+        for hz in hazards:
+            x1, y1, x2, y2 = (int(v) for v in hz["box"])
+            for x in range(x1, x2, 14):
+                cv2.line(frame, (x, y1), (min(x + 7, x2), y1), color, 2)
+                cv2.line(frame, (x, y2), (min(x + 7, x2), y2), color, 2)
+            for y in range(y1, y2, 14):
+                cv2.line(frame, (x1, y), (x1, min(y + 7, y2)), color, 2)
+                cv2.line(frame, (x2, y), (x2, min(y + 7, y2)), color, 2)
+            cv2.putText(frame, f"Trip hazard: {hz['name']}", (x1, max(14, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        color, 2)
 
     def _draw_occupied(self, frame, objects, poses) -> None:
         """Home care: a bed, couch or chair only while someone's hips are on it (thin, named)."""

@@ -5,7 +5,7 @@ import { isTestAlert } from './eventTypes.js';
 export const COOLDOWN_MS = 10000;
 export const SPOKEN_TYPES = new Set([
   'losing_balance', 'person_lost_lying', 'hazard_contact', 'unsafe_lift', 'standing_on_chair', 'fall', 'possible_fall', 'near_fall', 'trip_hazard',
-  'bed_exit', 'chair_slip', 'on_the_floor',
+  'bed_exit', 'chair_slip', 'on_the_floor', 'watch_step', 'dark_room',
 ]);
 
 /** "Losing balance: centre of mass..." -> "Losing balance"; "Hand on tv (hazard)" -> "Hand on tv". */
