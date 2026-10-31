@@ -254,6 +254,9 @@ class SentinelPipeline:
                 fd = self.anomaly_engine.fall_detector
                 down = {tid for tid in poses if fd.state_of(tid) in (fd.FALLING, fd.FALLEN, fd.CONFIRMED)}
                 alerts += self.prevention.update(poses, activity, objects, timestamp, down, self.room)
+                for tid, seen in self.prevention.current.items():  # "Sitting" on the floor reads wrong
+                    if seen.get("on_floor_s", 0.0) >= 1.0 and tid in activity:
+                        activity[tid] = {**activity[tid], "label": "On the floor", "detail": None}
         else:
             alerts, ergonomics = [], {}
             activity, view = {}, {}
@@ -474,6 +477,22 @@ class SentinelPipeline:
             cv2.rectangle(frame, (x1, top), (x1 + w + 6, top + h + 6), c, -1)
             cv2.putText(frame, text, (x1 + 3, top + h + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 1)
 
+    def _draw_occupied(self, frame, objects, poses) -> None:
+        """Home care: a bed, couch or chair only while someone's hips are on it (thin, named)."""
+        hips = []
+        for pose in poses.values():
+            kp = pose.keypoints
+            pts = [kp[i, :2] for i in (11, 12) if kp[i, 2] >= 0.4]
+            if pts:
+                hips.append(np.mean(pts, axis=0))
+        for o in objects:
+            x1, y1, x2, y2 = (int(v) for v in o.bbox)
+            if not any(x1 <= h[0] <= x2 and y1 <= h[1] <= y2 for h in hips):
+                continue
+            c = self.object_color(o.class_name)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), c, 1)
+            cv2.putText(frame, o.class_name, (x1 + 4, y1 + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 1)
+
     def _draw_alert_reasons(self, frame, detections, alerts, ts) -> set:
         """Each alert's rule name and reason (with the measured values) under its person's box,
         for a few seconds. Returns the track ids that have one showing."""
@@ -487,12 +506,37 @@ class SentinelPipeline:
             if tid not in boxes:
                 continue
             x1, _y1, _x2, y2 = (int(v) for v in boxes[tid])
-            for i, line in enumerate(_wrap(text, 48)[:3]):
+            lines = _wrap(text, 48)[:3]
+            line_h = cv2.getTextSize("Ag", cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0][1] + 8
+            # Under the box, or (box at the bottom of the picture) moved up so every line stays in view.
+            start = min(y2 + 4, frame.shape[0] - len(lines) * line_h - 2)
+            x1 = max(0, min(x1, frame.shape[1] - 400))
+            for i, line in enumerate(lines):
                 (w, h), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                top = min(frame.shape[0] - h - 6, y2 + 4 + i * (h + 8))
+                top = start + i * line_h
                 cv2.rectangle(frame, (x1, top), (x1 + w + 8, top + h + 6), (0, 0, 200), -1)
                 cv2.putText(frame, line, (x1 + 4, top + h + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        if getattr(self, "mode", None) == "home":
+            self._draw_banner(frame, alerts, ts)
         return set(self._alert_labels)
+
+    BANNER_S = 8.0  # home care: how long the latest warning stays across the top of the picture
+
+    def _draw_banner(self, frame, alerts, ts) -> None:
+        """Home care: the latest warning in large type across the top, so it can't be missed."""
+        for a in alerts:
+            head = (a.message or a.alert_type).split(":")[0].strip()
+            self._banner = (head, getattr(a, "severity", "high"), ts + self.BANNER_S)
+        banner = getattr(self, "_banner", None)
+        if not banner or banner[2] < ts:
+            return
+        text, severity, _until = banner
+        color = (0, 0, 200) if severity in ("high", "critical") else (0, 120, 230)  # BGR: red, orange
+        scale, thick = 1.1, 2
+        (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+        x = max(0, (frame.shape[1] - w) // 2 - 20)
+        cv2.rectangle(frame, (x, 34), (x + w + 40, 34 + h + 24), color, -1)
+        cv2.putText(frame, text, (x + 20, 34 + h + 11), cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), thick)
 
     @staticmethod
     def _make_pose_estimator(config):
@@ -576,8 +620,13 @@ class SentinelPipeline:
             cv2.putText(frame, zone["name"], (poly[0][0], poly[0][1] - 10), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-        # 2. Objects, then people (red while a rule's reason is showing for them)
-        self._draw_objects(frame, objects)
+        # 2. Objects, then people (red while a rule's reason is showing for them). Home care is a
+        # caregiver's view: furniture only while someone is on it, thin and named, and no track ids.
+        home = getattr(self, "mode", None) == "home"
+        if home:
+            self._draw_occupied(frame, objects, poses)
+        else:
+            self._draw_objects(frame, objects)
         alerted_track_ids = self._draw_alert_reasons(frame, detections, alerts, ts)
         self._draw_status(frame, self.objects_status(objects))
         
@@ -596,8 +645,9 @@ class SentinelPipeline:
             color = (0, 0, 255) if is_alerted else (0, 255, 0)
             
             cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
-            cv2.putText(frame, f"ID:{tid} {det.confidence:.2f}", (bbox[0], bbox[1] - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            if not home:
+                cv2.putText(frame, f"ID:{tid} {det.confidence:.2f}", (bbox[0], bbox[1] - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             
             # Draw skeleton if pose exists
             if tid in poses:

@@ -159,7 +159,14 @@ class RoomModel:
         return h if h > 0 else None
 
     def status(self) -> dict:
+        ys = [y for y, _h in self.heights]
+        spread = (max(ys) - min(ys)) / self.height if ys else 0.0
         return {
+            # Progress of the standing-height fit: enough full-body standing samples, near and far.
+            "height_samples": len(self.heights),
+            "height_samples_needed": self.FIT_MIN_SAMPLES,
+            "depth_spread": round(spread, 3),
+            "depth_spread_needed": self.FIT_MIN_SPREAD,
             "samples": int(self.samples),
             "floor_cells": int((self.floor >= 3).sum()),
             "furniture_cells": int((self.occluder >= self.OCCLUDER_MIN).sum()),
